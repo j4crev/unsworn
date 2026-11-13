@@ -28,3 +28,21 @@ pub use project::{Compiled, Host, MatchResult, Matched, Project, Route, compile}
 
 /// The Unsworn version, shared by the core and every host.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[cfg(test)]
+mod auto_traits {
+    fn send_sync<T: Send + Sync>() {}
+    fn hr_send<T: ?Sized>()
+    where
+        for<'a> &'a T: Send,
+    {
+    }
+
+    #[test]
+    fn project_is_send_and_sync() {
+        send_sync::<crate::Project>();
+        send_sync::<crate::validate::Validation>();
+        hr_send::<crate::Project>();
+        hr_send::<crate::validate::LocationRules>();
+    }
+}

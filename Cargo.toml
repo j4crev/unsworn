@@ -14,3 +14,4 @@ publish = false
 type_complexity = "allow"
 large_enum_variant = "allow"
 too_many_arguments = "allow"
+result_large_err = "allow"
