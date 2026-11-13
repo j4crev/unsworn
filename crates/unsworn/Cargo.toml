@@ -1,0 +1,15 @@
+[package]
+name = "unsworn"
+description = "The Unsworn binary: a sealed, config-driven API router with handlers in any language."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "unsworn"
+path = "src/main.rs"
+
+[dependencies]
+unsworn-core = { path = "../unsworn-core" }

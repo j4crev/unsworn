@@ -1,0 +1,10 @@
+[package]
+name = "unsworn-core"
+description = "Unsworn's pure routing core: config, matching, validation and dispatch decisions. No I/O."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
