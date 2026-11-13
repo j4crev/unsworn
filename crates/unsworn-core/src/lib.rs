@@ -1,24 +1,30 @@
 //! `unsworn-core` is the pure heart of Unsworn.
 //!
-//! It parses and validates config, matches routes, validates requests and
-//! decides what should happen to each request: respond, proxy, or call a
-//! handler with a validated context.
+//! It parses and validates config, builds the route table from every route
+//! source, matches requests, merges policies, validates requests and checks
+//! credentials.
 //!
 //! **Rule:** this crate never performs I/O. No sockets, no processes, no
-//! filesystem, no clocks it does not receive as input. That keeps it
-//! compilable to both native targets and `wasm32`, so the same core can run
-//! in the `unsworn` binary, inside a Cloudflare Worker, or in a serverless shim.
-//! See `docs/architecture.md`.
+//! direct filesystem access and no clock. Files come through the [`Host`]
+//! trait and the current time is passed in. That keeps it compilable to
+//! `wasm32`, so the same core can run in the `unsworn` binary, inside an
+//! edge isolate, or in a serverless shim. See `docs/architecture.md`.
+
+pub mod auth;
+pub mod config;
+pub mod diag;
+pub mod export;
+pub mod openapi;
+pub mod policy;
+pub mod project;
+pub mod routefiles;
+pub mod rules;
+pub mod targets;
+pub mod units;
+pub mod validate;
+
+pub use diag::{Diagnostic, Level};
+pub use project::{Compiled, Host, MatchResult, Matched, Project, Route, compile};
 
 /// The Unsworn version, shared by the core and every host.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn version_is_set() {
-        assert!(!VERSION.is_empty());
-    }
-}

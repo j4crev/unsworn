@@ -13,3 +13,6 @@ path = "src/main.rs"
 
 [dependencies]
 unsworn-core = { path = "../unsworn-core" }
+
+[lints]
+workspace = true
