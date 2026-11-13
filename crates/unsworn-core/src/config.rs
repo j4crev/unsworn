@@ -589,6 +589,26 @@ pub fn route_lines(text: &str) -> Vec<usize> {
         .collect()
 }
 
+/// The JSON Schema for `unsworn.toml` (and `.yaml`/`.json`), for editors.
+pub fn json_schema() -> Value {
+    let schema = schemars::schema_for!(RawConfig);
+    let mut value = serde_json::to_value(schema).unwrap_or_default();
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "$id".into(),
+            Value::String(
+                "https://raw.githubusercontent.com/j4crev/unsworn/main/schema/unsworn.schema.json"
+                    .into(),
+            ),
+        );
+        obj.insert(
+            "title".into(),
+            Value::String("Unsworn configuration".into()),
+        );
+    }
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,24 +688,4 @@ proxy = "http://old:8080"
         .unwrap();
         assert_eq!(cfg.route[0].respond.as_ref().unwrap().status, 200);
     }
-}
-
-/// The JSON Schema for `unsworn.toml` (and `.yaml`/`.json`), for editors.
-pub fn json_schema() -> Value {
-    let schema = schemars::schema_for!(RawConfig);
-    let mut value = serde_json::to_value(schema).unwrap_or_default();
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert(
-            "$id".into(),
-            Value::String(
-                "https://raw.githubusercontent.com/j4crev/unsworn/main/schema/unsworn.schema.json"
-                    .into(),
-            ),
-        );
-        obj.insert(
-            "title".into(),
-            Value::String("Unsworn configuration".into()),
-        );
-    }
-    value
 }
