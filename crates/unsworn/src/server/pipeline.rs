@@ -391,6 +391,7 @@ fn prepare<'a>(
         let cache_key = match &eff.cache {
             Some(rule) => compute_cache_key(
                 rule,
+                &ctx.generation.project.credential_headers(&eff.auth),
                 route.id,
                 &method,
                 req.uri(),
@@ -974,6 +975,7 @@ fn ip_allowed(rules: &unsworn_core::policy::IpRules, ip: IpAddr) -> bool {
 
 fn compute_cache_key(
     rule: &unsworn_core::policy::CacheRule,
+    credential_headers: &[String],
     route_id: usize,
     method: &str,
     uri: &http::Uri,
@@ -984,7 +986,7 @@ fn compute_cache_key(
     if !rules::cache_method(method) {
         return None;
     }
-    if claims.is_some() && !rules::cache_separates_users(rule) {
+    if claims.is_some() && !rules::cache_separates_users(rule, credential_headers) {
         return None;
     }
     let mut vary = Vec::new();

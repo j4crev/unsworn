@@ -13,8 +13,9 @@ needs real logic goes to a **handler**, a plain function in whatever language
 suits that endpoint. The same handlers can also be offered to AI agents as
 MCP tools.
 
-> **Status:** design phase. The documents in [`docs/`](docs/) are drafts and
-> nothing is implemented yet beyond the workspace skeleton.
+> **Status:** v1 in progress. The server, worker pools, both protocol tiers,
+> the CLI and the JS/TS and Python SDKs work and are tested; there's no
+> tagged release yet. See [what's in v1](#whats-in-v1).
 
 ## Why Unsworn
 
@@ -128,7 +129,7 @@ rate_limit = { requests = 100, per = "1m", key = "auth.sub" }
 ```toml
 [runtimes.ts]
 extensions = [".ts"]
-command    = "bun run node_modules/@unsworn/bun/worker.ts"
+command    = "bun run node_modules/@unsworn/js/src/worker.ts"
 protocol   = "binary"
 
 [[route]]
@@ -142,7 +143,7 @@ handler = "src/users.ts#getUser"
 
 ```ts
 // src/users.ts
-import type { Handler } from "@unsworn/bun";
+import type { Handler } from "@unsworn/js";
 
 export const getUser = (async (req, ctx) => {
   // req.params.id is already validated as an integer >= 1,
@@ -185,8 +186,8 @@ All of this is configured in `unsworn.toml`, with no code:
 | Forwarding | reverse proxy, load balancing, catch-all to an existing app |
 | Security | JWT/JWKS, API keys, CORS, IP allow and deny lists, body size limits |
 | Traffic | rate limits, timeouts, response caching |
-| Contracts | params, query, header and body validation (JSON Schema), OpenAPI output, typed request models for each language |
-| Ops | access logs, metrics, tracing, config hot reload |
+| Contracts | params, query, header and body validation (JSON Schema), OpenAPI input and output |
+| Ops | access logs, Prometheus metrics, request IDs, health checks, config hot reload |
 
 ## How it works
 
@@ -208,7 +209,55 @@ All of this is configured in `unsworn.toml`, with no code:
   for editor autocomplete.
 
 Details: [architecture](docs/architecture.md), [config](docs/config.md),
-[protocol](docs/protocol.md) and [MCP](docs/mcp.md).
+[protocol](docs/protocol.md), [conformance](docs/conformance.md) and
+[MCP](docs/mcp.md).
+
+## Getting started
+
+There's no release yet, so build from source (Rust 1.88 or newer):
+
+```sh
+cargo install --git https://github.com/j4crev/unsworn unsworn
+```
+
+Once releases exist: `curl -fsSL https://raw.githubusercontent.com/j4crev/unsworn/main/install.sh | sh`,
+or the `ghcr.io/j4crev/unsworn` base image for containers.
+
+```sh
+unsworn init        # writes a starter unsworn.toml
+unsworn dev         # serves it, reloads on changes, verifies handler names
+```
+
+| Command | What it does |
+|---|---|
+| `unsworn serve` | Run the router (`--listen`, `--log-format json`); `SIGHUP` reloads |
+| `unsworn dev` | Serve with file watching, every runtime started up front, and detailed errors |
+| `unsworn check` | Validate config, routes and handler files; `--deep` asks workers whether every handler exists; `--target <t>` checks a deployment target |
+| `unsworn routes` | Print the route table and each route's source; `--policies` shows merged policies |
+| `unsworn openapi` | Print the OpenAPI document for what Unsworn serves |
+| `unsworn conformance` | Test a runtime's workers against the protocol |
+| `unsworn schema` | Print the config's JSON Schema (also at [`schema/unsworn.schema.json`](schema/unsworn.schema.json)) |
+
+Handler SDKs live in [`sdk/js`](sdk/js) (Bun, Node, Deno) and
+[`sdk/python`](sdk/python). [`examples/`](examples) has a project that
+uses both, behind a catch-all.
+
+## What's in v1
+
+| Area | Status |
+|---|---|
+| Route sources: config, nested and flat route files, OpenAPI, catch-all | Done |
+| Policies: defaults, named sets, folder `_policies.toml`, prefix and exact entries | Done |
+| Auth (JWT/JWKS, API keys, scopes, OAuth protected-resource metadata), CORS, origin and IP rules | Done |
+| Rate limits and response caching (in memory) | Done |
+| Validation of params, query, headers, bodies and responses | Done |
+| Respond, redirect, static files, reverse proxy (WebSockets, SSE, sticky upstreams), handlers | Done |
+| Worker pools: Tier 1 and Tier 2, build steps, verify, cancel, restarts | Done |
+| HTTP/1.1 and HTTP/2, TLS, compression, graceful shutdown, reloads | Done |
+| JS/TS and Python SDKs, conformance suite | Done |
+| Install script, Docker image, release workflow | Written; runs on the first tagged release |
+| Shared stores (Redis), automatic TLS certificates, HTTP/3, OpenTelemetry | Later |
+| Typed request models for handlers (`unsworn gen`) | Later |
 
 ## Where Unsworn sits
 

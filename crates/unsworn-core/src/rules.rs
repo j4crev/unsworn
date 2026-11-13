@@ -73,9 +73,14 @@ pub fn cache_method(method: &str) -> bool {
 }
 
 /// Whether a response to an authenticated request may be cached under this
-/// rule: only if the cache key separates users.
-pub fn cache_separates_users(rule: &CacheRule) -> bool {
-    rule.vary.iter().any(|h| h == "authorization") || matches!(rule.key, Some(KeySource::Claim(_)))
+/// rule: only if the cache key separates users, by varying on a header that
+/// carries credentials or by keying on a claim. `credential_headers` are the
+/// (lowercase) headers the route's auth schemes read.
+pub fn cache_separates_users(rule: &CacheRule, credential_headers: &[String]) -> bool {
+    rule.vary
+        .iter()
+        .any(|h| h == "authorization" || credential_headers.contains(h))
+        || matches!(rule.key, Some(KeySource::Claim(_)))
 }
 
 const CACHEABLE_STATUS: &[u16] = &[200, 203, 204, 301, 404, 410];
@@ -197,8 +202,11 @@ mod tests {
             vary: vec![],
             key: None,
         };
-        assert!(!cache_separates_users(&rule));
+        assert!(!cache_separates_users(&rule, &[]));
+        rule.vary = vec!["x-api-key".into()];
+        assert!(cache_separates_users(&rule, &["x-api-key".into()]));
+        rule.vary.clear();
         rule.key = Some(KeySource::Claim("sub".into()));
-        assert!(cache_separates_users(&rule));
+        assert!(cache_separates_users(&rule, &[]));
     }
 }

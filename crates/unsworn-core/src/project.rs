@@ -132,6 +132,22 @@ pub enum Source {
     },
 }
 
+impl Source {
+    /// A location for diagnostics: for config entries, points at the
+    /// `[[route]]` table so field names read naturally after it.
+    pub fn loc(&self) -> String {
+        match self {
+            Source::Config {
+                file,
+                line: Some(line),
+                ..
+            } => format!("{file}:{line} [[route]]"),
+            Source::Config { file, index, .. } => format!("{file} route[{index}]"),
+            other => other.to_string(),
+        }
+    }
+}
+
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -481,6 +497,11 @@ impl Project {
         out
     }
 
+    /// The headers that carry credentials for the schemes in `auth`.
+    pub fn credential_headers(&self, auth: &AuthReq) -> Vec<String> {
+        credential_headers(&self.schemes, auth)
+    }
+
     /// Paths served for OAuth protected-resource metadata, with the document.
     pub fn protected_resource_docs(&self) -> Vec<(String, Value)> {
         let mut out = Vec::new();
@@ -739,7 +760,7 @@ impl<'h> Compiler<'h> {
                     || v.response.is_some()
                 {
                     self.diags.error(
-                        e.source.to_string(),
+                        e.source.loc(),
                         "validation for a path served by a catch-all isn't supported; only policies",
                     );
                 }
@@ -755,7 +776,7 @@ impl<'h> Compiler<'h> {
             {
                 self.diags.push(
                     Diagnostic::error(
-                        e.source.to_string(),
+                        e.source.loc(),
                         format!("no route matches {} {}", label(&e.methods), e.path),
                     )
                     .hint("policy-only entries must match a route from config, route files or the OpenAPI spec; end the path with `{*rest}` to cover a prefix"),
@@ -1380,7 +1401,7 @@ impl<'h> Compiler<'h> {
         exacts: &mut Vec<ExactEntry>,
         prefixes: &mut Vec<PrefixEntry>,
     ) {
-        let loc = source.to_string();
+        let loc = source.loc();
         if !self.check_path(&r.path, &loc) {
             return;
         }
@@ -1770,7 +1791,7 @@ impl<'h> Compiler<'h> {
         defaults: &Layer,
         exacts: &mut [ExactEntry],
     ) -> Option<Route> {
-        let loc = d.source.to_string();
+        let loc = d.source.loc();
         let mut layers: Vec<(String, Layer)> = Vec::new();
         if !defaults.is_empty() {
             layers.push((Source::Defaults.to_string(), defaults.clone()));
@@ -1917,7 +1938,7 @@ impl<'h> Compiler<'h> {
         };
         for r in routes {
             if let Some(h) = r.handler() {
-                check(self, h, format!("{}.handler", r.source));
+                check(self, h, format!("{}.handler", r.source.loc()));
             }
             for (src, l) in &r.layers {
                 if let Some(OrOff::On(list)) = &l.before {
@@ -1930,7 +1951,7 @@ impl<'h> Compiler<'h> {
         for p in prefixes {
             if let Some(OrOff::On(list)) = &p.layer.before {
                 for h in list {
-                    check(self, h, format!("{}.before", p.source));
+                    check(self, h, format!("{}.before", p.source.loc()));
                 }
             }
         }
@@ -1948,7 +1969,10 @@ impl<'h> Compiler<'h> {
             layer.merge_from(&r.high);
             let eff = layer.finalize(Duration::from_secs(30), 0);
             if let (Some(cache), AuthReq::AnyOf(_)) = (&eff.cache, &eff.auth)
-                && !rules::cache_separates_users(cache)
+                && !rules::cache_separates_users(
+                    cache,
+                    &credential_headers(&self.schemes, &eff.auth),
+                )
             {
                 self.diags.push(
                         Diagnostic::warning(
@@ -2033,6 +2057,19 @@ impl<'h> Compiler<'h> {
         catch_alls.sort_by_key(|(_, segs)| std::cmp::Reverse(segs.len()));
         (routers, slots, catch_alls)
     }
+}
+
+fn credential_headers(schemes: &BTreeMap<String, Arc<Scheme>>, auth: &AuthReq) -> Vec<String> {
+    let AuthReq::AnyOf(alts) = auth else {
+        return Vec::new();
+    };
+    alts.iter()
+        .filter_map(|a| schemes.get(&a.scheme))
+        .filter_map(|s| match s.as_ref() {
+            Scheme::Jwt(j) => Some(j.header.clone()),
+            Scheme::ApiKey(k) => k.header.clone(),
+        })
+        .collect()
 }
 
 fn valid_ip_or_cidr(s: &str) -> bool {

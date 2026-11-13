@@ -1,7 +1,7 @@
 # MCP servers with Unsworn
 
-> Draft, 2026-11-13. Describes planned features; nothing here is implemented
-> yet.
+> Level 1 and the shared building blocks are implemented in v1. Levels 2
+> and 3 are planned.
 
 A remote [Model Context Protocol](https://modelcontextprotocol.io) (MCP)
 server lets AI agents call tools over HTTP. Running one in production needs

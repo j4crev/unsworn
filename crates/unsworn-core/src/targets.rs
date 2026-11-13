@@ -35,7 +35,7 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
         if stateless_memory && eff.rate_limit.is_some() {
             out.push(
                 Diagnostic::error(
-                    format!("{}.rate_limit", route.source),
+                    format!("{}.rate_limit", route.source.loc()),
                     "needs a shared store on this target",
                 )
                 .hint("set [store] backend to a shared store, or remove rate_limit"),
@@ -44,7 +44,7 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
         if stateless_memory && eff.cache.is_some() {
             out.push(
                 Diagnostic::error(
-                    format!("{}.cache", route.source),
+                    format!("{}.cache", route.source.loc()),
                     "needs a shared store on this target",
                 )
                 .hint("set [store] backend to a shared store, or remove cache"),
@@ -57,7 +57,7 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
             if !matches!(ext, "js" | "ts" | "mjs" | "wasm") {
                 out.push(
                         Diagnostic::error(
-                            format!("{}.handler", route.source),
+                            format!("{}.handler", route.source.loc()),
                             format!("\"{}\" can't run in an edge isolate", h.file),
                         )
                         .hint("only JS/TS and WASM handlers run on edge isolates; use a container target for other languages"),

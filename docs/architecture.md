@@ -1,7 +1,6 @@
 # Unsworn architecture
 
-> Draft, 2026-11-13. Describes the intended design; nothing here is
-> implemented yet.
+> Describes v1 as built. The edge and serverless hosts (v2, v3) are planned.
 
 ## Goals
 
@@ -192,14 +191,16 @@ per-target capability table.
 
 ## Crates
 
-| Crate | Status | Role |
-|---|---|---|
-| `crates/unsworn-core` | skeleton | Pure core. No I/O, no tokio. |
-| `crates/unsworn` | skeleton | Binary: ingress, dispatch, supervision, CLI. |
-| `unsworn-proto` | planned | Message model and both codecs, shared with the Rust SDK and the conformance suite. |
-| `unsworn-wasm` | planned (v2) | Core bindings for edge and serverless hosts. |
+| Path | Role |
+|---|---|
+| `crates/unsworn-core` | Pure core: config, route sources, matching, policies, validation, auth checks. No I/O, no tokio. |
+| `crates/unsworn-proto` | The message model and both encodings, shared with a future Rust SDK. |
+| `crates/unsworn` | The binary: HTTP ingress (hyper), worker pools, proxying, static files, compression, CLI. |
+| `sdk/js` | JS/TS SDK for Bun, Node and Deno. |
+| `sdk/python` | Python SDK (asyncio). |
+| `unsworn-wasm` | Planned (v2): core bindings for edge and serverless hosts. |
 
-## CLI (planned)
+## CLI
 
 | Command | What it does |
 |---|---|
@@ -208,14 +209,25 @@ per-target capability table.
 | `unsworn check [--deep] [--target <t>]` | Validate config and routes and report target capability gaps. `--deep` also starts workers to verify handler names. |
 | `unsworn routes [--policies]` | Print the resolved route table and the source of each route. `--policies` adds each route's merged policies and where each value came from. |
 | `unsworn openapi` | Emit the OpenAPI document. |
-| `unsworn gen <lang>` | Generate typed request and response models for handlers. |
+| `unsworn gen <lang>` | Planned: generate typed request and response models for handlers. |
 | `unsworn conformance --runtime <r>` | Run the protocol conformance suite against a runtime. |
-| `unsworn build --target <t>` | Produce a deployment for an edge or serverless target (v2/v3). |
+| `unsworn build --target <t>` | Planned (v2/v3): produce a deployment for an edge or serverless target. |
+| `unsworn schema` | Print the config's JSON Schema. |
+| `unsworn init` | Write a starter config. |
+
+## Decisions made in v1
+
+- **HTTP:** HTTP/1.1 and HTTP/2, with TLS from certificate files. WebSockets
+  are proxied. HTTP/3 and automatic certificates (ACME) come later; until
+  then, run behind a platform load balancer, Caddy or Cloudflare for those.
+- **Request bodies** are buffered up to `max_body` before reaching a worker.
+  Proxied requests stream.
+- **Response validation** defaults to `log`.
+- **Tier 2 encoding:** length-prefixed frames carrying the same JSON as
+  Tier 1, plus raw body bytes (see [`protocol.md`](protocol.md)).
 
 ## Open questions
 
-- Which HTTP features land in v1: HTTP/3, WebSockets, automatic TLS
-  certificates (ACME)?
 - Windows support for Tier 2: named pipes, or TCP on localhost?
-- Request body streaming to workers in v1, or buffered bodies only?
-- Should response-schema validation default to `log` or `off`?
+- Request body streaming to workers, for large uploads.
+- A shared store (Redis first) for rate limits and caches across instances.

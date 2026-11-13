@@ -1,0 +1,54 @@
+#:schema ../../schema/unsworn.schema.json
+# A TypeScript and Python API in front of an "existing app".
+# Run from this directory: unsworn dev
+
+[server]
+listen = "127.0.0.1:8080"
+
+[routes]
+dir = "routes"
+
+[runtimes.ts]
+extensions = [".ts"]
+command = "bun run ../../sdk/js/src/worker.ts"
+protocol = "binary"
+workers = 1
+
+[runtimes.py]
+extensions = [".py"]
+command = "python3 -u -m unsworn.worker"
+protocol = "binary"
+workers = 1
+env = { PYTHONPATH = "../../sdk/python" }
+
+[auth.key]
+type = "api_key"
+keys = "{env.DEMO_KEY}"
+
+[[route]]
+path = "/health"
+respond = { status = 200, json = { ok = true } }
+
+# Everything not matched below goes to the existing app.
+[[route]]
+path = "/{*rest}"
+handler = "src/legacy.ts"
+
+# Policies for routes inside /api, wherever they're served from.
+[[route]]
+path = "/api/{*rest}"
+auth = "key"
+rate_limit = { requests = 60, per = "1m", key = "ip" }
+before = ["src/tenant.ts#tenant"]
+
+# Contracts for routes defined by files.
+[[route]]
+path = "/api/users/{id}"
+method = "GET"
+params = { id = { type = "integer", min = 1 } }
+cache = { ttl = "30s", vary = ["x-api-key"] }
+
+[[route]]
+path = "/api/summarize"
+method = "POST"
+body = { type = "object", required = ["text"], properties = { text = { type = "string", maxLength = 10000 } } }
