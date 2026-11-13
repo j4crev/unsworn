@@ -1,0 +1,1321 @@
+{
+  "$defs": {
+    "Array_of_stringOrOff": {
+      "anyOf": [
+        {
+          "const": "off",
+          "description": "Switch off a setting inherited from a broader layer."
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ]
+    },
+    "Duration": {
+      "anyOf": [
+        {
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ms|s|m|h|d))+$",
+          "type": "string"
+        },
+        {
+          "minimum": 0,
+          "type": "integer"
+        }
+      ],
+      "description": "A duration like \"30s\", \"5m\", \"250ms\" or \"1h30m\", or a number of seconds."
+    },
+    "Protocol": {
+      "enum": [
+        "jsonl",
+        "binary"
+      ],
+      "type": "string"
+    },
+    "RawAuth": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/RawAuthAlt"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/RawAuthItem"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "`auth` as written: `\"jwt\"`, `\"none\"`, `[\"jwt\", \"service\"]`,\n`{ scheme = \"jwt\", scopes = [...] }`, or a list of those."
+    },
+    "RawAuthAlt": {
+      "additionalProperties": false,
+      "properties": {
+        "scheme": {
+          "type": "string"
+        },
+        "scopes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "scheme"
+      ],
+      "type": "object"
+    },
+    "RawAuthItem": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/RawAuthAlt"
+        }
+      ]
+    },
+    "RawAuthScheme": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "algorithms": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "audience": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StringOrList"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "header": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "issuer": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "jwks_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "leeway": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Duration"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "protected_resource": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RawProtectedResource"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "public_key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "secret": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "jwt",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "header": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "keys": {
+              "$ref": "#/$defs/StringOrList"
+            },
+            "query": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "api_key",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "keys"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RawCache": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ttl": {
+          "$ref": "#/$defs/Duration"
+        },
+        "vary": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ttl"
+      ],
+      "type": "object"
+    },
+    "RawCacheOrOff": {
+      "anyOf": [
+        {
+          "const": "off",
+          "description": "Switch off a setting inherited from a broader layer."
+        },
+        {
+          "$ref": "#/$defs/RawCache"
+        }
+      ]
+    },
+    "RawCors": {
+      "additionalProperties": false,
+      "properties": {
+        "credentials": {
+          "default": false,
+          "type": "boolean"
+        },
+        "expose": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "headers": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "max_age": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "methods": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "origins": {
+          "$ref": "#/$defs/StringOrList"
+        }
+      },
+      "required": [
+        "origins"
+      ],
+      "type": "object"
+    },
+    "RawCorsOrOff": {
+      "anyOf": [
+        {
+          "const": "off",
+          "description": "Switch off a setting inherited from a broader layer."
+        },
+        {
+          "$ref": "#/$defs/RawCors"
+        }
+      ]
+    },
+    "RawHeaders": {
+      "additionalProperties": false,
+      "properties": {
+        "remove": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "set": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "RawHeadersOrOff": {
+      "anyOf": [
+        {
+          "const": "off",
+          "description": "Switch off a setting inherited from a broader layer."
+        },
+        {
+          "$ref": "#/$defs/RawHeaders"
+        }
+      ]
+    },
+    "RawIp": {
+      "additionalProperties": false,
+      "description": "`ip = { allow = [\"10.0.0.0/8\"], deny = [\"10.0.0.5\"] }`",
+      "properties": {
+        "allow": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "deny": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "RawIpOrOff": {
+      "anyOf": [
+        {
+          "const": "off",
+          "description": "Switch off a setting inherited from a broader layer."
+        },
+        {
+          "$ref": "#/$defs/RawIp"
+        }
+      ]
+    },
+    "RawOpenApi": {
+      "additionalProperties": false,
+      "properties": {
+        "handler": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mcp_tools": {
+          "description": "Planned for v3."
+        },
+        "spec": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawOrigin": {
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "allow"
+      ],
+      "type": "object"
+    },
+    "RawOriginOrOff": {
+      "anyOf": [
+        {
+          "const": "off",
+          "description": "Switch off a setting inherited from a broader layer."
+        },
+        {
+          "$ref": "#/$defs/RawOrigin"
+        }
+      ]
+    },
+    "RawParam": {
+      "additionalProperties": false,
+      "description": "One inline parameter rule: `{ type = \"integer\", min = 1 }`.",
+      "properties": {
+        "default": true,
+        "enum": {
+          "items": true,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "format": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "items": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "min": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pattern": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawPolicies": {
+      "additionalProperties": false,
+      "description": "Policy keys, as used in `[defaults]`, `[policies.*]` and\n`_policies.toml` files. Route entries repeat these fields.",
+      "properties": {
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawAuth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Array_of_stringOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cache": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawCacheOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cors": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawCorsOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "headers": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawHeadersOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ip": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawIpOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_body": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Size"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawOriginOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rate_limit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawRateLimitOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "use": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawProtectedResource": {
+      "additionalProperties": false,
+      "properties": {
+        "authorization_servers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "resource_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopes_supported": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "resource",
+        "authorization_servers"
+      ],
+      "type": "object"
+    },
+    "RawProxy": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/RawProxyFull"
+        }
+      ]
+    },
+    "RawProxyFull": {
+      "additionalProperties": false,
+      "properties": {
+        "preserve_host": {
+          "default": false,
+          "type": "boolean"
+        },
+        "sticky": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "strip_prefix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstreams": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "upstreams"
+      ],
+      "type": "object"
+    },
+    "RawRateLimit": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "per": {
+          "$ref": "#/$defs/Duration"
+        },
+        "requests": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "requests",
+        "per"
+      ],
+      "type": "object"
+    },
+    "RawRateLimitOrOff": {
+      "anyOf": [
+        {
+          "const": "off",
+          "description": "Switch off a setting inherited from a broader layer."
+        },
+        {
+          "$ref": "#/$defs/RawRateLimit"
+        }
+      ]
+    },
+    "RawRedirect": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": 308,
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "to"
+      ],
+      "type": "object"
+    },
+    "RawRespond": {
+      "additionalProperties": false,
+      "properties": {
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "json": true,
+        "status": {
+          "default": 200,
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawRoute": {
+      "additionalProperties": false,
+      "description": "A `[[route]]` entry.",
+      "properties": {
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawAuth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Array_of_stringOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "body": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchemaRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cache": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawCacheOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cors": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawCorsOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "handler": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "headers": {
+          "description": "Either request-header validation (a table of param rules) or the\n`headers` policy (`{ set = ..., remove = ... }`). See\n[`RawRoute::split_headers`]."
+        },
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ip": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawIpOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_body": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Size"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mcp": {
+          "description": "Planned for v3."
+        },
+        "method": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StringOrList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawOriginOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "params": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RawParam"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "proxy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawProxy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "query": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RawParam"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "rate_limit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawRateLimitOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "redirect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawRedirect"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "respond": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawRespond"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "response": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchemaRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "static": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawStatic"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "use": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "RawRoutesDir": {
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "dir"
+      ],
+      "type": "object"
+    },
+    "RawRuntime": {
+      "additionalProperties": false,
+      "properties": {
+        "build": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "command": {
+          "type": "string"
+        },
+        "eager": {
+          "default": false,
+          "type": "boolean"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "extensions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "protocol": {
+          "$ref": "#/$defs/Protocol",
+          "default": "jsonl"
+        },
+        "startup_timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workers": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "extensions",
+        "command"
+      ],
+      "type": "object"
+    },
+    "RawServer": {
+      "additionalProperties": false,
+      "properties": {
+        "admin_listen": {
+          "description": "Optional separate listener for `/_unsworn/metrics`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "compression": {
+          "default": true,
+          "type": "boolean"
+        },
+        "listen": {
+          "default": "0.0.0.0:8080",
+          "type": "string"
+        },
+        "max_body": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Size"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "response_validation": {
+          "$ref": "#/$defs/ResponseValidation",
+          "default": "log"
+        },
+        "shutdown_timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawTls"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trailing_slash": {
+          "$ref": "#/$defs/TrailingSlash",
+          "default": "redirect"
+        },
+        "trusted_proxies": {
+          "default": [],
+          "description": "Proxies whose `X-Forwarded-For` header is trusted: CIDRs, or `\"all\"`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "RawStatic": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_control": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dir": {
+          "type": "string"
+        },
+        "index": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "spa_fallback": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "dir"
+      ],
+      "type": "object"
+    },
+    "RawStore": {
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "default": "memory",
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawTls": {
+      "additionalProperties": false,
+      "properties": {
+        "cert": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cert",
+        "key"
+      ],
+      "type": "object"
+    },
+    "ResponseValidation": {
+      "enum": [
+        "off",
+        "log",
+        "enforce"
+      ],
+      "type": "string"
+    },
+    "SchemaRef": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      ],
+      "description": "A JSON Schema reference: a file path, or an inline schema table."
+    },
+    "Size": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9]+(\\.[0-9]+)?\\s*([kKmMgG][iI]?[bB]?|[bB])?$",
+          "type": "string"
+        },
+        {
+          "minimum": 0,
+          "type": "integer"
+        }
+      ],
+      "description": "A size like \"1MB\" or \"512KB\" (1024-based), or a number of bytes."
+    },
+    "StringOrList": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ]
+    },
+    "TrailingSlash": {
+      "enum": [
+        "redirect",
+        "strict",
+        "ignore"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/j4crev/unsworn/main/schema/unsworn.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "auth": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RawAuthScheme"
+      },
+      "type": "object"
+    },
+    "defaults": {
+      "$ref": "#/$defs/RawPolicies"
+    },
+    "mcp": {
+      "description": "Planned for v2. Accepted only to report a clear error."
+    },
+    "openapi": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RawOpenApi"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "policies": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RawPolicies"
+      },
+      "type": "object"
+    },
+    "route": {
+      "items": {
+        "$ref": "#/$defs/RawRoute"
+      },
+      "type": "array"
+    },
+    "routes": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RawRoutesDir"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "runtimes": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RawRuntime"
+      },
+      "type": "object"
+    },
+    "server": {
+      "$ref": "#/$defs/RawServer"
+    },
+    "store": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RawStore"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "title": "Unsworn configuration",
+  "type": "object"
+}

@@ -1173,6 +1173,24 @@ impl<'h> Compiler<'h> {
                 })
             }
         });
+        own.ip = match &raw.ip {
+            None => None,
+            Some(OrOff::Off) => Some(OrOff::Off),
+            Some(OrOff::On(r)) => {
+                for entry in r.allow.iter().chain(&r.deny) {
+                    if !valid_ip_or_cidr(entry) {
+                        self.diags.error(
+                            format!("{loc}.ip"),
+                            format!("\"{entry}\" isn't an IP address or CIDR like \"10.0.0.0/8\""),
+                        );
+                    }
+                }
+                Some(OrOff::On(crate::policy::IpRules {
+                    allow: r.allow.clone(),
+                    deny: r.deny.clone(),
+                }))
+            }
+        };
         own.origin = raw.origin.as_ref().map(|o| match o {
             OrOff::Off => OrOff::Off,
             OrOff::On(o) => OrOff::On(o.allow.clone()),
@@ -2014,6 +2032,19 @@ impl<'h> Compiler<'h> {
         }
         catch_alls.sort_by_key(|(_, segs)| std::cmp::Reverse(segs.len()));
         (routers, slots, catch_alls)
+    }
+}
+
+fn valid_ip_or_cidr(s: &str) -> bool {
+    match s.split_once('/') {
+        Some((ip, bits)) => {
+            let Ok(ip) = ip.parse::<std::net::IpAddr>() else {
+                return false;
+            };
+            let max = if ip.is_ipv4() { 32 } else { 128 };
+            bits.parse::<u8>().is_ok_and(|b| b <= max)
+        }
+        None => s.parse::<std::net::IpAddr>().is_ok(),
     }
 }
 

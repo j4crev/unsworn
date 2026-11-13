@@ -82,6 +82,8 @@ enum Command {
     },
     /// Create a starter `unsworn.toml` in the project directory.
     Init,
+    /// Print the JSON Schema for the config file, for editor autocomplete.
+    Schema,
 }
 
 fn init_logging(format: &str, dev: bool) {
@@ -152,6 +154,14 @@ fn main() -> ExitCode {
             runtime.block_on(conformance::run(&root, &config, &rt, &handlers))
         }
         Command::Init => commands::init(&root),
+        Command::Schema => {
+            let schema = unsworn_core::config::json_schema();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&schema).unwrap_or_default()
+            );
+            Ok(())
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

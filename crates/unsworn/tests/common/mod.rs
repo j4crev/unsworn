@@ -241,10 +241,7 @@ fn parse(raw: &[u8], head: bool) -> Response {
 
 fn dechunk(mut data: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    loop {
-        let Some(line_end) = data.windows(2).position(|w| w == b"\r\n") else {
-            break;
-        };
+    while let Some(line_end) = data.windows(2).position(|w| w == b"\r\n") {
         let size_text = String::from_utf8_lossy(&data[..line_end]);
         let size =
             usize::from_str_radix(size_text.split(';').next().unwrap().trim(), 16).unwrap_or(0);

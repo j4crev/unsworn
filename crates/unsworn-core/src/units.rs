@@ -125,6 +125,22 @@ pub fn format_duration(d: Duration) -> String {
     }
 }
 
+impl schemars::JsonSchema for ConfigDuration {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Duration".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "A duration like \"30s\", \"5m\", \"250ms\" or \"1h30m\", or a number of seconds.",
+            "anyOf": [
+                { "type": "string", "pattern": "^([0-9]+(\\.[0-9]+)?(ms|s|m|h|d))+$" },
+                { "type": "integer", "minimum": 0 }
+            ]
+        })
+    }
+}
+
 /// A size in config: a string like `"1MB"` or a number of bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfigSize(pub u64);
@@ -150,6 +166,22 @@ impl<'de> Deserialize<'de> for ConfigSize {
             }
         }
         d.deserialize_any(V)
+    }
+}
+
+impl schemars::JsonSchema for ConfigSize {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Size".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "A size like \"1MB\" or \"512KB\" (1024-based), or a number of bytes.",
+            "anyOf": [
+                { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?\\s*([kKmMgG][iI]?[bB]?|[bB])?$" },
+                { "type": "integer", "minimum": 0 }
+            ]
+        })
     }
 }
 

@@ -270,6 +270,16 @@ respond = { status = 200, json = { data = 1 } }
 path = "/mcp"
 origin = { allow = ["https://claude.ai"] }
 respond = { status = 200 }
+
+[[route]]
+path = "/office"
+ip = { allow = ["10.0.0.0/8"] }
+respond = { status = 200 }
+
+[[route]]
+path = "/local"
+ip = { allow = ["127.0.0.0/8"], deny = ["10.1.2.3"] }
+respond = { status = 200 }
 "#,
     )]);
     let s = p.serve();
@@ -326,6 +336,9 @@ respond = { status = 200 }
         200
     );
     assert_eq!(s.get("/mcp").status, 200, "no Origin header is allowed");
+
+    assert_eq!(s.get("/office").status, 403);
+    assert_eq!(s.get("/local").status, 200);
 }
 
 #[test]
@@ -694,6 +707,7 @@ fn websocket_pass_through() {
     let len = (buf[1] & 0x7f) as usize;
     assert_eq!(&buf[2..2 + len], b"echo:hi", "{:?}", &buf[..n]);
     let _ = upstream.kill();
+    let _ = upstream.wait();
 }
 
 #[test]
@@ -738,4 +752,20 @@ fn tls() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "secure 2");
+}
+
+#[test]
+fn published_schema_is_up_to_date() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_unsworn"))
+        .arg("schema")
+        .output()
+        .unwrap();
+    let generated: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let path = common::repo_root().join("schema/unsworn.schema.json");
+    let committed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(
+        generated, committed,
+        "schema/unsworn.schema.json is stale: run `unsworn schema > schema/unsworn.schema.json`"
+    );
 }

@@ -108,6 +108,11 @@ fn layer_summary(layer: &Layer) -> Vec<String> {
         matches!(layer.origin, Some(OrOff::Off)),
     );
     onoff(
+        "ip",
+        matches!(layer.ip, Some(OrOff::On(_))),
+        matches!(layer.ip, Some(OrOff::Off)),
+    );
+    onoff(
         "rate_limit",
         matches!(layer.rate_limit, Some(OrOff::On(_))),
         matches!(layer.rate_limit, Some(OrOff::Off)),
@@ -253,7 +258,8 @@ pub fn openapi(root: &Path, config: &str, output: Option<&Path>) -> Result<(), S
     Ok(())
 }
 
-const STARTER: &str = r#"# Unsworn config. Docs: https://github.com/j4crev/unsworn/blob/main/docs/config.md
+const STARTER: &str = r#"#:schema https://raw.githubusercontent.com/j4crev/unsworn/main/schema/unsworn.schema.json
+# Unsworn config. Docs: https://github.com/j4crev/unsworn/blob/main/docs/config.md
 
 [server]
 listen = "0.0.0.0:8080"
@@ -265,7 +271,7 @@ listen = "0.0.0.0:8080"
 # How to run handlers written in TypeScript (with the Bun SDK).
 # [runtimes.ts]
 # extensions = [".ts"]
-# command = "bun run node_modules/@unsworn/bun/worker.ts"
+# command = "bun run node_modules/@unsworn/js/src/worker.ts"
 # protocol = "binary"
 
 [[route]]

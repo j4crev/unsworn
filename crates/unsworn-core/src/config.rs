@@ -6,12 +6,13 @@
 
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::units::{ConfigDuration, ConfigSize};
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawConfig {
     #[serde(default)]
@@ -33,7 +34,7 @@ pub struct RawConfig {
     pub route: Vec<RawRoute>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawServer {
     #[serde(default = "default_listen")]
@@ -80,7 +81,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TrailingSlash {
     #[default]
@@ -89,7 +90,7 @@ pub enum TrailingSlash {
     Ignore,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponseValidation {
     Off,
@@ -98,20 +99,20 @@ pub enum ResponseValidation {
     Enforce,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawTls {
     pub cert: String,
     pub key: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawRoutesDir {
     pub dir: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawOpenApi {
     pub spec: Option<String>,
@@ -122,7 +123,7 @@ pub struct RawOpenApi {
     pub version: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Protocol {
     #[default]
@@ -130,7 +131,7 @@ pub enum Protocol {
     Binary,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawRuntime {
     pub extensions: Vec<String>,
@@ -146,14 +147,14 @@ pub struct RawRuntime {
     pub startup_timeout: Option<ConfigDuration>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RawAuthScheme {
     Jwt(RawJwt),
     ApiKey(RawApiKey),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawJwt {
     pub jwks_url: Option<String>,
@@ -167,7 +168,7 @@ pub struct RawJwt {
     pub protected_resource: Option<RawProtectedResource>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawProtectedResource {
     pub resource: String,
@@ -177,7 +178,7 @@ pub struct RawProtectedResource {
     pub resource_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawApiKey {
     pub header: Option<String>,
@@ -185,7 +186,7 @@ pub struct RawApiKey {
     pub keys: StringOrList,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawStore {
     #[serde(default = "default_store")]
@@ -197,7 +198,7 @@ fn default_store() -> String {
     "memory".into()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum StringOrList {
     One(String),
@@ -220,9 +221,22 @@ pub enum OrOff<T> {
     On(T),
 }
 
+impl<T: JsonSchema> JsonSchema for OrOff<T> {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        format!("{}OrOff", T::schema_name()).into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let inner = generator.subschema_for::<T>();
+        schemars::json_schema!({
+            "anyOf": [{ "const": "off", "description": "Switch off a setting inherited from a broader layer." }, inner]
+        })
+    }
+}
+
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for OrOff<T> {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
+        #[derive(Deserialize, JsonSchema)]
         #[serde(untagged)]
         enum Helper<T> {
             Str(String),
@@ -240,7 +254,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for OrOff<T> {
 
 /// `auth` as written: `"jwt"`, `"none"`, `["jwt", "service"]`,
 /// `{ scheme = "jwt", scopes = [...] }`, or a list of those.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum RawAuth {
     Name(String),
@@ -248,14 +262,14 @@ pub enum RawAuth {
     Many(Vec<RawAuthItem>),
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum RawAuthItem {
     Name(String),
     Alt(RawAuthAlt),
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawAuthAlt {
     pub scheme: String,
@@ -263,7 +277,7 @@ pub struct RawAuthAlt {
     pub scopes: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawCors {
     pub origins: StringOrList,
@@ -276,13 +290,23 @@ pub struct RawCors {
     pub max_age: Option<ConfigDuration>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawOrigin {
     pub allow: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+/// `ip = { allow = ["10.0.0.0/8"], deny = ["10.0.0.5"] }`
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawIp {
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawRateLimit {
     pub requests: u32,
@@ -290,7 +314,7 @@ pub struct RawRateLimit {
     pub key: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawCache {
     pub ttl: ConfigDuration,
@@ -299,7 +323,7 @@ pub struct RawCache {
     pub key: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawHeaders {
     #[serde(default)]
@@ -310,12 +334,13 @@ pub struct RawHeaders {
 
 /// Policy keys, as used in `[defaults]`, `[policies.*]` and
 /// `_policies.toml` files. Route entries repeat these fields.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawPolicies {
     pub auth: Option<RawAuth>,
     pub cors: Option<OrOff<RawCors>>,
     pub origin: Option<OrOff<RawOrigin>>,
+    pub ip: Option<OrOff<RawIp>>,
     pub rate_limit: Option<OrOff<RawRateLimit>>,
     pub cache: Option<OrOff<RawCache>>,
     pub timeout: Option<ConfigDuration>,
@@ -327,7 +352,7 @@ pub struct RawPolicies {
 }
 
 /// One inline parameter rule: `{ type = "integer", min = 1 }`.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawParam {
     #[serde(rename = "type")]
@@ -346,14 +371,14 @@ pub struct RawParam {
 }
 
 /// A JSON Schema reference: a file path, or an inline schema table.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum SchemaRef {
     File(String),
     Inline(Map<String, Value>),
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawRespond {
     #[serde(default = "default_status")]
@@ -368,7 +393,7 @@ fn default_status() -> u16 {
     200
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawRedirect {
     pub to: String,
@@ -380,7 +405,7 @@ fn default_redirect() -> u16 {
     308
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawStatic {
     pub dir: String,
@@ -389,14 +414,14 @@ pub struct RawStatic {
     pub cache_control: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum RawProxy {
     Url(String),
     Full(RawProxyFull),
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawProxyFull {
     pub upstreams: Vec<String>,
@@ -407,7 +432,7 @@ pub struct RawProxyFull {
 }
 
 /// A `[[route]]` entry.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawRoute {
     pub path: String,
@@ -433,6 +458,7 @@ pub struct RawRoute {
     pub auth: Option<RawAuth>,
     pub cors: Option<OrOff<RawCors>>,
     pub origin: Option<OrOff<RawOrigin>>,
+    pub ip: Option<OrOff<RawIp>>,
     pub rate_limit: Option<OrOff<RawRateLimit>>,
     pub cache: Option<OrOff<RawCache>>,
     pub timeout: Option<ConfigDuration>,
@@ -494,6 +520,7 @@ impl RawRoute {
             auth: self.auth.clone(),
             cors: self.cors.clone(),
             origin: self.origin.clone(),
+            ip: self.ip.clone(),
             rate_limit: self.rate_limit.clone(),
             cache: self.cache.clone(),
             timeout: self.timeout,
@@ -641,4 +668,24 @@ proxy = "http://old:8080"
         .unwrap();
         assert_eq!(cfg.route[0].respond.as_ref().unwrap().status, 200);
     }
+}
+
+/// The JSON Schema for `unsworn.toml` (and `.yaml`/`.json`), for editors.
+pub fn json_schema() -> Value {
+    let schema = schemars::schema_for!(RawConfig);
+    let mut value = serde_json::to_value(schema).unwrap_or_default();
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "$id".into(),
+            Value::String(
+                "https://raw.githubusercontent.com/j4crev/unsworn/main/schema/unsworn.schema.json"
+                    .into(),
+            ),
+        );
+        obj.insert(
+            "title".into(),
+            Value::String("Unsworn configuration".into()),
+        );
+    }
+    value
 }

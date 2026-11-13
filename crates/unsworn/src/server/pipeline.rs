@@ -357,6 +357,15 @@ fn prepare<'a>(
             ));
         }
 
+        if let Some(rules) = &eff.ip
+            && !ip_allowed(rules, ctx.client_ip)
+        {
+            return Err(problem(
+                StatusCode::FORBIDDEN,
+                "requests from this address aren't allowed",
+            ));
+        }
+
         let (context, claims) = authenticate_request(ctx, &req, eff, &query_pairs).await?;
 
         if let Some(limit) = &eff.rate_limit {
@@ -947,6 +956,20 @@ fn header_map(headers: &HeaderMap) -> BTreeMap<String, String> {
             .or_insert_with(|| v.to_string());
     }
     out
+}
+
+fn ip_matches(entry: &str, ip: IpAddr) -> bool {
+    if let Ok(net) = entry.parse::<ipnet::IpNet>() {
+        return net.contains(&ip);
+    }
+    entry.parse::<IpAddr>().is_ok_and(|e| e == ip)
+}
+
+fn ip_allowed(rules: &unsworn_core::policy::IpRules, ip: IpAddr) -> bool {
+    if rules.deny.iter().any(|d| ip_matches(d, ip)) {
+        return false;
+    }
+    rules.allow.is_empty() || rules.allow.iter().any(|a| ip_matches(a, ip))
 }
 
 fn compute_cache_key(

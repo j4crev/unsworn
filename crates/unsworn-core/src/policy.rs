@@ -110,6 +110,13 @@ pub struct Cors {
     pub max_age: Option<Duration>,
 }
 
+/// IP allow and deny lists, as IPs or CIDRs. Deny wins.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct IpRules {
+    pub allow: Vec<String>,
+    pub deny: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct HeaderRules {
     pub set: Vec<(String, String)>,
@@ -122,6 +129,7 @@ pub struct Layer {
     pub auth: Option<AuthReq>,
     pub cors: Option<OrOff<Cors>>,
     pub origin: Option<OrOff<Vec<String>>>,
+    pub ip: Option<OrOff<IpRules>>,
     pub rate_limit: Option<OrOff<RateLimit>>,
     pub cache: Option<OrOff<CacheRule>>,
     pub timeout: Option<Duration>,
@@ -142,6 +150,7 @@ impl Layer {
         take(&mut self.auth, &other.auth);
         take(&mut self.cors, &other.cors);
         take(&mut self.origin, &other.origin);
+        take(&mut self.ip, &other.ip);
         take(&mut self.rate_limit, &other.rate_limit);
         take(&mut self.cache, &other.cache);
         take(&mut self.timeout, &other.timeout);
@@ -177,6 +186,7 @@ impl Layer {
             auth: self.auth.clone().unwrap_or_default(),
             cors: on(&self.cors),
             origin: on(&self.origin),
+            ip: on(&self.ip),
             rate_limit: on(&self.rate_limit),
             cache: on(&self.cache),
             timeout: self.timeout.unwrap_or(default_timeout),
@@ -193,6 +203,7 @@ pub struct Effective {
     pub auth: AuthReq,
     pub cors: Option<Cors>,
     pub origin: Option<Vec<String>>,
+    pub ip: Option<IpRules>,
     pub rate_limit: Option<RateLimit>,
     pub cache: Option<CacheRule>,
     pub timeout: Duration,
