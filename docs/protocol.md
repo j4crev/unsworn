@@ -226,7 +226,7 @@ Error bodies sent to clients never include worker messages unless
 
 ## MCP tool calls
 
-Planned for v2, with [MCP tools as handlers](mcp.md#level-2-mcp-tools-as-handlers).
+Used by [MCP tools as handlers](mcp.md#level-2-mcp-tools-as-handlers) (v2).
 No new message types are needed: a tool call is a normal `request`.
 
 - `route` is `mcp:<tool name>`, `method` is `POST` and `path` is the MCP

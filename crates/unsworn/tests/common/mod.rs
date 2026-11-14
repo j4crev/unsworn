@@ -297,6 +297,17 @@ while True:
         for i in range(3):
             send({"type": "chunk", "id": rid, "text": f"data: {i}\n\n"})
         send({"type": "end", "id": rid})
+    elif name == "text":
+        send({"type": "response", "id": rid, "status": 200, "text": "Hello, " + (m.get("json") or {}).get("name", "you")})
+    elif name == "content":
+        send({"type": "response", "id": rid, "status": 200, "mcp_content": [{"type": "image", "data": "AAAA", "mimeType": "image/png"}]})
+    elif name == "fail":
+        send({"type": "response", "id": rid, "status": 404, "json": {"error": "city not found"}})
+    elif name == "crash":
+        send({"type": "error", "id": rid, "message": "db connection refused"})
+    elif name == "slow":
+        import time; time.sleep(2)
+        send({"type": "response", "id": rid, "status": 200, "text": "late"})
     elif name == "big":
         send({"type": "response", "id": rid, "status": 200, "json": {"items": ["unsworn"] * 500}})
     else:

@@ -1,8 +1,9 @@
 # MCP servers with Unsworn
 
-> Level 1 and the shared building blocks are implemented in v1. Level 2 is
-> in progress: per-tool policies for a proxied MCP server work now, and
-> tools as handlers come next. Level 3 is planned.
+> Level 1 and the shared building blocks are implemented in v1. Level 2
+> (tools as handlers, and per-tool policies for a proxied MCP server) is
+> implemented; SDK helpers for `mcp_content` are still to come. Level 3 is
+> planned.
 
 A remote [Model Context Protocol](https://modelcontextprotocol.io) (MCP)
 server lets AI agents call tools over HTTP. Running one in production needs
@@ -191,7 +192,7 @@ rate_limit = { requests = 10, per = "1m", key = "auth.sub" }
 
 ## Level 2: MCP tools as handlers
 
-Planned for **v2**. Unsworn implements the MCP protocol itself, and each tool
+Available now, for v2. Unsworn implements the MCP protocol itself, and each tool
 is a handler:
 
 ```toml
@@ -388,9 +389,18 @@ def get_forecast(args, ctx):
 |---|---|
 | `2xx` with `json` | `structuredContent` with that value, plus a text copy, as MCP recommends |
 | `2xx` with `text` | One text content block |
-| `2xx` with `mcp_content` | Those MCP content blocks as they are (images, audio, resource links, embedded resources) |
-| `4xx` or `5xx`, or an `error` message | A tool result with `isError: true` and the message, so the model can react |
-| Timeout or crashed worker | A tool error saying the tool failed, without internal details |
+| `2xx` with `mcp_content` | Those MCP content blocks as they are (images, audio, resource links, embedded resources). With `json` too, `json` still becomes `structuredContent` |
+| `2xx` with a raw or streamed body | A tool error: MCP results can't carry it |
+| `4xx` or `5xx` | A tool result with `isError: true` and the handler's message: the `error`, `message` or `detail` field of its JSON, or its text, so the model can react |
+| An `error` message, a timeout or a crashed worker | A tool error saying the tool failed (or didn't finish in time), without internal details. The details go to the logs, and also into the result in `unsworn dev` |
+
+With `output` set, a result whose `json` doesn't match it (or that has no
+`json`) is logged, and with `response_validation = "enforce"` it becomes a
+tool error instead.
+
+Every answer is `application/json`. An unknown tool gets a JSON-RPC
+`-32602` error, and `tools/list` has a single page, so any `cursor` is
+invalid.
 
 `mcp_content` is a response field only used for MCP tools. See
 [`protocol.md`](protocol.md#mcp-tool-calls).

@@ -1424,19 +1424,271 @@ before = ["src/mcp.py#tenant"]
 }
 
 #[test]
-fn hosted_mcp_tools_are_refused_for_now() {
+fn mcp_tools_as_handlers() {
+    if !needs_python() {
+        return;
+    }
+    let cfg = format!(
+        r#"{PY}
+[server]
+response_validation = "enforce"
+
+[auth.oauth]
+type = "jwt"
+secret = "test-secret"
+audience = "https://api.example.com/mcp"
+
+[mcp]
+name = "acme-tools"
+version = "2.0.0"
+instructions = "Tools for tests."
+auth = {{ scheme = "oauth", scopes = ["tools:read"] }}
+
+[[mcp.tool]]
+name = "get_forecast"
+description = "Echoes the call"
+input = {{ type = "object", required = ["city"], properties = {{ city = {{ type = "string" }} }} }}
+output = {{ type = "object", required = ["handler"] }}
+handler = "tools/t.py#echo"
+annotations = {{ read_only = true }}
+
+[[mcp.tool]]
+name = "greet"
+description = "Says hello"
+input = {{ type = "object", properties = {{ name = {{ type = "string" }} }} }}
+handler = "tools/t.py#text"
+
+[[mcp.tool]]
+name = "picture"
+description = "Returns an image"
+handler = "tools/t.py#content"
+
+[[mcp.tool]]
+name = "lookup"
+description = "Fails with a 404"
+handler = "tools/t.py#fail"
+
+[[mcp.tool]]
+name = "crash"
+description = "Sends an error message"
+handler = "tools/t.py#crash"
+
+[[mcp.tool]]
+name = "bad_output"
+description = "Returns text despite declaring output"
+output = {{ type = "object" }}
+handler = "tools/t.py#text"
+
+[[mcp.tool]]
+name = "create_invoice"
+description = "Needs billing:write"
+input = {{ type = "object" }}
+handler = "tools/t.py#echo"
+auth = {{ scheme = "oauth", scopes = ["billing:write"] }}
+before = ["tools/t.py#tenant"]
+
+[[mcp.tool]]
+name = "slow"
+description = "Takes too long"
+handler = "tools/t.py#slow"
+timeout = "500ms"
+"#
+    );
     let p = Project::new(&[
-        (
-            "unsworn.toml",
-            "[runtimes.py]\nextensions = [\".py\"]\ncommand = \"python3 w.py\"\n\n[mcp]\n\n[[mcp.tool]]\nname = \"a\"\ndescription = \"A\"\nhandler = \"t.py\"\n",
-        ),
-        ("t.py", ""),
+        ("unsworn.toml", &cfg),
+        ("worker.py", ECHO_WORKER),
+        ("tools/t.py", ""),
     ]);
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_unsworn"))
-        .args(["serve", "--listen", "127.0.0.1:0"])
-        .current_dir(p.path())
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("isn't available yet"));
+    let s = p.serve();
+
+    let read = mcp_token("tools:read");
+    let both = mcp_token("tools:read billing:write");
+    let send = |token: &str,
+                method: &str,
+                name: Option<&str>,
+                params: serde_json::Value,
+                extra: &[(&str, &str)]| {
+        let mut headers = vec![
+            ("authorization", token),
+            ("content-type", "application/json"),
+            ("mcp-protocol-version", "2026-07-28"),
+            ("mcp-method", method),
+        ];
+        if let Some(n) = name {
+            headers.push(("mcp-name", n));
+        }
+        headers.extend_from_slice(extra);
+        s.request("POST", "/mcp", &headers, &mcp_body(method, params))
+    };
+    let result = |r: &common::Response| -> serde_json::Value {
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert_eq!(r.header("content-type"), Some("application/json"));
+        let v = r.json();
+        assert_eq!(v["id"], 1);
+        assert_eq!(v["result"]["resultType"], "complete", "{v}");
+        assert_eq!(
+            v["result"]["_meta"]["io.modelcontextprotocol/serverInfo"],
+            json!({"name": "acme-tools", "version": "2.0.0"})
+        );
+        v["result"].clone()
+    };
+    let call = |token: &str, name: &str, args: serde_json::Value, extra: &[(&str, &str)]| {
+        send(
+            token,
+            "tools/call",
+            Some(name),
+            json!({"name": name, "arguments": args}),
+            extra,
+        )
+    };
+    let error_text = |r: &common::Response| -> String {
+        let res = result(r);
+        assert_eq!(res["isError"], true, "{res}");
+        res["content"][0]["text"].as_str().unwrap().to_string()
+    };
+
+    // Discovery.
+    let d = result(&send(&read, "server/discover", None, json!({}), &[]));
+    assert_eq!(d["supportedVersions"], json!(["2026-07-28"]));
+    assert_eq!(d["capabilities"], json!({"tools": {}}));
+    assert_eq!(d["instructions"], "Tools for tests.");
+    assert_eq!(
+        (d["ttlMs"].as_u64(), d["cacheScope"].as_str()),
+        (Some(300_000), Some("public"))
+    );
+
+    // The list only shows tools the token's scopes allow, sorted by name.
+    let names = |token: &str| -> Vec<String> {
+        let l = result(&send(token, "tools/list", None, json!({}), &[]));
+        assert_eq!(l["cacheScope"], "private");
+        l["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let visible = names(&read);
+    assert_eq!(
+        visible,
+        [
+            "bad_output",
+            "crash",
+            "get_forecast",
+            "greet",
+            "lookup",
+            "picture",
+            "slow"
+        ]
+    );
+    assert!(names(&both).contains(&"create_invoice".to_string()));
+    let l = result(&send(&read, "tools/list", None, json!({}), &[]));
+    let forecast = l["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "get_forecast")
+        .unwrap()
+        .clone();
+    assert_eq!(forecast["description"], "Echoes the call");
+    assert_eq!(forecast["inputSchema"]["required"], json!(["city"]));
+    assert_eq!(forecast["outputSchema"]["required"], json!(["handler"]));
+    assert_eq!(forecast["annotations"], json!({"readOnlyHint": true}));
+    let r = send(&read, "tools/list", None, json!({"cursor": "x"}), &[]);
+    assert_eq!(
+        (r.status, r.json()["error"]["code"].as_i64()),
+        (400, Some(-32602))
+    );
+
+    // `json` becomes structured content plus a text copy; the handler sees `context.mcp`.
+    let res = result(&call(&read, "get_forecast", json!({"city": "Lisbon"}), &[]));
+    assert!(res.get("isError").is_none());
+    let sc = &res["structuredContent"];
+    assert_eq!(sc["json"], json!({"city": "Lisbon"}));
+    assert_eq!(sc["handler"], "tools/t.py#echo");
+    assert_eq!(sc["context"]["mcp"]["tool"], "get_forecast");
+    assert_eq!(sc["context"]["mcp"]["protocol_version"], "2026-07-28");
+    assert_eq!(sc["context"]["mcp"]["client"]["name"], "test-client");
+    assert_eq!(sc["context"]["auth"]["sub"], "u1");
+    let copy: serde_json::Value =
+        serde_json::from_str(res["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(&copy, sc);
+
+    // `text` and `mcp_content`.
+    let res = result(&call(&read, "greet", json!({"name": "Ada"}), &[]));
+    assert_eq!(
+        res["content"],
+        json!([{"type": "text", "text": "Hello, Ada"}])
+    );
+    let res = result(&call(&read, "picture", json!({}), &[]));
+    assert_eq!(res["content"][0]["type"], "image");
+
+    // Failures are tool errors the model can see.
+    assert!(error_text(&call(&read, "get_forecast", json!({}), &[])).contains("Invalid arguments"));
+    assert_eq!(
+        error_text(&call(&read, "lookup", json!({}), &[])),
+        "city not found"
+    );
+    assert_eq!(
+        error_text(&call(&read, "crash", json!({}), &[])),
+        "The tool failed.",
+        "no internal details"
+    );
+    assert!(error_text(&call(&read, "bad_output", json!({}), &[])).contains("output schema"));
+
+    // A tool's own scopes, then its `before` handler, whose context reaches the handler.
+    let r = call(&read, "create_invoice", json!({}), &[]);
+    assert_eq!(r.status, 403);
+    assert!(
+        error_text(&call(
+            &both,
+            "create_invoice",
+            json!({}),
+            &[("x-tenant", "blocked")]
+        ))
+        .contains("rejected (403 Forbidden)")
+    );
+    let res = result(&call(
+        &both,
+        "create_invoice",
+        json!({"amount": 5}),
+        &[("x-tenant", "acme")],
+    ));
+    assert_eq!(res["structuredContent"]["context"]["tenant"], "acme");
+    assert_eq!(
+        res["structuredContent"]["context"]["mcp"]["tool"],
+        "create_invoice"
+    );
+
+    // Protocol errors.
+    let r = call(&read, "nope", json!({}), &[]);
+    assert_eq!(
+        (r.status, r.json()["error"]["code"].as_i64()),
+        (400, Some(-32602))
+    );
+    for method in ["resources/list", "ping"] {
+        let r = send(&read, method, None, json!({}), &[]);
+        assert_eq!(
+            (r.status, r.json()["error"]["code"].as_i64()),
+            (404, Some(-32601)),
+            "{method}"
+        );
+    }
+    let note = br#"{"jsonrpc":"2.0","method":"notifications/x"}"#;
+    let r = s.request(
+        "POST",
+        "/mcp",
+        &[
+            ("authorization", read.as_str()),
+            ("mcp-method", "notifications/x"),
+        ],
+        note,
+    );
+    assert_eq!(r.status, 202);
+
+    // Last, since the slow handler keeps the only worker busy for a while.
+    assert_eq!(
+        error_text(&call(&read, "slow", json!({}), &[])),
+        "The tool didn't finish within 0.5s."
+    );
 }
