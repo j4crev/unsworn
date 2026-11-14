@@ -23,6 +23,8 @@ use unsworn_core::project::{Action, RespondBody, Route};
 use unsworn_core::rules;
 use unsworn_proto::{Phase, Request as ProtoRequest};
 
+mod mcp;
+
 use super::proxy;
 use super::support::{Body, check_key, empty, full, json_response, problem, problem_with};
 use super::{Generation, Shared};
@@ -205,7 +207,11 @@ fn route_request(ctx: &Ctx, req: Request<Incoming>) -> BoxFuture<'_, (Response<B
                 let eff = project.effective(route, &method, &path);
                 let params: Vec<(String, String)> =
                     m.params.into_iter().map(|(k, v)| (k, decode(&v))).collect();
-                let timeout = eff.timeout;
+                let timeout = match route.action {
+                    // Each tool call has its own timeout, applied inside.
+                    Action::Mcp => mcp::longest_timeout(project, &eff),
+                    _ => eff.timeout,
+                };
                 let work = serve_route(ctx, req, route, &eff, params);
                 let mut resp = match tokio::time::timeout(timeout, work).await {
                     Ok(r) => r,
@@ -298,6 +304,8 @@ struct Prepared {
     stream_body: bool,
     cache_key: Option<String>,
     context: Map<String, Value>,
+    /// The verified token's claims, for policy keys like `auth.sub`.
+    claims: Option<Map<String, Value>>,
 }
 
 fn serve_route<'a>(
@@ -312,6 +320,9 @@ fn serve_route<'a>(
             Ok(p) => p,
             Err(resp) => return resp,
         };
+        if matches!(route.action, Action::Mcp) {
+            return mcp::serve(ctx, route, eff, prepared).await;
+        }
         let deadline = Instant::now() + eff.timeout;
         let befores = run_befores(
             ctx,
@@ -369,29 +380,16 @@ fn prepare<'a>(
             ));
         }
 
-        let (context, claims) = authenticate_request(ctx, &req, eff, &query_pairs).await?;
+        let (context, claims) = authenticate_request(ctx, req.headers(), eff, &query_pairs).await?;
 
-        if let Some(limit) = &eff.rate_limit {
-            let ip = ctx.client_ip;
-            let key = key_value(&limit.key, ip, req.headers(), claims.as_ref())
-                .unwrap_or_else(|| ip.to_string());
-            let bucket = format!("{}|{}|{key}", route.id, limit.key.describe());
-            let store = ctx.shared.store.load_full();
-            match store.rate_limit(&bucket, limit.requests, limit.per).await {
+        // An MCP endpoint counts requests once their headers are checked
+        // against the body, so header keys can be trusted.
+        let is_mcp = matches!(route.action, Action::Mcp);
+        if let Some(limit) = eff.rate_limit.as_ref().filter(|_| !is_mcp) {
+            match check_rate_limit(ctx, route.id, limit, req.headers(), claims.as_ref()).await {
                 RateLimit::Allowed => {}
-                RateLimit::Limited { retry_after } => {
-                    let mut resp = problem(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
-                    let secs = retry_after.as_secs_f64().ceil().max(1.0) as u64;
-                    resp.headers_mut()
-                        .insert(header::RETRY_AFTER, HeaderValue::from(secs));
-                    return Err(resp);
-                }
-                RateLimit::Unavailable => {
-                    return Err(problem(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "rate limiting is unavailable",
-                    ));
-                }
+                RateLimit::Limited { retry_after } => return Err(too_many_requests(retry_after)),
+                RateLimit::Unavailable => return Err(rate_limit_unavailable()),
             }
         }
 
@@ -418,7 +416,8 @@ fn prepare<'a>(
 
         // A handler with `stream_body` reads the body as it arrives instead.
         let needs_body = (matches!(route.action, Action::Handler(_)) && !eff.stream_body)
-            || route.validation.body.is_some();
+            || route.validation.body.is_some()
+            || is_mcp;
         let (parts, incoming) = req.into_parts();
         if let Some(len) = parts
             .headers
@@ -440,7 +439,12 @@ fn prepare<'a>(
             streaming_body = Some(Limited::new(incoming, eff.max_body as usize).boxed_unsync());
         }
 
-        let json_body = check_body(route, &parts.headers, body_bytes.as_ref())?;
+        // MCP reads its own JSON-RPC body, with JSON-RPC errors.
+        let json_body = if is_mcp {
+            None
+        } else {
+            check_body(route, &parts.headers, body_bytes.as_ref())?
+        };
         let raw_body = if json_body.is_some() {
             None
         } else {
@@ -471,15 +475,53 @@ fn prepare<'a>(
             stream_body: eff.stream_body && matches!(route.action, Action::Handler(_)),
             cache_key,
             context,
+            claims,
         })
     })
+}
+
+/// Counts a request against a rate limit. `route_id` keeps each route's
+/// (and each MCP tool's) counts separate.
+async fn check_rate_limit(
+    ctx: &Ctx,
+    route_id: usize,
+    limit: &unsworn_core::policy::RateLimit,
+    headers: &HeaderMap,
+    claims: Option<&Map<String, Value>>,
+) -> RateLimit {
+    let ip = ctx.client_ip;
+    let key = key_value(&limit.key, ip, headers, claims).unwrap_or_else(|| ip.to_string());
+    let bucket = format!("{route_id}|{}|{key}", limit.key.describe());
+    let store = ctx.shared.store.load_full();
+    store.rate_limit(&bucket, limit.requests, limit.per).await
+}
+
+/// Whole seconds to wait, at least 1.
+fn retry_secs(retry_after: Duration) -> u64 {
+    retry_after.as_secs_f64().ceil().max(1.0) as u64
+}
+
+fn too_many_requests(retry_after: Duration) -> Response<Body> {
+    let mut resp = problem(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
+    resp.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from(retry_secs(retry_after)),
+    );
+    resp
+}
+
+fn rate_limit_unavailable() -> Response<Body> {
+    problem(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "rate limiting is unavailable",
+    )
 }
 
 type AuthOutcome = (Map<String, Value>, Option<Map<String, Value>>);
 
 fn authenticate_request<'a>(
     ctx: &'a Ctx,
-    req: &'a Request<Incoming>,
+    headers: &'a HeaderMap,
     eff: &'a Effective,
     query_pairs: &'a [(String, String)],
 ) -> BoxFuture<'a, Result<AuthOutcome, Response<Body>>> {
@@ -488,8 +530,7 @@ fn authenticate_request<'a>(
         let AuthReq::AnyOf(alts) = &eff.auth else {
             return Ok((context, None));
         };
-        let kid = req
-            .headers()
+        let kid = headers
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.split_once(' ').map(|(_, t)| t.to_string()))
@@ -507,7 +548,7 @@ fn authenticate_request<'a>(
                 .await;
         }
         let creds = Creds {
-            headers: req.headers(),
+            headers,
             query: query_pairs,
         };
         // Remote API keys are checked up front, and only when the request
@@ -887,12 +928,8 @@ fn run_action<'a>(
                     Err(e) => call_error(ctx, h, e),
                 }
             }
-            // `make_generation` refuses projects with `[mcp]` until the
-            // endpoint is served.
-            Action::Mcp => problem(
-                StatusCode::NOT_IMPLEMENTED,
-                "serving MCP endpoints isn't available yet",
-            ),
+            // `serve_route` hands MCP requests to `mcp::serve` instead.
+            Action::Mcp => problem(StatusCode::INTERNAL_SERVER_ERROR, "unexpected MCP request"),
         }
     })
 }

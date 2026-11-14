@@ -81,8 +81,8 @@ fn make_generation(
     socket_dir: &Path,
     generation: u64,
 ) -> Result<Generation, String> {
-    if project.mcp.is_some() {
-        return Err("[mcp]: serving MCP endpoints isn't available yet; `unsworn check` and `unsworn routes` already understand it".into());
+    if project.mcp.as_ref().is_some_and(|m| m.hosted()) {
+        return Err("[mcp]: serving MCP tools as handlers isn't available yet; set `proxy` to put Unsworn in front of an existing MCP server".into());
     }
     let client_ip = ClientIp::new(&project.server.trusted_proxies)?;
     let well_known = project.protected_resource_docs().into_iter().collect();

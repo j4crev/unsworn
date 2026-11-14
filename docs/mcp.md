@@ -1,8 +1,8 @@
 # MCP servers with Unsworn
 
 > Level 1 and the shared building blocks are implemented in v1. Level 2 is
-> in progress: `unsworn check` and `unsworn routes` already understand
-> `[mcp]`, and serving it comes next. Level 3 is planned.
+> in progress: per-tool policies for a proxied MCP server work now, and
+> tools as handlers come next. Level 3 is planned.
 
 A remote [Model Context Protocol](https://modelcontextprotocol.io) (MCP)
 server lets AI agents call tools over HTTP. Running one in production needs
@@ -152,7 +152,7 @@ servers of any protocol version.
 
 ### Per-tool policies for a proxied server (v2)
 
-Once Unsworn understands MCP (level 2), it can also apply per-tool policies
+Available now. Once Unsworn understands MCP (level 2), it can also apply per-tool policies
 to a server it only proxies. Use `[mcp]` with `proxy` instead of a `[[route]]`,
 and add `[[mcp.tool]]` entries **without a handler**. Like action-less
 `[[route]]` entries, they only add policies:
@@ -181,7 +181,10 @@ rate_limit = { requests = 10, per = "1m", key = "auth.sub" }
   tools Unsworn hosts itself, because filtering a proxied server's list would
   mean rewriting its responses.
 - `input` can be set too, to validate a proxied tool's arguments before they
-  reach the server.
+  reach the server. Without it, the server behind the proxy checks them.
+- The [policies](#policies) and the way their failures are reported are the
+  same as for tools Unsworn hosts. A call that fails one never reaches the
+  server.
 - The server behind the proxy must speak MCP 2026-07-28, like the clients.
   For an older server, use a plain [level 1](#level-1-in-front-of-an-existing-mcp-server)
   route.
@@ -277,8 +280,9 @@ When a tool call fails a policy:
 | The tool's rate limit | A tool result with `isError: true`, saying when to retry, so the model can react |
 | A `before` handler that rejects the call | A tool result with `isError: true` and the handler's message |
 
-The `[mcp]` rate limit is checked before the request is read, so it answers
-`429` like any route.
+The `[mcp]` rate limit answers `429` like any route. It's counted once the
+request's headers have been checked against its body, so its key can be a
+checked header.
 
 ### Tool list visibility
 
@@ -338,6 +342,9 @@ reading the body:
 - Unsworn checks that each `Mcp-Param-*` header matches its argument in the
   body. A checked header can then be used as a policy key, for example
   `rate_limit = { requests = 100, per = "1m", key = "header.mcp-param-tenant" }`.
+  Policy keys never see an `Mcp-Param-*` header that wasn't checked against
+  the call's arguments, such as one sent with `tools/list`, so a client can't
+  pick its own rate-limit bucket.
 - Don't mark secrets or personal data: headers are visible to every proxy
   on the way.
 
@@ -432,7 +439,9 @@ every result's `_meta`.
 | `annotations` | Hints for clients: `read_only`, `destructive`, `idempotent`, `open_world`. Not enforced |
 | `auth`, `rate_limit`, `timeout`, `before`, `use` | Policies; see [Policies](#policies) |
 
-For a proxied server, a tool takes only `name`, `input` and policies.
+For a proxied server, a tool takes only `name`, `input` and policies, and
+a tool without `input` isn't validated. Tools the server has but `[mcp]`
+doesn't list get only the `[mcp]` policies.
 
 ## Level 3: routes as tools
 
