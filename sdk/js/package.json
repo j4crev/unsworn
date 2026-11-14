@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "Write Unsworn handlers in JavaScript or TypeScript (Bun, Node, Deno).",
   "license": "MIT",
-  "private": true,
   "type": "module",
   "repository": {
     "type": "git",
@@ -14,5 +13,8 @@
     ".": "./src/index.ts",
     "./worker": "./src/worker.ts"
   },
-  "files": ["src", "README.md"]
+  "files": ["src", "README.md"],
+  "publishConfig": {
+    "access": "public"
+  }
 }
