@@ -112,17 +112,23 @@ fn main() {
 }
 ```
 
+## Production
+
+`unsworn serve` runs `build` too, which would need Rust and the source on the
+server. Build the worker ahead of time instead, in CI or a Docker build stage,
+ship the binary, and skip the build:
+
+```sh
+cargo build --release
+unsworn serve --no-build    # or UNSWORN_NO_BUILD=1
+```
+
+Set `eager = true` on the runtime so a missing binary or handler stops
+startup instead of failing the first request.
+
 ## Tiers
 
 The worker reads `UNSWORN_TRANSPORT` and speaks either tier. Tier 1 (stdio)
 points file descriptor 1 at stderr, so `println!` output ends up in
 Unsworn's logs. Tier 2 (`protocol = "binary"`) is recommended.
 
-## Status
-
-Not published to crates.io yet. Until it is, depend on the repository:
-
-```toml
-[dependencies]
-unsworn-sdk = { git = "https://github.com/j4crev/unsworn" }
-```

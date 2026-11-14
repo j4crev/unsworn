@@ -1,4 +1,4 @@
-# @unswornjs/js
+# @unswornjs/sdk
 
 Write [Unsworn](https://github.com/j4crev/unsworn) handlers in JavaScript or
 TypeScript. One worker runs on Bun, Node (22.18+, which runs TypeScript
@@ -6,7 +6,7 @@ directly) and Deno.
 
 ```ts
 // src/users.ts
-import type { Handler } from "@unswornjs/js";
+import type { Handler } from "@unswornjs/sdk";
 
 export const getUser: Handler<{ params: { id: number } }> = async (req, ctx) => {
   // req.params.id is already validated and converted by Unsworn,
@@ -19,7 +19,7 @@ export const getUser: Handler<{ params: { id: number } }> = async (req, ctx) => 
 # unsworn.toml
 [runtimes.ts]
 extensions = [".ts", ".js"]
-command = "bun run node_modules/@unswornjs/js/src/worker.ts"
+command = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
 protocol = "binary"
 
 [[route]]
@@ -59,4 +59,3 @@ handler = "src/app.ts"     # export default app
 - `req.signal` is aborted when Unsworn cancels the request.
 - On the stdio transport, `console.log` output goes to stderr, which Unsworn
   collects into its logs.
-- Status: not yet published to npm (the package name is a placeholder).

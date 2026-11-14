@@ -115,6 +115,8 @@ enum StartState {
 pub struct PoolOptions {
     pub root: PathBuf,
     pub dev: bool,
+    /// Run each runtime's `build` command before its workers start.
+    pub build: bool,
     pub socket_dir: PathBuf,
 }
 
@@ -312,7 +314,7 @@ impl Pool {
     }
 
     async fn start_inner(self: &Arc<Self>) -> Result<(), String> {
-        if let Some(build) = &self.runtime.build {
+        if let Some(build) = self.runtime.build.as_ref().filter(|_| self.opts.build) {
             tracing::info!(runtime = %self.runtime.name, "building: {build}");
             let output = shell(build)
                 .current_dir(&self.opts.root)

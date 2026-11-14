@@ -88,7 +88,7 @@ key  = "certs/privkey.pem"
 ```toml
 [runtimes.ts]
 extensions      = [".ts", ".js"]
-command         = "bun run node_modules/@unswornjs/js/src/worker.ts"
+command         = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
 protocol        = "binary"        # "jsonl" (Tier 1, the default) | "binary" (Tier 2)
 workers         = 4               # default: the number of CPU cores, up to 4
 eager           = false           # start workers at boot instead of on first request
@@ -110,7 +110,13 @@ protocol   = "jsonl"              # no SDK needed
 
 Runtime names are arbitrary. Unsworn knows nothing about any specific language.
 Commands run through `sh -c` in the project root. `build` runs once, before
-the runtime's first workers start.
+the runtime's first workers start, and again on each reload.
+
+For production, build compiled workers ahead of time (in CI or a Docker build
+stage) and run `unsworn serve --no-build` (or set `UNSWORN_NO_BUILD=1`), so
+the server needs no compiler or source code. Mark those runtimes
+`eager = true`, so a missing worker or handler stops startup instead of
+failing the first request.
 
 ### `[auth.<name>]`
 

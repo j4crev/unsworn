@@ -42,6 +42,7 @@ pub struct Shared {
     pub metrics: Metrics,
     pub keys: KeyCache,
     pub dev: bool,
+    build: bool,
     pub root: PathBuf,
     request_ids: AtomicU64,
     generations: AtomicU64,
@@ -62,6 +63,9 @@ pub struct ServeOptions {
     pub root: PathBuf,
     pub config: String,
     pub dev: bool,
+    /// Run runtimes' `build` commands. `unsworn serve --no-build` turns it
+    /// off for deployments that ship prebuilt workers.
+    pub build: bool,
     pub listen: Option<String>,
 }
 
@@ -69,6 +73,7 @@ fn make_generation(
     project: Project,
     root: &Path,
     dev: bool,
+    build: bool,
     socket_dir: &Path,
     generation: u64,
 ) -> Result<Generation, String> {
@@ -81,6 +86,7 @@ fn make_generation(
         PoolOptions {
             root: root.to_path_buf(),
             dev,
+            build,
             socket_dir: dir,
         },
     );
@@ -129,7 +135,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         project.server.listen = listen.clone();
     }
     let sockets = SocketDir::create().map_err(|e| format!("can't create socket directory: {e}"))?;
-    let generation = make_generation(project, &opts.root, opts.dev, sockets.path(), 0)?;
+    let generation = make_generation(project, &opts.root, opts.dev, opts.build, sockets.path(), 0)?;
     if let Err(errors) = warm_up(&generation, opts.dev).await {
         for e in &errors {
             eprintln!("✗ {e}");
@@ -146,6 +152,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         metrics: Metrics::default(),
         keys: KeyCache::new(),
         dev: opts.dev,
+        build: opts.build,
         root: opts.root.clone(),
         request_ids: AtomicU64::new(1),
         generations: AtomicU64::new(1),
@@ -296,14 +303,20 @@ async fn reload(shared: &Arc<Shared>, config: &str) {
     let current = shared.generation.load_full();
     project.server.listen = current.project.server.listen.clone();
     let n = shared.generations.fetch_add(1, Ordering::Relaxed);
-    let generation =
-        match make_generation(project, &shared.root, shared.dev, shared.sockets.path(), n) {
-            Ok(g) => g,
-            Err(e) => {
-                tracing::error!("reload failed: {e}");
-                return;
-            }
-        };
+    let generation = match make_generation(
+        project,
+        &shared.root,
+        shared.dev,
+        shared.build,
+        shared.sockets.path(),
+        n,
+    ) {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!("reload failed: {e}");
+            return;
+        }
+    };
     if let Err(errors) = warm_up(&generation, shared.dev).await {
         for e in &errors {
             tracing::error!("{e}");

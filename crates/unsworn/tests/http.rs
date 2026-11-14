@@ -556,6 +556,39 @@ rate_limit = { requests = 1, per = "1s" }
 }
 
 #[test]
+fn serve_no_build_skips_build_commands() {
+    if !needs_python() {
+        return;
+    }
+    let cfg = r#"
+[runtimes.py]
+extensions = [".py"]
+build = "touch built"
+command = "python3 -u worker.py"
+workers = 1
+eager = true
+
+[[route]]
+path = "/a"
+handler = "src/a.py#a"
+"#;
+    let p = Project::new(&[
+        ("unsworn.toml", cfg),
+        ("worker.py", ECHO_WORKER),
+        ("src/a.py", ""),
+    ]);
+    let built = p.path().join("built");
+    {
+        let s = p.start_with(&["serve", "--no-build"]);
+        assert_eq!(s.get("/a").status, 200, "{}", s.logs());
+        assert!(!built.exists(), "--no-build ran the build command");
+    }
+    let s = p.serve();
+    assert_eq!(s.get("/a").status, 200, "{}", s.logs());
+    assert!(built.exists(), "serve didn't run the build command");
+}
+
+#[test]
 fn reload_on_sighup() {
     let p = Project::new(&[(
         "unsworn.toml",

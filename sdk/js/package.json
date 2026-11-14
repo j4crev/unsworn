@@ -1,5 +1,5 @@
 {
-  "name": "@unswornjs/js",
+  "name": "@unswornjs/sdk",
   "version": "0.1.0",
   "description": "Write Unsworn handlers in JavaScript or TypeScript (Bun, Node, Deno).",
   "license": "MIT",

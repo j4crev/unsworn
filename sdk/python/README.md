@@ -45,6 +45,3 @@ dict with `auth` (verified claims) and anything `before` handlers added.
 
 Sync handlers run in a thread pool, so they don't block other requests.
 `print()` output goes to stderr, which Unsworn collects into its logs.
-
-Status: not yet published to PyPI. Until then, set `PYTHONPATH` to this
-directory in the runtime's `env`.

@@ -72,13 +72,18 @@ impl Project {
     }
 
     pub fn start(&self, mode: &str) -> Server {
+        self.start_with(&[mode])
+    }
+
+    /// Starts `unsworn <args...> --listen <addr>`.
+    pub fn start_with(&self, args: &[&str]) -> Server {
         let port = free_port();
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
         let log = self.path().join("unsworn.log");
         let child = Command::new(env!("CARGO_BIN_EXE_unsworn"))
             .arg("-C")
             .arg(self.path())
-            .arg(mode)
+            .args(args)
             .arg("--listen")
             .arg(addr.to_string())
             .env("PYTHONPATH", repo_root().join("sdk/python"))

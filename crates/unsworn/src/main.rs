@@ -42,6 +42,10 @@ enum Command {
         /// Log format.
         #[arg(long, default_value = "text", value_parser = ["text", "json"])]
         log_format: String,
+        /// Skip runtimes' `build` commands and start the workers as they
+        /// are, for deployments that ship prebuilt workers.
+        #[arg(long, env = "UNSWORN_NO_BUILD")]
+        no_build: bool,
     },
     /// Serve with file watching, every runtime started up front, and
     /// detailed errors in responses.
@@ -123,12 +127,17 @@ fn main() -> ExitCode {
         .expect("tokio runtime");
 
     let result: Result<(), String> = match cli.command {
-        Command::Serve { listen, log_format } => {
+        Command::Serve {
+            listen,
+            log_format,
+            no_build,
+        } => {
             init_logging(&log_format, false);
             runtime.block_on(server::run(server::ServeOptions {
                 root,
                 config,
                 dev: false,
+                build: !no_build,
                 listen,
             }))
         }
@@ -138,6 +147,7 @@ fn main() -> ExitCode {
                 root,
                 config,
                 dev: true,
+                build: true,
                 listen,
             }))
         }
