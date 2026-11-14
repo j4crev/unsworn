@@ -270,7 +270,7 @@ class Worker:
         if "continue" in result:
             self.send({"type": "continue", "id": rid, "context": result["continue"] or {}})
             return
-        unknown = set(result) - {"status", "headers", "json", "text", "body"}
+        unknown = set(result) - {"status", "headers", "json", "text", "body", "mcp_content"}
         if unknown:
             raise TypeError(
                 f"unexpected reply keys {sorted(unknown)}; wrap data in unsworn.json(...)"
@@ -278,6 +278,8 @@ class Worker:
         base: dict[str, Any] = {"type": "response", "id": rid, "status": result.get("status", 200)}
         if result.get("headers"):
             base["headers"] = result["headers"]
+        if "mcp_content" in result:
+            base["mcp_content"] = result["mcp_content"]
         if "json" in result:
             self.send({**base, "json": result["json"]})
         elif "text" in result:

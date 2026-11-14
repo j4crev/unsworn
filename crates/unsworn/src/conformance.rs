@@ -17,7 +17,7 @@ use crate::workers::{CallBody, CallError, Pool, PoolOptions, Reply, ReplyBody, S
 
 const HANDLERS: &[&str] = &[
     "echo", "text", "binary", "status", "stream", "fail", "slow", "crash", "allow", "deny",
-    "noisy", "log", "upload",
+    "noisy", "log", "upload", "content", "mcp",
 ];
 
 struct Suite {
@@ -407,6 +407,50 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
         Err("no `log` message \"conformance log\" arrived".into())
     });
     s.report("`log` records tied to their request", res);
+
+    // MCP tool replies: `mcp_content`, alongside `json`
+    let r = s
+        .call(s.request("content"), None, Duration::from_secs(5))
+        .await;
+    let res = expect_response(r).and_then(|(resp, _)| {
+        let want = json!([{ "type": "text", "text": "hi" }]);
+        if resp.status != 200 {
+            Err(format!("status {} (want 200)", resp.status))
+        } else if resp.mcp_content.as_ref() != Some(&want) {
+            Err(format!("mcp_content {:?} (want {want})", resp.mcp_content))
+        } else if resp.json != Some(json!({ "ok": true })) {
+            Err(format!("json {:?} (want {{\"ok\": true}})", resp.json))
+        } else {
+            Ok(())
+        }
+    });
+    s.report("MCP content blocks in `mcp_content`", res);
+
+    // MCP call details in `context.mcp`
+    let mut req = s.request("mcp");
+    req.route = "mcp:get_forecast".into();
+    req.context.insert(
+        "mcp".into(),
+        json!({
+            "tool": "get_forecast",
+            "protocol_version": "2026-07-28",
+            "client": { "name": "conformance-client", "version": "1.0" }
+        }),
+    );
+    let r = s.call(req, None, Duration::from_secs(5)).await;
+    let res = expect_response(r).and_then(|(resp, _)| {
+        let want = json!({
+            "tool": "get_forecast",
+            "protocol_version": "2026-07-28",
+            "client": "conformance-client"
+        });
+        if resp.json.as_ref() == Some(&want) {
+            Ok(())
+        } else {
+            Err(format!("json {:?} (want {want})", resp.json))
+        }
+    });
+    s.report("MCP call details from `context.mcp`", res);
 
     // concurrency
     let max = pool.max_in_flight();

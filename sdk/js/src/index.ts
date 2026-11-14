@@ -75,10 +75,32 @@ export const log: Logger = {
   trace: (m, f) => (worker()?.trace ?? fallback("trace"))(m, f),
 };
 
+/** Details of an MCP tool call, in `ctx.mcp`. */
+export interface McpCall {
+  /** The tool's name. */
+  tool: string;
+  /** The MCP protocol version of the call, e.g. `2026-07-28`. */
+  protocol_version: string;
+  /** What the client says about itself, if anything. For logs, not decisions. */
+  client?: { name: string; version: string; [key: string]: unknown };
+}
+
 /** Verified credentials plus anything added by `before` handlers. */
 export interface Context {
   /** Claims from the verified token or API key, plus `scheme`. */
   auth?: Record<string, unknown> & { scheme?: string; sub?: string };
+  /** Set when the handler runs as an MCP tool. */
+  mcp?: McpCall;
+  [key: string]: unknown;
+}
+
+/**
+ * An MCP content block, such as `{ type: "text", text }`,
+ * `{ type: "image", data, mimeType }` (base64 data) or
+ * `{ type: "resource_link", uri, name }`.
+ */
+export interface McpContent {
+  type: string;
   [key: string]: unknown;
 }
 
@@ -97,6 +119,8 @@ export interface ReplyObject {
   text?: string;
   /** Raw bytes, or a stream/async iterable to stream the response. */
   body?: Body;
+  /** MCP content blocks, for handlers that run as MCP tools. */
+  mcpContent?: McpContent[];
 }
 
 /** A `before` handler can let the request continue, adding context. */
@@ -127,4 +151,21 @@ export function json(value: unknown, status = 200, headers?: Record<string, stri
 
 export function text(value: string, status = 200, headers?: Record<string, string>): ReplyObject {
   return { status, text: value, headers };
+}
+
+/**
+ * An MCP tool result made of content blocks, such as images. With `json`
+ * too, the agent also gets it as structured content.
+ */
+export function content(blocks: McpContent[], json?: unknown): ReplyObject {
+  return json === undefined ? { status: 200, mcpContent: blocks } : { status: 200, mcpContent: blocks, json };
+}
+
+/**
+ * A tool error the model sees and can react to, such as "city not found".
+ * Unsworn turns it into an MCP result with `isError: true`. As an HTTP
+ * reply, it's a `400` (or `status`) with `{ error: message }`.
+ */
+export function toolError(message: string, status = 400): ReplyObject {
+  return { status, json: { error: message } };
 }

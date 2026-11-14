@@ -294,6 +294,7 @@ async fn send_reply(out: &Out, id: &str, reply: Reply, cancel: &Cancel) {
     }
     let mut response = Response::new(id, status);
     response.headers = headers;
+    response.mcp_content = reply.mcp_content;
     match reply.body {
         Body::Next(context) => {
             let serde_json::Value::Object(context) = context else {

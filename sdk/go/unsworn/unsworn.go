@@ -97,6 +97,38 @@ func (r *Request) Context() context.Context {
 	return r.ctx
 }
 
+// MCPCall describes an MCP tool call. See [Request.MCP].
+type MCPCall struct {
+	// Tool is the tool's name.
+	Tool string `json:"tool"`
+	// ProtocolVersion is the call's MCP protocol version, such as "2026-07-28".
+	ProtocolVersion string `json:"protocol_version"`
+	// Client is what the client says about itself, if anything. Use it for
+	// logs, not decisions.
+	Client *MCPClient `json:"client,omitempty"`
+}
+
+// MCPClient is an MCP client's name and version.
+type MCPClient struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// MCP returns the MCP tool call this request is, or nil when the handler
+// isn't running as an MCP tool. The tool's arguments are the JSON body; see
+// [Request.Bind].
+func (r *Request) MCP() *MCPCall {
+	raw, ok := r.Ctx["mcp"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	var call MCPCall
+	if err := rebind(raw, &call); err != nil {
+		return nil
+	}
+	return &call
+}
+
 // Header returns a request header. name is matched case-insensitively.
 func (r *Request) Header(name string) string {
 	return r.Headers[lower(name)]
@@ -215,6 +247,8 @@ type Reply struct {
 	stream  func(w io.Writer) error
 	context map[string]any
 	http    http.Handler
+	// content holds MCP content blocks, for handlers that run as MCP tools.
+	content any
 }
 
 // JSON replies 200 with v encoded as JSON.
@@ -236,9 +270,33 @@ func Stream(fn func(w io.Writer) error) Reply {
 	return Reply{kind: kindStream, status: 200, stream: fn}
 }
 
+// Content replies 200 with MCP content blocks, for a handler that runs as
+// an MCP tool. blocks is anything that encodes to a JSON array of MCP
+// content blocks, such as
+//
+//	[]map[string]any{{"type": "image", "data": b64, "mimeType": "image/png"}}
+//
+// Add structured content with JSON(v).WithContent(blocks) instead.
+func Content(blocks any) Reply { return Reply{kind: kindEmpty, status: 200, content: blocks} }
+
+// ToolError replies with an error the model sees and can react to, such as
+// "city not found". Unsworn turns it into an MCP tool result with isError
+// set. As an HTTP reply, it's a 400 with {"error": message}; change that with
+// WithStatus.
+func ToolError(message string) Reply {
+	return JSON(map[string]any{"error": message}).WithStatus(400)
+}
+
 // Next is returned by a before handler to let the request continue, adding
 // values to its context. Later handlers see them in Request.Ctx.
 func Next(ctx map[string]any) Reply { return Reply{kind: kindNext, context: ctx} }
+
+// WithContent adds MCP content blocks to a reply, for a handler that runs
+// as an MCP tool. See [Content].
+func (r Reply) WithContent(blocks any) Reply {
+	r.content = blocks
+	return r
+}
 
 // WithStatus sets the reply's status.
 func (r Reply) WithStatus(code int) Reply {

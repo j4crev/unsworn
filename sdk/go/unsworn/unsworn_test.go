@@ -118,3 +118,26 @@ func TestWithHeaderDoesNotShareMaps(t *testing.T) {
 		t.Fatalf("base %v, one %v", base.headers, one.headers)
 	}
 }
+
+func TestMCPHelpers(t *testing.T) {
+	req := &Request{Ctx: map[string]any{"mcp": map[string]any{
+		"tool":             "get_forecast",
+		"protocol_version": "2026-07-28",
+		"client":           map[string]any{"name": "c", "version": "1"},
+	}}}
+	call := req.MCP()
+	if call == nil || call.Tool != "get_forecast" || call.ProtocolVersion != "2026-07-28" || call.Client.Name != "c" {
+		t.Fatalf("MCP() = %+v", call)
+	}
+	if (&Request{}).MCP() != nil {
+		t.Fatal("MCP() should be nil outside a tool call")
+	}
+	r := ToolError("city not found")
+	if r.status != 400 || r.json.(map[string]any)["error"] != "city not found" {
+		t.Fatalf("ToolError = %+v", r)
+	}
+	c := Content([]string{"x"})
+	if c.status != 200 || c.content == nil {
+		t.Fatalf("Content = %+v", c)
+	}
+}

@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-__all__ = ["Request", "json", "text", "body", "next", "PROTOCOL_VERSION"]
+__all__ = ["Request", "json", "text", "body", "content", "tool_error", "next", "PROTOCOL_VERSION"]
 __version__ = "0.1.0"
 
 PROTOCOL_VERSION = 1
@@ -72,6 +72,32 @@ def body(value: Any, status: int = 200, headers: dict[str, str] | None = None) -
     if headers:
         reply["headers"] = headers
     return reply
+
+
+_UNSET: Any = object()
+
+
+def content(blocks: list[dict[str, Any]], json: Any = _UNSET) -> dict:  # noqa: A002
+    """An MCP tool result made of content blocks, such as images.
+
+    Blocks are MCP content blocks: ``{"type": "text", "text": ...}``,
+    ``{"type": "image", "data": <base64>, "mimeType": ...}`` and so on. With
+    ``json`` too, the agent also gets it as structured content. In a tool
+    handler, ``ctx["mcp"]`` holds the tool name, protocol version and client.
+    """
+    reply: dict[str, Any] = {"status": 200, "mcp_content": blocks}
+    if json is not _UNSET:
+        reply["json"] = json
+    return reply
+
+
+def tool_error(message: str, status: int = 400) -> dict:
+    """A tool error the model sees and can react to, such as "city not found".
+
+    Unsworn turns it into an MCP result with ``isError: true``. As an HTTP
+    reply, it's a 400 (or ``status``) with ``{"error": message}``.
+    """
+    return {"status": status, "json": {"error": message}}
 
 
 def next(context: dict[str, Any] | None = None) -> dict:  # noqa: A001 - mirrors the JS SDK
