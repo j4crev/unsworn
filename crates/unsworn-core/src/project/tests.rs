@@ -406,3 +406,23 @@ cache = { ttl = "1m" }
     assert!(compiled.project.is_some());
     assert!(compiled.diagnostics[0].message.contains("won't be cached"));
 }
+
+#[test]
+fn binary_protocol_is_an_alias_for_framed() {
+    let cfg = r#"
+[runtimes.ts]
+extensions = [".ts"]
+command = "bun run worker.ts"
+protocol = "binary"
+"#;
+    let host = MemHost::with(&[("unsworn.toml", cfg)]);
+    let compiled = compile(&host, "unsworn.toml");
+    let warning = compiled
+        .diagnostics
+        .iter()
+        .find(|d| d.level == crate::diag::Level::Warning && d.location == "[runtimes.ts].protocol")
+        .expect("a warning for the old name");
+    assert!(warning.message.contains("framed"));
+    let project = compiled.project.expect("project compiles");
+    assert_eq!(project.runtimes["ts"].protocol, Protocol::Framed);
+}

@@ -11,13 +11,13 @@ dir = "routes"
 [runtimes.ts]
 extensions = [".ts"]
 command = "bun run ../../sdk/js/src/worker.ts"
-protocol = "binary"
+protocol = "framed"
 workers = 1
 
 [runtimes.py]
 extensions = [".py"]
 command = "python3 -u -m unsworn.worker"
-protocol = "binary"
+protocol = "framed"
 workers = 1
 env = { PYTHONPATH = "../../sdk/python" }
 

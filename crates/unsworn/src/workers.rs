@@ -379,7 +379,7 @@ impl Pool {
                 cmd.env("UNSWORN_TRANSPORT", "stdio").stdin(Stdio::piped());
                 None
             }
-            Protocol::Binary => {
+            Protocol::Framed | Protocol::Binary => {
                 let _ = std::fs::remove_file(&socket_path);
                 let l = tokio::net::UnixListener::bind(&socket_path)
                     .map_err(|e| format!("can't create socket {}: {e}", socket_path.display()))?;
@@ -424,7 +424,7 @@ impl Pool {
                 match accepted {
                     Ok((stream, _)) => {
                         let (r, w) = stream.into_split();
-                        self.connect(worker_id.clone(), r, w, Protocol::Binary, child, startup)
+                        self.connect(worker_id.clone(), r, w, Protocol::Framed, child, startup)
                             .await
                     }
                     Err(e) => Err(e),
@@ -884,7 +884,7 @@ async fn write_loop<W: AsyncWrite + Unpin>(
         buf.clear();
         let encoded = match protocol {
             Protocol::Jsonl => proto::jsonl::encode(&frame, &mut buf),
-            Protocol::Binary => proto::framed::encode(&frame, &mut buf),
+            Protocol::Framed | Protocol::Binary => proto::framed::encode(&frame, &mut buf),
         };
         if let Err(e) = encoded {
             tracing::error!("can't encode message: {e}");
@@ -917,7 +917,9 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
             buf: BytesMut::with_capacity(8192),
             decoder: match protocol {
                 Protocol::Jsonl => Decoder::Jsonl(proto::jsonl::Decoder::default()),
-                Protocol::Binary => Decoder::Framed(proto::framed::Decoder::default()),
+                Protocol::Framed | Protocol::Binary => {
+                    Decoder::Framed(proto::framed::Decoder::default())
+                }
             },
             eof: false,
         }

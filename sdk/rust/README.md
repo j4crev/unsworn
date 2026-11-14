@@ -34,7 +34,7 @@ Unsworn builds and runs it:
 extensions      = [".rs"]
 build           = "cargo build --release"
 command         = "target/release/handlers"   # your binary's name
-protocol        = "binary"
+protocol        = "framed"
 startup_timeout = "300s"                       # time for the first build
 
 [[route]]
@@ -130,5 +130,5 @@ startup instead of failing the first request.
 
 The worker reads `UNSWORN_TRANSPORT` and speaks either tier. Tier 1 (stdio)
 points file descriptor 1 at stderr, so `println!` output ends up in
-Unsworn's logs. Tier 2 (`protocol = "binary"`) is recommended.
+Unsworn's logs. Tier 2 (`protocol = "framed"`) is recommended.
 

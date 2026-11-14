@@ -28,11 +28,24 @@
       "description": "A duration like \"30s\", \"5m\", \"250ms\" or \"1h30m\", or a number of seconds."
     },
     "Protocol": {
-      "enum": [
-        "jsonl",
-        "binary"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "const": "jsonl",
+          "description": "Tier 1: JSON lines over stdin/stdout.",
+          "type": "string"
+        },
+        {
+          "const": "framed",
+          "description": "Tier 2: length-prefixed frames over a Unix socket.",
+          "type": "string"
+        },
+        {
+          "const": "binary",
+          "deprecated": true,
+          "description": "Deprecated: the old name for `framed`.",
+          "type": "string"
+        }
+      ]
     },
     "RawAuth": {
       "anyOf": [

@@ -104,7 +104,7 @@ file extensions. Unsworn has no built-in knowledge of any language.
 extensions = [".go"]
 build      = "go build -o .unsworn/go-worker ./routes"
 command    = ".unsworn/go-worker"
-protocol   = "binary"
+protocol   = "framed"
 workers    = 2
 ```
 

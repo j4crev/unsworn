@@ -20,7 +20,7 @@ export const getUser: Handler<{ params: { id: number } }> = async (req, ctx) => 
 [runtimes.ts]
 extensions = [".ts", ".js"]
 command = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
-protocol = "binary"
+protocol = "framed"
 
 [[route]]
 path = "/users/{id}"

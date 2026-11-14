@@ -273,7 +273,7 @@ listen = "0.0.0.0:8080"
 # [runtimes.ts]
 # extensions = [".ts"]
 # command = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
-# protocol = "binary"
+# protocol = "framed"
 
 [[route]]
 path = "/health"

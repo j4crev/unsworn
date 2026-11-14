@@ -41,7 +41,7 @@ fn raw_python_worker() {
 fn python_sdk() {
     if has("python3") {
         run("python-jsonl", "sdk/python/conformance/handlers.py");
-        run("python-binary", "sdk/python/conformance/handlers.py");
+        run("python-framed", "sdk/python/conformance/handlers.py");
     }
 }
 
@@ -49,7 +49,7 @@ fn python_sdk() {
 fn js_sdk_bun() {
     if has("bun") {
         run("bun-jsonl", "sdk/js/conformance/handlers.ts");
-        run("bun-binary", "sdk/js/conformance/handlers.ts");
+        run("bun-framed", "sdk/js/conformance/handlers.ts");
     }
 }
 
@@ -63,7 +63,7 @@ fn js_sdk_node() {
         .status()
         .is_ok_and(|s| s.success());
     if new_enough {
-        run("node-binary", "sdk/js/conformance/handlers.ts");
+        run("node-framed", "sdk/js/conformance/handlers.ts");
     }
 }
 
@@ -82,13 +82,13 @@ fn go_sdk() {
         .output()
         .is_ok_and(|o| o.status.success());
     if has_go {
-        run("go-binary", "sdk/go/conformance/handlers.go");
+        run("go-framed", "sdk/go/conformance/handlers.go");
         run("go-jsonl", "sdk/go/conformance/handlers.go");
     }
 }
 
 #[test]
 fn rust_sdk() {
-    run("rust-binary", "sdk/rust/examples/conformance.rs");
+    run("rust-framed", "sdk/rust/examples/conformance.rs");
     run("rust-jsonl", "sdk/rust/examples/conformance.rs");
 }

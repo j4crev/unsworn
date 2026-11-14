@@ -126,8 +126,13 @@ pub struct RawOpenApi {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Protocol {
+    /// Tier 1: JSON lines over stdin/stdout.
     #[default]
     Jsonl,
+    /// Tier 2: length-prefixed frames over a Unix socket.
+    Framed,
+    /// Deprecated: the old name for `framed`.
+    #[schemars(extend("deprecated" = true))]
     Binary,
 }
 
@@ -623,7 +628,7 @@ max_body = "2MB"
 [runtimes.ts]
 extensions = [".ts"]
 command = "bun run worker.ts"
-protocol = "binary"
+protocol = "framed"
 
 [auth.jwt]
 type = "jwt"

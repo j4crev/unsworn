@@ -89,7 +89,7 @@ key  = "certs/privkey.pem"
 [runtimes.ts]
 extensions      = [".ts", ".js"]
 command         = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
-protocol        = "binary"        # "jsonl" (Tier 1, the default) | "binary" (Tier 2)
+protocol        = "framed"        # "jsonl" (Tier 1, the default) | "framed" (Tier 2)
 workers         = 4               # default: the number of CPU cores, up to 4
 eager           = false           # start workers at boot instead of on first request
 startup_timeout = "30s"           # time allowed for `build` and `ready`
@@ -99,7 +99,7 @@ env             = { NODE_ENV = "production" }
 extensions = [".go"]
 build      = "go build -o .unsworn/go-worker ./routes"
 command    = ".unsworn/go-worker"
-protocol   = "binary"
+protocol   = "framed"
 workers    = 2
 
 [runtimes.newlang]
@@ -109,7 +109,8 @@ protocol   = "jsonl"              # no SDK needed
 ```
 
 Runtime names are arbitrary. Unsworn knows nothing about any specific language.
-Commands run through `sh -c` in the project root. `build` runs once, before
+`protocol = "binary"`, the name used before 0.2, still works as an alias for
+`"framed"`, with a warning. Commands run through `sh -c` in the project root. `build` runs once, before
 the runtime's first workers start, and again on each reload.
 
 For production, build compiled workers ahead of time (in CI or a Docker build
