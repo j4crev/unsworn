@@ -2026,8 +2026,12 @@ impl<'h> Compiler<'h> {
             );
         }
 
+        // Without `input`, a hosted tool takes no arguments, while a proxied
+        // tool's arguments are left for the server behind the proxy to check.
+        let validate_input = t.input.is_some() || proxy.is_none();
         let input = match &t.input {
             Some(s) => self.schema(s, &format!("{loc}.input"))?,
+            None if proxy.is_some() => serde_json::json!({"type": "object"}),
             None => serde_json::json!({"type": "object", "additionalProperties": false}),
         };
         if let Err(e) = mcp::check_input_schema(&input) {
@@ -2103,7 +2107,7 @@ impl<'h> Compiler<'h> {
             own: own.clone(),
             inherit: vec![endpoint],
             validation: RawValidation {
-                body: Some((input.clone(), true)),
+                body: validate_input.then(|| (input.clone(), true)),
                 response: output.clone(),
                 ..Default::default()
             },

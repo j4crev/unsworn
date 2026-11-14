@@ -14,6 +14,8 @@ use crate::config::ListTools;
 use crate::policy::Layer;
 use crate::project::Proxy;
 
+pub mod rpc;
+
 /// The MCP protocol version Unsworn implements.
 pub const PROTOCOL_VERSION: &str = "2026-07-28";
 

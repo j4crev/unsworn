@@ -1204,3 +1204,239 @@ respond = {{ status = 200 }}
     assert_eq!(cached("boom").status, 503);
     assert_eq!(calls() - before, 4, "outages are asked about again");
 }
+
+/// A JWT for the `oauth` scheme used by the MCP tests.
+fn mcp_token(scope: &str) -> String {
+    use jsonwebtoken::{EncodingKey, Header, encode};
+    let token = encode(
+        &Header::default(),
+        &json!({"sub": "u1", "aud": "https://api.example.com/mcp", "scope": scope, "exp": 4_000_000_000u64}),
+        &EncodingKey::from_secret(b"test-secret").unwrap(),
+    )
+    .unwrap();
+    format!("Bearer {token}")
+}
+
+/// An MCP 2026-07-28 request body.
+fn mcp_body(method: &str, params: serde_json::Value) -> Vec<u8> {
+    let mut params = params;
+    params["_meta"] = json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "test-client", "version": "1"}
+    });
+    serde_json::to_vec(&json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}))
+        .unwrap()
+}
+
+#[test]
+fn mcp_proxy_with_per_tool_policies() {
+    if !needs_python() {
+        return;
+    }
+    // The "existing MCP server": another Unsworn instance echoing requests.
+    let app_cfg = format!("{PY}\n[[route]]\npath = \"/mcp\"\nhandler = \"src/app.py#echo\"\n");
+    let app = Project::new(&[
+        ("unsworn.toml", &app_cfg),
+        ("worker.py", ECHO_WORKER),
+        ("src/app.py", ""),
+    ]);
+    let app_server = app.serve();
+
+    let cfg = format!(
+        r#"{PY}
+[auth.oauth]
+type = "jwt"
+secret = "test-secret"
+audience = "https://api.example.com/mcp"
+
+[mcp]
+proxy = "http://{}"
+auth = {{ scheme = "oauth", scopes = ["tools:read"] }}
+
+[[mcp.tool]]
+name = "get_forecast"
+input = {{ type = "object", required = ["city"], properties = {{ city = {{ type = "string" }}, tenant = {{ type = "string", x-mcp-header = "Tenant" }} }} }}
+rate_limit = {{ requests = 1, per = "1m", key = "header.mcp-param-tenant" }}
+
+[[mcp.tool]]
+name = "create_invoice"
+auth = {{ scheme = "oauth", scopes = ["billing:write"] }}
+before = ["src/mcp.py#tenant"]
+"#,
+        app_server.addr
+    );
+    let front = Project::new(&[
+        ("unsworn.toml", &cfg),
+        ("worker.py", ECHO_WORKER),
+        ("src/mcp.py", ""),
+    ]);
+    let s = front.serve();
+
+    let read = mcp_token("tools:read");
+    let both = mcp_token("tools:read billing:write");
+    let post =
+        |token: &str, method: &str, name: Option<&str>, extra: &[(&str, &str)], body: &[u8]| {
+            let mut headers = vec![
+                ("authorization", token),
+                ("content-type", "application/json"),
+                ("accept", "application/json, text/event-stream"),
+                ("mcp-protocol-version", "2026-07-28"),
+                ("mcp-method", method),
+            ];
+            if let Some(n) = name {
+                headers.push(("mcp-name", n));
+            }
+            headers.extend_from_slice(extra);
+            s.request("POST", "/mcp", &headers, body)
+        };
+    let call = |token: &str, name: &str, args: serde_json::Value, extra: &[(&str, &str)]| {
+        let body = mcp_body("tools/call", json!({"name": name, "arguments": args}));
+        post(token, "tools/call", Some(name), extra, &body)
+    };
+    let tool_error = |r: &common::Response| -> String {
+        assert_eq!(r.status, 200, "{}", r.text());
+        let v = r.json();
+        assert_eq!(v["result"]["isError"], true, "{v}");
+        assert_eq!(v["result"]["resultType"], "complete");
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let rpc_code = |r: &common::Response| -> i64 {
+        assert_eq!(r.status, 400, "{}", r.text());
+        r.json()["error"]["code"].as_i64().unwrap()
+    };
+
+    // Other methods pass through after the [mcp] checks.
+    let r = post(
+        &read,
+        "tools/list",
+        None,
+        &[],
+        &mcp_body("tools/list", json!({})),
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    let echoed = r.json();
+    assert_eq!(
+        echoed["json"]["method"], "tools/list",
+        "the body is forwarded as is"
+    );
+    assert_eq!(echoed["headers"]["mcp-method"], "tools/list");
+
+    let r = s.request("POST", "/mcp", &[], &mcp_body("tools/list", json!({})));
+    assert_eq!(r.status, 401, "[mcp] auth runs first");
+    assert_eq!(s.get("/mcp").status, 405);
+
+    // Protocol checks.
+    assert_eq!(
+        rpc_code(&post(&read, "tools/list", None, &[], b"{")),
+        -32700
+    );
+    let init = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#;
+    let r = post(&read, "initialize", None, &[], init);
+    assert_eq!(rpc_code(&r), -32022);
+    assert_eq!(
+        r.json()["error"]["data"]["supported"],
+        json!(["2026-07-28"])
+    );
+    let body = mcp_body(
+        "tools/call",
+        json!({"name": "get_forecast", "arguments": {"city": "Lisbon"}}),
+    );
+    assert_eq!(
+        rpc_code(&post(&read, "tools/call", Some("other"), &[], &body)),
+        -32020
+    );
+    assert_eq!(
+        rpc_code(&post(&read, "tools/list", Some("get_forecast"), &[], &body)),
+        -32020
+    );
+
+    // Input validation is a tool error the model can fix.
+    let text = tool_error(&call(&read, "get_forecast", json!({}), &[]));
+    assert!(
+        text.contains("Invalid arguments") && text.contains("city"),
+        "{text}"
+    );
+
+    // `Mcp-Param-*` headers must match the arguments, and then key the tool's rate limit.
+    let r = call(
+        &read,
+        "get_forecast",
+        json!({"city": "Lisbon", "tenant": "a"}),
+        &[("mcp-param-tenant", "b")],
+    );
+    assert_eq!(rpc_code(&r), -32020);
+    let a = [("mcp-param-tenant", "a")];
+    let r = call(
+        &read,
+        "get_forecast",
+        json!({"city": "Lisbon", "tenant": "a"}),
+        &a,
+    );
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(
+        r.json()["json"]["params"]["name"],
+        "get_forecast",
+        "forwarded"
+    );
+    let text = tool_error(&call(
+        &read,
+        "get_forecast",
+        json!({"city": "Porto", "tenant": "a"}),
+        &a,
+    ));
+    assert!(text.contains("Rate limit exceeded"), "{text}");
+    let b = [("mcp-param-tenant", "b")];
+    let r = call(
+        &read,
+        "get_forecast",
+        json!({"city": "Porto", "tenant": "b"}),
+        &b,
+    );
+    assert_eq!(r.status, 200, "another tenant has its own count");
+
+    // The tool's own scopes are checked on top of [mcp]'s.
+    let r = call(&read, "create_invoice", json!({"amount": 5}), &[]);
+    assert_eq!(r.status, 403);
+    assert!(
+        r.header("www-authenticate")
+            .unwrap()
+            .contains("insufficient_scope")
+    );
+    let text = tool_error(&call(
+        &both,
+        "create_invoice",
+        json!({}),
+        &[("x-tenant", "blocked")],
+    ));
+    assert!(text.contains("rejected (403 Forbidden)"), "{text}");
+    let r = call(&both, "create_invoice", json!({"amount": 5}), &[]);
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["json"]["params"]["arguments"]["amount"], 5);
+
+    // Tools not in the config get only the [mcp] policies.
+    let r = call(&read, "unlisted", json!({"x": 1}), &[]);
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["json"]["params"]["name"], "unlisted");
+}
+
+#[test]
+fn hosted_mcp_tools_are_refused_for_now() {
+    let p = Project::new(&[
+        (
+            "unsworn.toml",
+            "[runtimes.py]\nextensions = [\".py\"]\ncommand = \"python3 w.py\"\n\n[mcp]\n\n[[mcp.tool]]\nname = \"a\"\ndescription = \"A\"\nhandler = \"t.py\"\n",
+        ),
+        ("t.py", ""),
+    ]);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_unsworn"))
+        .args(["serve", "--listen", "127.0.0.1:0"])
+        .current_dir(p.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("isn't available yet"));
+}

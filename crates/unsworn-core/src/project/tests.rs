@@ -786,6 +786,10 @@ rate_limit = {{ requests = 10, per = "1m", key = "auth.sub" }}
     assert!(
         matches!(&route.action, Action::Proxy(px) if px.upstreams == ["http://127.0.0.1:4000"])
     );
+    assert!(
+        route.validation.body.is_none(),
+        "without `input`, the server behind the proxy checks arguments"
+    );
 }
 
 #[test]
