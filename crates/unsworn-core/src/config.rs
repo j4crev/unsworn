@@ -19,8 +19,8 @@ pub struct RawConfig {
     pub server: RawServer,
     pub routes: Option<RawRoutesDir>,
     pub openapi: Option<RawOpenApi>,
-    /// Planned for v2. Accepted only to report a clear error.
-    pub mcp: Option<Value>,
+    /// A remote MCP server: tools as handlers, or policies for a proxied one.
+    pub mcp: Option<RawMcp>,
     #[serde(default)]
     pub runtimes: BTreeMap<String, RawRuntime>,
     #[serde(default)]
@@ -524,6 +524,130 @@ pub struct RawRoute {
     pub mcp: Option<Value>,
 }
 
+/// What `tools/list` shows a caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ListTools {
+    /// Only tools whose `auth` scopes the caller's token has.
+    #[default]
+    Permitted,
+    /// Every tool. Calls are still checked.
+    All,
+}
+
+fn default_mcp_path() -> String {
+    "/mcp".into()
+}
+
+/// The `[mcp]` table: one MCP endpoint and its tools.
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawMcp {
+    /// The endpoint path. Default: `/mcp`.
+    #[serde(default = "default_mcp_path")]
+    pub path: String,
+    /// The server name reported to clients. Default: `unsworn`.
+    pub name: Option<String>,
+    /// The server version reported to clients. Default: the Unsworn version.
+    pub version: Option<String>,
+    /// A display name for the server.
+    pub title: Option<String>,
+    /// Guidance for the model on how to use this server's tools.
+    pub instructions: Option<String>,
+    /// An existing MCP server to forward to. Tools then only add policies.
+    pub proxy: Option<RawProxy>,
+    /// What `tools/list` shows: `permitted` (default) or `all`.
+    #[serde(default)]
+    pub list_tools: ListTools,
+    /// How long clients may cache `tools/list` and `server/discover`
+    /// results. Default: 5m.
+    pub list_ttl: Option<ConfigDuration>,
+    #[serde(default)]
+    pub tool: Vec<RawMcpTool>,
+
+    // Policies for the whole endpoint.
+    pub auth: Option<RawAuth>,
+    pub cors: Option<OrOff<RawCors>>,
+    pub origin: Option<OrOff<RawOrigin>>,
+    pub ip: Option<OrOff<RawIp>>,
+    pub rate_limit: Option<OrOff<RawRateLimit>>,
+    pub timeout: Option<ConfigDuration>,
+    pub max_body: Option<ConfigSize>,
+    pub headers: Option<OrOff<RawHeaders>>,
+    pub before: Option<OrOff<Vec<String>>>,
+    #[serde(rename = "use")]
+    pub use_sets: Option<Vec<String>>,
+}
+
+impl RawMcp {
+    pub fn policies(&self) -> RawPolicies {
+        RawPolicies {
+            auth: self.auth.clone(),
+            cors: self.cors.clone(),
+            origin: self.origin.clone(),
+            ip: self.ip.clone(),
+            rate_limit: self.rate_limit.clone(),
+            timeout: self.timeout,
+            max_body: self.max_body,
+            headers: self.headers.clone(),
+            before: self.before.clone(),
+            use_sets: self.use_sets.clone(),
+            ..Default::default()
+        }
+    }
+}
+
+/// Hints about a tool's behavior, for clients. Not enforced.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawToolAnnotations {
+    /// The tool doesn't change anything.
+    pub read_only: Option<bool>,
+    /// The tool may delete or overwrite data.
+    pub destructive: Option<bool>,
+    /// Calling the tool again with the same arguments has no further effect.
+    pub idempotent: Option<bool>,
+    /// The tool reaches systems outside this server, such as the web.
+    pub open_world: Option<bool>,
+}
+
+/// One `[[mcp.tool]]` entry.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawMcpTool {
+    pub name: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    /// JSON Schema for the arguments: a file, or an inline table.
+    pub input: Option<SchemaRef>,
+    /// JSON Schema for structured results: a file, or an inline table.
+    pub output: Option<SchemaRef>,
+    pub handler: Option<String>,
+    pub runtime: Option<String>,
+    pub annotations: Option<RawToolAnnotations>,
+
+    // Policies for calls to this tool, on top of the `[mcp]` ones.
+    pub auth: Option<RawAuth>,
+    pub rate_limit: Option<OrOff<RawRateLimit>>,
+    pub timeout: Option<ConfigDuration>,
+    pub before: Option<OrOff<Vec<String>>>,
+    #[serde(rename = "use")]
+    pub use_sets: Option<Vec<String>>,
+}
+
+impl RawMcpTool {
+    pub fn policies(&self) -> RawPolicies {
+        RawPolicies {
+            auth: self.auth.clone(),
+            rate_limit: self.rate_limit.clone(),
+            timeout: self.timeout,
+            before: self.before.clone(),
+            use_sets: self.use_sets.clone(),
+            ..Default::default()
+        }
+    }
+}
+
 /// The two meanings of `headers` on a route.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SplitHeaders {
@@ -629,11 +753,24 @@ pub fn parse_document<T: serde::de::DeserializeOwned>(
 
 /// Line numbers of each `[[route]]` header in a TOML file, in order.
 pub fn route_lines(text: &str) -> Vec<usize> {
+    table_lines(text, "[[route]]")
+}
+
+/// Line numbers of each line that opens the TOML table `header`, such as
+/// `[mcp]` or `[[mcp.tool]]`, in order.
+pub fn table_lines(text: &str, header: &str) -> Vec<usize> {
+    let want: String = header.chars().filter(|c| !c.is_whitespace()).collect();
     text.lines()
         .enumerate()
         .filter(|(_, line)| {
-            let t = line.trim_start();
-            t.starts_with("[[route]]") || t.starts_with("[[ route ]]")
+            let t: String = line
+                .split('#')
+                .next()
+                .unwrap_or("")
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            t == want
         })
         .map(|(i, _)| i + 1)
         .collect()

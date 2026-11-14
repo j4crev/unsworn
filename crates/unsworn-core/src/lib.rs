@@ -14,6 +14,7 @@ pub mod auth;
 pub mod config;
 pub mod diag;
 pub mod export;
+pub mod mcp;
 pub mod openapi;
 pub mod policy;
 pub mod project;

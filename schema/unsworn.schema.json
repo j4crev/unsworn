@@ -27,6 +27,21 @@
       ],
       "description": "A duration like \"30s\", \"5m\", \"250ms\" or \"1h30m\", or a number of seconds."
     },
+    "ListTools": {
+      "description": "What `tools/list` shows a caller.",
+      "oneOf": [
+        {
+          "const": "permitted",
+          "description": "Only tools whose `auth` scopes the caller's token has.",
+          "type": "string"
+        },
+        {
+          "const": "all",
+          "description": "Every tool. Calls are still checked.",
+          "type": "string"
+        }
+      ]
+    },
     "OnError": {
       "oneOf": [
         {
@@ -439,6 +454,296 @@
           "$ref": "#/$defs/RawIp"
         }
       ]
+    },
+    "RawMcp": {
+      "additionalProperties": false,
+      "description": "The `[mcp]` table: one MCP endpoint and its tools.",
+      "properties": {
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawAuth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Array_of_stringOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cors": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawCorsOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "headers": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawHeadersOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "instructions": {
+          "description": "Guidance for the model on how to use this server's tools.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ip": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawIpOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "list_tools": {
+          "$ref": "#/$defs/ListTools",
+          "default": "permitted",
+          "description": "What `tools/list` shows: `permitted` (default) or `all`."
+        },
+        "list_ttl": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How long clients may cache `tools/list` and `server/discover`\nresults. Default: 5m."
+        },
+        "max_body": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Size"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "description": "The server name reported to clients. Default: `unsworn`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawOriginOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "default": "/mcp",
+          "description": "The endpoint path. Default: `/mcp`.",
+          "type": "string"
+        },
+        "proxy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawProxy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "An existing MCP server to forward to. Tools then only add policies."
+        },
+        "rate_limit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawRateLimitOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "description": "A display name for the server.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool": {
+          "items": {
+            "$ref": "#/$defs/RawMcpTool"
+          },
+          "type": "array"
+        },
+        "use": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "version": {
+          "description": "The server version reported to clients. Default: the Unsworn version.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawMcpTool": {
+      "additionalProperties": false,
+      "description": "One `[[mcp.tool]]` entry.",
+      "properties": {
+        "annotations": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawToolAnnotations"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawAuth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Array_of_stringOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "handler": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchemaRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "JSON Schema for the arguments: a file, or an inline table."
+        },
+        "name": {
+          "type": "string"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchemaRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "JSON Schema for structured results: a file, or an inline table."
+        },
+        "rate_limit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawRateLimitOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "use": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
     },
     "RawOpenApi": {
       "additionalProperties": false,
@@ -1304,6 +1609,41 @@
       ],
       "type": "object"
     },
+    "RawToolAnnotations": {
+      "additionalProperties": false,
+      "description": "Hints about a tool's behavior, for clients. Not enforced.",
+      "properties": {
+        "destructive": {
+          "description": "The tool may delete or overwrite data.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "idempotent": {
+          "description": "Calling the tool again with the same arguments has no further effect.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "open_world": {
+          "description": "The tool reaches systems outside this server, such as the web.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "read_only": {
+          "description": "The tool doesn't change anything.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ResponseValidation": {
       "enum": [
         "off",
@@ -1387,7 +1727,15 @@
       "$ref": "#/$defs/RawPolicies"
     },
     "mcp": {
-      "description": "Planned for v2. Accepted only to report a clear error."
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RawMcp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "A remote MCP server: tools as handlers, or policies for a proxied one."
     },
     "openapi": {
       "anyOf": [

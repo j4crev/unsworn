@@ -13,10 +13,11 @@ use crate::auth::{
     ApiKeyScheme, ApiKeys, JwtKeys, JwtScheme, KeyVerifier, ProtectedResource, Scheme,
 };
 use crate::config::{
-    self, Format, OrOff, Protocol, RawAuth, RawAuthItem, RawAuthScheme, RawConfig, RawPolicies,
-    RawProxy, RawRoute, ResponseValidation, SchemaRef, TrailingSlash,
+    self, Format, OrOff, Protocol, RawAuth, RawAuthItem, RawAuthScheme, RawConfig, RawMcp,
+    RawPolicies, RawProxy, RawRoute, ResponseValidation, SchemaRef, TrailingSlash,
 };
 use crate::diag::{Diagnostic, Diagnostics};
+use crate::mcp::{self, McpEndpoint, McpTool, ServerInfo};
 use crate::openapi;
 use crate::policy::{
     AuthAlt, AuthReq, CacheRule, Cors, Effective, HandlerRef, HeaderRules, KeySource, Layer,
@@ -99,6 +100,8 @@ pub enum Action {
     },
     Proxy(Arc<Proxy>),
     Handler(HandlerRef),
+    /// The MCP endpoint. [`Project::mcp`] holds its tools.
+    Mcp,
 }
 
 impl Action {
@@ -109,6 +112,7 @@ impl Action {
             Action::Static { dir, .. } => format!("static {dir}"),
             Action::Proxy(p) => format!("proxy {}", p.upstreams.join(", ")),
             Action::Handler(h) => h.raw.clone(),
+            Action::Mcp => "mcp".into(),
         }
     }
 }
@@ -132,6 +136,18 @@ pub enum Source {
     FolderPolicies {
         path: String,
     },
+    /// The `[mcp]` table.
+    Mcp {
+        file: String,
+        line: Option<usize>,
+    },
+    /// A `[[mcp.tool]]` entry.
+    McpTool {
+        file: String,
+        line: Option<usize>,
+        index: usize,
+        name: String,
+    },
 }
 
 impl Source {
@@ -145,6 +161,17 @@ impl Source {
                 ..
             } => format!("{file}:{line} [[route]]"),
             Source::Config { file, index, .. } => format!("{file} route[{index}]"),
+            Source::Mcp {
+                file,
+                line: Some(line),
+            } => format!("{file}:{line} [mcp]"),
+            Source::Mcp { file, line: None } => format!("{file} [mcp]"),
+            Source::McpTool {
+                file,
+                line: Some(line),
+                ..
+            } => format!("{file}:{line} [[mcp.tool]]"),
+            Source::McpTool { file, index, .. } => format!("{file} mcp.tool[{index}]"),
             other => other.to_string(),
         }
     }
@@ -163,6 +190,17 @@ impl fmt::Display for Source {
             Source::OpenApi { file, location } => write!(f, "{file}:{location}"),
             Source::Defaults => write!(f, "[defaults]"),
             Source::FolderPolicies { path } => write!(f, "{path}"),
+            Source::Mcp {
+                file,
+                line: Some(line),
+            }
+            | Source::McpTool {
+                file,
+                line: Some(line),
+                ..
+            } => write!(f, "{file}:{line}"),
+            Source::Mcp { file, line: None } => write!(f, "{file} [mcp]"),
+            Source::McpTool { file, index, .. } => write!(f, "{file} mcp.tool[{index}]"),
         }
     }
 }
@@ -201,6 +239,15 @@ impl Route {
     pub fn handler(&self) -> Option<&HandlerRef> {
         match &self.action {
             Action::Handler(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    /// The tool name, for the hidden route of an MCP tool. Such routes are
+    /// never matched by path; the MCP endpoint dispatches to them.
+    pub fn mcp_tool(&self) -> Option<&str> {
+        match &self.source {
+            Source::McpTool { name, .. } => Some(name),
             _ => None,
         }
     }
@@ -349,6 +396,8 @@ pub struct Project {
     /// Exact policy entries for paths inside a catch-all route.
     pub path_entries: Vec<PrefixEntry>,
     pub openapi: OpenApiMeta,
+    /// The MCP endpoint, when `[mcp]` is set.
+    pub mcp: Option<McpEndpoint>,
     /// Files read while loading, for watching in dev mode.
     pub files: Vec<String>,
     pub routes_dir: Option<String>,
@@ -466,9 +515,26 @@ impl Project {
         layer.finalize(self.server.timeout, self.server.max_body)
     }
 
+    /// The merged policies for a call to an MCP tool: `[defaults]`, prefix
+    /// entries for the endpoint path, `[mcp]`, then the tool's own.
+    pub fn tool_effective(&self, tool: &McpTool) -> Effective {
+        self.route_effective(&self.routes[tool.route])
+    }
+
+    /// A route's policies as a typical request sees them, for display and
+    /// checks: `GET` on its own path, or a call through the MCP endpoint
+    /// for a tool.
+    pub fn route_effective(&self, route: &Route) -> Effective {
+        match (route.mcp_tool(), &self.mcp) {
+            (Some(_), Some(mcp)) => self.effective(route, "POST", &mcp.path),
+            _ => self.effective(route, "GET", &route.path.replace("{*", "{")),
+        }
+    }
+
     /// Whether a route's handler gets its request body as a stream.
     pub fn streams_body(&self, route: &Route) -> bool {
-        if !matches!(route.action, Action::Handler(_)) {
+        // Tool arguments are always read and validated first.
+        if !matches!(route.action, Action::Handler(_)) || route.mcp_tool().is_some() {
             return false;
         }
         let probe = route.path.replace("{*", "{");
@@ -643,10 +709,60 @@ struct Draft {
     action: Action,
     source: Source,
     own: Layer,
+    /// Layers merged just below `own`, such as `[mcp]` for a tool.
+    inherit: Vec<(String, Layer)>,
     validation: RawValidation,
     openapi_layer: Option<Layer>,
     folder_layers: Vec<(String, Layer)>,
     op: Option<OpInfo>,
+}
+
+/// Line numbers of the `[mcp]` table and its `[[mcp.tool]]` entries.
+#[derive(Default)]
+struct McpLines {
+    table: Option<usize>,
+    tools: Vec<usize>,
+}
+
+/// An `[mcp]` table whose routes are drafted but not yet compiled.
+struct McpPending {
+    endpoint: McpEndpoint,
+    /// Tools without their route ids, in config order.
+    tools: Vec<McpTool>,
+}
+
+impl McpPending {
+    /// Links the endpoint and its tools to their compiled routes.
+    fn finish(mut self, routes: &[Route]) -> Option<McpEndpoint> {
+        self.endpoint.route = routes.iter().find(|r| matches!(r.action, Action::Mcp))?.id;
+        for mut tool in self.tools {
+            if let Some(r) = routes
+                .iter()
+                .find(|r| r.mcp_tool() == Some(tool.name.as_str()))
+            {
+                tool.route = r.id;
+                self.endpoint.tools.push(tool);
+            }
+        }
+        self.endpoint.tools.sort_by(|a, b| a.name.cmp(&b.name));
+        Some(self.endpoint)
+    }
+}
+
+/// Policies that apply to the MCP endpoint as a whole, so a tool can't set
+/// them (not even through a `use` set).
+fn endpoint_only_keys(layer: &Layer) -> Vec<&'static str> {
+    [
+        ("cors", layer.cors.is_some()),
+        ("origin", layer.origin.is_some()),
+        ("ip", layer.ip.is_some()),
+        ("max_body", layer.max_body.is_some()),
+        ("headers", layer.headers.is_some()),
+    ]
+    .into_iter()
+    .filter(|(_, set)| *set)
+    .map(|(k, _)| k)
+    .collect()
 }
 
 impl<'h> Compiler<'h> {
@@ -671,13 +787,6 @@ impl<'h> Compiler<'h> {
         } else {
             Vec::new()
         };
-
-        if raw.mcp.is_some() {
-            self.diags.push(
-                Diagnostic::error("[mcp]", "MCP tools as handlers are planned for v2")
-                    .hint("for now, put Unsworn in front of an MCP server with a `proxy` route; see docs/mcp.md"),
-            );
-        }
 
         let server = self.server(&raw);
         self.runtimes(&raw);
@@ -710,6 +819,21 @@ impl<'h> Compiler<'h> {
             };
             self.config_route(r, source, &mut drafts, &mut exacts, &mut prefixes);
         }
+
+        let mcp_pending = match &raw.mcp {
+            Some(m) => {
+                let lines = if format == Format::Toml {
+                    McpLines {
+                        table: config::table_lines(&text, "[mcp]").first().copied(),
+                        tools: config::table_lines(&text, "[[mcp.tool]]"),
+                    }
+                } else {
+                    McpLines::default()
+                };
+                self.mcp(m, &lines, &mut drafts)
+            }
+            None => None,
+        };
 
         let routes_dir = raw
             .routes
@@ -820,6 +944,8 @@ impl<'h> Compiler<'h> {
         // Shorter prefixes merge first.
         prefixes.sort_by_key(|p| p.segs.len());
 
+        let mcp = mcp_pending.and_then(|p| p.finish(&routes));
+
         self.check_handlers(&routes, &prefixes);
         self.warnings(&routes, &prefixes);
 
@@ -835,6 +961,7 @@ impl<'h> Compiler<'h> {
             prefixes,
             path_entries,
             openapi: openapi_meta,
+            mcp,
             files: std::mem::take(&mut self.files),
             routes_dir,
             routers,
@@ -1620,6 +1747,7 @@ impl<'h> Compiler<'h> {
                         action,
                         source,
                         own: layer,
+                        inherit: Vec::new(),
                         validation,
                         openapi_layer: None,
                         folder_layers: Vec::new(),
@@ -1688,6 +1816,15 @@ impl<'h> Compiler<'h> {
             });
         }
         if let Some(p) = &r.proxy {
+            return Some(Action::Proxy(self.proxy(p, loc)));
+        }
+        let h = r.handler.as_ref()?;
+        self.handler_ref(h, r.runtime.as_deref(), &format!("{loc}.handler"))
+            .map(Action::Handler)
+    }
+
+    fn proxy(&mut self, p: &RawProxy, loc: &str) -> Arc<Proxy> {
+        {
             let (upstreams, strip_prefix, sticky, preserve_host) = match p {
                 RawProxy::Url(u) => (vec![u.clone()], None, None, false),
                 RawProxy::Full(f) => (
@@ -1720,22 +1857,271 @@ impl<'h> Compiler<'h> {
                     None => {
                         self.diags.error(
                             format!("{loc}.proxy.sticky"),
-                            "use the form \"header:<name>\", e.g. \"header:mcp-session-id\"",
+                            "use the form \"header:<name>\", e.g. \"header:x-tenant-id\"",
                         );
                         None
                     }
                 },
             };
-            return Some(Action::Proxy(Arc::new(Proxy {
+            Arc::new(Proxy {
                 upstreams,
                 strip_prefix,
                 sticky_header,
                 preserve_host,
-            })));
+            })
         }
-        let h = r.handler.as_ref()?;
-        self.handler_ref(h, r.runtime.as_deref(), &format!("{loc}.handler"))
-            .map(Action::Handler)
+    }
+
+    /// Drafts the MCP endpoint route and one hidden route per tool.
+    fn mcp(
+        &mut self,
+        raw: &RawMcp,
+        lines: &McpLines,
+        drafts: &mut Vec<Draft>,
+    ) -> Option<McpPending> {
+        let source = Source::Mcp {
+            file: self.config_file.clone(),
+            line: lines.table,
+        };
+        let loc = source.loc();
+        if !self.check_path(&raw.path, &loc) {
+            return None;
+        }
+        if parse_pattern(&raw.path)
+            .iter()
+            .any(|s| !matches!(s, Seg::Lit(_)))
+        {
+            self.diags.error(
+                format!("{loc}.path"),
+                "the MCP endpoint path can't have parameters",
+            );
+            return None;
+        }
+        let proxy = raw
+            .proxy
+            .as_ref()
+            .map(|p| self.proxy(p, &format!("{loc}.proxy")));
+        let layer = self.layer(&raw.policies(), &loc, None);
+        for (key, set) in [
+            ("cache", layer.cache.is_some()),
+            ("stream_body", layer.stream_body.is_some()),
+        ] {
+            if set {
+                self.diags.push(
+                    Diagnostic::error(&loc, format!("`{key}` doesn't apply to an MCP endpoint"))
+                        .hint("remove it from the policy sets that [mcp] uses"),
+                );
+            }
+        }
+        let list_ttl = match raw.list_ttl.map(|d| d.0) {
+            Some(d) if d.is_zero() => {
+                self.diags
+                    .error(format!("{loc}.list_ttl"), "list_ttl must be longer than 0");
+                Duration::from_secs(300)
+            }
+            Some(d) => d,
+            None => Duration::from_secs(300),
+        };
+        drafts.push(Draft {
+            methods: Some(vec!["POST".into()]),
+            path: raw.path.clone(),
+            host: None,
+            action: Action::Mcp,
+            source: source.clone(),
+            own: layer.clone(),
+            inherit: Vec::new(),
+            validation: RawValidation::default(),
+            openapi_layer: None,
+            folder_layers: Vec::new(),
+            op: None,
+        });
+
+        let mut tools = Vec::new();
+        let mut names: HashMap<String, String> = HashMap::new();
+        for (i, t) in raw.tool.iter().enumerate() {
+            let source = Source::McpTool {
+                file: self.config_file.clone(),
+                line: lines.tools.get(i).copied(),
+                index: i + 1,
+                name: t.name.clone(),
+            };
+            let tloc = source.loc();
+            if let Err(e) = mcp::check_tool_name(&t.name) {
+                self.diags.error(format!("{tloc}.name"), e);
+                continue;
+            }
+            if let Some(other) = names.insert(t.name.clone(), source.to_string()) {
+                self.diags.error(
+                    format!("{tloc}.name"),
+                    format!("tool \"{}\" is already defined at {other}", t.name),
+                );
+                continue;
+            }
+            let endpoint = (loc.clone(), layer.clone());
+            if let Some(t) = self.mcp_tool(t, source, proxy.as_ref(), endpoint, drafts) {
+                tools.push(t);
+            }
+        }
+        if raw.tool.is_empty() && proxy.is_none() {
+            self.diags.push(
+                Diagnostic::warning(&loc, "the MCP endpoint has no tools").hint(
+                    "add [[mcp.tool]] entries, or set `proxy` to forward to an existing MCP server",
+                ),
+            );
+        }
+        Some(McpPending {
+            endpoint: McpEndpoint {
+                path: raw.path.clone(),
+                route: 0,
+                server: ServerInfo {
+                    name: raw.name.clone().unwrap_or_else(|| "unsworn".into()),
+                    version: raw.version.clone().unwrap_or_else(|| crate::VERSION.into()),
+                    title: raw.title.clone(),
+                },
+                instructions: raw.instructions.clone(),
+                list_tools: raw.list_tools,
+                list_ttl,
+                proxy,
+                tools: Vec::new(),
+            },
+            tools,
+        })
+    }
+
+    fn mcp_tool(
+        &mut self,
+        t: &config::RawMcpTool,
+        source: Source,
+        proxy: Option<&Arc<Proxy>>,
+        endpoint: (String, Layer),
+        drafts: &mut Vec<Draft>,
+    ) -> Option<McpTool> {
+        let loc = source.loc();
+        let own = self.layer(&t.policies(), &loc, None);
+        for key in endpoint_only_keys(&own)
+            .into_iter()
+            .chain(own.cache.is_some().then_some("cache"))
+            .chain(own.stream_body.is_some().then_some("stream_body"))
+        {
+            self.diags.push(
+                Diagnostic::error(&loc, format!("`{key}` can't be set on a tool"))
+                    .hint("it applies to the whole endpoint; set it in [mcp], or remove it from the policy sets this tool uses"),
+            );
+        }
+        // A tool's policies are checked on top of the endpoint's, so they can
+        // only add requirements.
+        if matches!(own.auth, Some(AuthReq::Public)) {
+            self.diags.push(
+                Diagnostic::error(
+                    format!("{loc}.auth"),
+                    "a tool can't loosen the endpoint's `auth`",
+                )
+                .hint("tool auth is checked in addition to [mcp] auth; remove `auth = \"none\"`"),
+            );
+        }
+        if matches!(own.rate_limit, Some(OrOff::Off)) {
+            self.diags.push(
+                Diagnostic::error(format!("{loc}.rate_limit"), "a tool can't switch off the endpoint's rate limit")
+                    .hint("the [mcp] rate limit counts every request to the endpoint; a tool's own limit is counted in addition"),
+            );
+        }
+
+        let input = match &t.input {
+            Some(s) => self.schema(s, &format!("{loc}.input"))?,
+            None => serde_json::json!({"type": "object", "additionalProperties": false}),
+        };
+        if let Err(e) = mcp::check_input_schema(&input) {
+            self.diags.error(format!("{loc}.input"), e);
+        }
+        let param_headers = match mcp::param_headers(&input) {
+            Ok(h) => h,
+            Err(errors) => {
+                for e in errors {
+                    self.diags.error(format!("{loc}.input"), e);
+                }
+                Vec::new()
+            }
+        };
+        let output = match &t.output {
+            Some(s) => Some(self.schema(s, &format!("{loc}.output"))?),
+            None => None,
+        };
+
+        let action = match proxy {
+            Some(p) => {
+                for (key, set) in [
+                    ("handler", t.handler.is_some()),
+                    ("runtime", t.runtime.is_some()),
+                    ("output", t.output.is_some()),
+                    ("title", t.title.is_some()),
+                    ("description", t.description.is_some()),
+                    ("annotations", t.annotations.is_some()),
+                ] {
+                    if set {
+                        self.diags.push(
+                            Diagnostic::error(
+                                format!("{loc}.{key}"),
+                                format!("`{key}` doesn't apply to a tool of a proxied MCP server"),
+                            )
+                            .hint("the server behind the proxy defines its tools; here a tool only adds policies and input validation"),
+                        );
+                    }
+                }
+                Action::Proxy(p.clone())
+            }
+            None => {
+                let Some(h) = &t.handler else {
+                    self.diags.push(
+                        Diagnostic::error(&loc, format!("tool \"{}\" has no handler", t.name))
+                            .hint("set `handler`, or set `proxy` in [mcp] to forward to an existing MCP server"),
+                    );
+                    return None;
+                };
+                if t.description.is_none() {
+                    self.diags.push(
+                        Diagnostic::warning(
+                            &loc,
+                            format!("tool \"{}\" has no description", t.name),
+                        )
+                        .hint("models choose tools by their descriptions"),
+                    );
+                }
+                Action::Handler(self.handler_ref(
+                    h,
+                    t.runtime.as_deref(),
+                    &format!("{loc}.handler"),
+                )?)
+            }
+        };
+
+        drafts.push(Draft {
+            methods: Some(vec!["POST".into()]),
+            path: format!("mcp:{}", t.name),
+            host: None,
+            action,
+            source: source.clone(),
+            own: own.clone(),
+            inherit: vec![endpoint],
+            validation: RawValidation {
+                body: Some((input.clone(), true)),
+                response: output.clone(),
+                ..Default::default()
+            },
+            openapi_layer: None,
+            folder_layers: Vec::new(),
+            op: None,
+        });
+        Some(McpTool {
+            name: t.name.clone(),
+            title: t.title.clone(),
+            description: t.description.clone(),
+            input_schema: input,
+            output_schema: output,
+            annotations: t.annotations.as_ref().and_then(mcp::annotations),
+            param_headers,
+            route: 0,
+            own,
+        })
     }
 
     fn route_files(&mut self, dir: &str, drafts: &mut Vec<Draft>) {
@@ -1806,6 +2192,7 @@ impl<'h> Compiler<'h> {
                 action: Action::Handler(h),
                 source: Source::RouteFile { path },
                 own: Layer::default(),
+                inherit: Vec::new(),
                 validation: RawValidation::default(),
                 openapi_layer: None,
                 folder_layers: layers,
@@ -1931,6 +2318,7 @@ impl<'h> Compiler<'h> {
                 action: Action::Handler(h),
                 source,
                 own: Layer::default(),
+                inherit: Vec::new(),
                 validation,
                 openapi_layer: layer,
                 folder_layers: Vec::new(),
@@ -1965,8 +2353,15 @@ impl<'h> Compiler<'h> {
             low.merge_from(l);
         }
 
-        let mut high = d.own.clone();
+        let mut high = Layer::default();
         let mut high_layers = Vec::new();
+        for (name, l) in &d.inherit {
+            high.merge_from(l);
+            if !l.is_empty() {
+                high_layers.push((name.clone(), l.clone()));
+            }
+        }
+        high.merge_from(&d.own);
         if !d.own.is_empty() {
             high_layers.push((loc.clone(), d.own.clone()));
         }
@@ -2114,7 +2509,8 @@ impl<'h> Compiler<'h> {
     }
 
     fn warnings(&mut self, routes: &[Route], prefixes: &[PrefixEntry]) {
-        for r in routes {
+        // Tools never stream or cache; `[mcp]` checks their policies.
+        for r in routes.iter().filter(|r| r.mcp_tool().is_none()) {
             let probe = r.path.replace("{*", "{");
             let mut layer = r.low.clone();
             for p in prefixes {
@@ -2189,7 +2585,7 @@ impl<'h> Compiler<'h> {
                     Err(e) => c.diags.error(loc, format!("can't add {pattern}: {e}")),
                 }
             };
-        for r in routes {
+        for r in routes.iter().filter(|r| r.mcp_tool().is_none()) {
             insert(
                 self,
                 &r.host,

@@ -27,7 +27,11 @@ pub fn openapi(project: &Project) -> Value {
         if matches!(route.source, Source::OpenApi { .. }) || route.catch_all.is_some() {
             continue;
         }
-        if matches!(route.action, Action::Static { .. } | Action::Proxy(_)) {
+        if matches!(
+            route.action,
+            Action::Static { .. } | Action::Proxy(_) | Action::Mcp
+        ) || route.mcp_tool().is_some()
+        {
             continue;
         }
         let Some(methods) = &route.methods else {

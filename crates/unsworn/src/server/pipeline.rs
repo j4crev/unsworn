@@ -887,6 +887,12 @@ fn run_action<'a>(
                     Err(e) => call_error(ctx, h, e),
                 }
             }
+            // `make_generation` refuses projects with `[mcp]` until the
+            // endpoint is served.
+            Action::Mcp => problem(
+                StatusCode::NOT_IMPLEMENTED,
+                "serving MCP endpoints isn't available yet",
+            ),
         }
     })
 }
