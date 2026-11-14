@@ -995,3 +995,64 @@ fn upload(s: &common::Server, path: &str, body: &[u8], chunked: bool) -> common:
     let _ = stream.read_to_end(&mut raw);
     common::parse_response(&raw)
 }
+
+#[test]
+fn redis_store_is_shared_and_fails_open() {
+    let rate_limited = |store: &str| {
+        format!(
+            r#"
+{store}
+
+[[route]]
+path = "/limited"
+respond = {{ status = 200, text = "ok" }}
+rate_limit = {{ requests = 2, per = "1m", key = "ip" }}
+"#
+        )
+    };
+
+    // Unreachable: rate limits let requests through (on_error = "open" by
+    // default), health stays ok but reports it, and metrics count errors.
+    let down = r#"[store]
+backend = "redis"
+url = "redis://127.0.0.1:1""#;
+    let p = Project::new(&[("unsworn.toml", &rate_limited(down))]);
+    let s = p.serve();
+    for _ in 0..3 {
+        assert_eq!(s.get("/limited").status, 200);
+    }
+    let health = s.get("/_unsworn/health");
+    assert_eq!(health.status, 200, "{}", health.text());
+    assert_eq!(health.json()["store"]["reachable"], false);
+    assert!(
+        s.logs().contains("letting requests through uncounted"),
+        "{}",
+        s.logs()
+    );
+    drop(s);
+
+    // on_error = "closed" answers 503 instead.
+    let closed = format!("{down}\non_error = \"closed\"");
+    let p = Project::new(&[("unsworn.toml", &rate_limited(&closed))]);
+    let s = p.serve();
+    assert_eq!(s.get("/limited").status, 503);
+    drop(s);
+
+    // Two instances sharing a real Redis share one rate limit.
+    let Ok(url) = std::env::var("UNSWORN_TEST_REDIS_URL") else {
+        eprintln!("skipping the shared part: set UNSWORN_TEST_REDIS_URL");
+        return;
+    };
+    let shared = format!(
+        "[store]\nbackend = \"redis\"\nurl = \"{url}\"\nprefix = \"e2e-{}:\"",
+        std::process::id()
+    );
+    let p = Project::new(&[("unsworn.toml", &rate_limited(&shared))]);
+    let a = p.serve();
+    let b = p.serve();
+    assert_eq!(a.get("/limited").status, 200);
+    assert_eq!(b.get("/limited").status, 200);
+    assert_eq!(a.get("/limited").status, 429, "the limit is shared");
+    assert_eq!(b.get("/limited").status, 429);
+    assert_eq!(a.get("/_unsworn/health").json()["store"]["reachable"], true);
+}

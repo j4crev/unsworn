@@ -465,3 +465,22 @@ use = ["uploads"]
         vec!["src/upload.ts".to_string()]
     );
 }
+
+#[test]
+fn store_config_is_checked() {
+    let errs = errors(&[("unsworn.toml", "[store]\nbackend = \"redis\"\n")]);
+    assert!(errs.iter().any(|e| e.contains("needs a `url`")), "{errs:?}");
+    let errs = errors(&[(
+        "unsworn.toml",
+        "[store]\nbackend = \"redis\"\nurl = \"http://cache:6379\"\n",
+    )]);
+    assert!(errs.iter().any(|e| e.contains("redis://")), "{errs:?}");
+
+    let p = project(&[(
+        "unsworn.toml",
+        "[store]\nbackend = \"redis\"\nurl = \"rediss://cache:6380\"\non_error = \"closed\"\n",
+    )]);
+    assert_eq!(p.store.backend, crate::config::StoreBackend::Redis);
+    assert_eq!(p.store.on_error, crate::config::OnError::Closed);
+    assert_eq!(p.store.prefix, "");
+}

@@ -311,10 +311,13 @@ impl PrefixEntry {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StoreConfig {
-    pub backend: String,
+    pub backend: config::StoreBackend,
     pub url: Option<String>,
+    /// Prepended to every key. Empty by default.
+    pub prefix: String,
+    pub on_error: config::OnError,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1091,23 +1094,39 @@ impl<'h> Compiler<'h> {
     }
 
     fn store(&mut self, raw: &RawConfig) -> StoreConfig {
-        let store = raw.store.clone().unwrap_or(config::RawStore {
-            backend: "memory".into(),
-            url: None,
-        });
-        if store.backend != "memory" {
-            self.diags.push(
-                Diagnostic::error(
-                    "[store].backend",
-                    format!("the \"{}\" store isn't supported yet", store.backend),
-                )
-                .hint("v1 supports `backend = \"memory\"`"),
-            );
-        }
+        let store = raw.store.clone().unwrap_or_default();
         let url = store.url.as_ref().map(|u| self.subst(u, "[store].url"));
+        match (store.backend, &url) {
+            (config::StoreBackend::Redis, None) => {
+                self.diags.push(
+                    Diagnostic::error("[store].url", "the redis store needs a `url`")
+                        .hint("url = \"{env.REDIS_URL}\""),
+                );
+            }
+            (config::StoreBackend::Redis, Some(u))
+                if !u.is_empty()
+                    && !["redis://", "rediss://", "redis+unix://", "unix://"]
+                        .iter()
+                        .any(|s| u.starts_with(s)) =>
+            {
+                self.diags.error(
+                    "[store].url",
+                    "must start with redis://, rediss:// (TLS) or redis+unix://",
+                );
+            }
+            (config::StoreBackend::Memory, Some(_)) => {
+                self.diags.push(Diagnostic::warning(
+                    "[store].url",
+                    "`url` is only used by the redis store",
+                ));
+            }
+            _ => {}
+        }
         StoreConfig {
             backend: store.backend,
             url,
+            prefix: store.prefix.unwrap_or_default(),
+            on_error: store.on_error,
         }
     }
 

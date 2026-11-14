@@ -22,10 +22,9 @@ use unsworn_core::rules;
 use unsworn_proto::{Phase, Request as ProtoRequest};
 
 use super::proxy;
-use super::support::{
-    Body, CachedResponse, MAX_CACHED_BODY, empty, full, json_response, problem, problem_with,
-};
+use super::support::{Body, empty, full, json_response, problem, problem_with};
 use super::{Generation, Shared};
+use crate::store::{CachedResponse, MAX_CACHED_BODY, RateLimit};
 use crate::workers::{BodyError, CallBody, CallError, Reply, ReplyBody};
 
 /// Per-request facts used across steps.
@@ -375,16 +374,22 @@ fn prepare<'a>(
             let key = key_value(&limit.key, ip, req.headers(), claims.as_ref())
                 .unwrap_or_else(|| ip.to_string());
             let bucket = format!("{}|{}|{key}", route.id, limit.key.describe());
-            if let Err(wait) = ctx
-                .shared
-                .store
-                .rate_limit(&bucket, limit.requests, limit.per)
-            {
-                let mut resp = problem(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
-                let secs = wait.as_secs_f64().ceil().max(1.0) as u64;
-                resp.headers_mut()
-                    .insert(header::RETRY_AFTER, HeaderValue::from(secs));
-                return Err(resp);
+            let store = ctx.shared.store.load_full();
+            match store.rate_limit(&bucket, limit.requests, limit.per).await {
+                RateLimit::Allowed => {}
+                RateLimit::Limited { retry_after } => {
+                    let mut resp = problem(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
+                    let secs = retry_after.as_secs_f64().ceil().max(1.0) as u64;
+                    resp.headers_mut()
+                        .insert(header::RETRY_AFTER, HeaderValue::from(secs));
+                    return Err(resp);
+                }
+                RateLimit::Unavailable => {
+                    return Err(problem(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "rate limiting is unavailable",
+                    ));
+                }
             }
         }
 
@@ -404,7 +409,7 @@ fn prepare<'a>(
             None => None,
         };
         if let Some(key) = &cache_key
-            && let Some(hit) = ctx.shared.store.cache_get(key)
+            && let Some(hit) = ctx.shared.store.load_full().cache_get(key).await
         {
             return Err(cached_response(&hit, &method, ctx.shared.dev));
         }
@@ -599,10 +604,8 @@ fn cached_response(hit: &CachedResponse, method: &str, dev: bool) -> Response<Bo
     for (k, v) in &hit.headers {
         append_raw(resp.headers_mut(), k, v.clone());
     }
-    resp.headers_mut().insert(
-        header::AGE,
-        HeaderValue::from(hit.stored.elapsed().as_secs()),
-    );
+    resp.headers_mut()
+        .insert(header::AGE, HeaderValue::from(hit.age().as_secs()));
     if dev {
         resp.headers_mut()
             .insert("x-unsworn-cache", HeaderValue::from_static("hit"));
@@ -916,21 +919,21 @@ async fn store_in_cache(
         // Too large or failed midway: serve what we have without caching.
         return Response::from_parts(parts, full(bytes));
     }
-    shared.store.cache_put(
-        key,
-        CachedResponse {
-            status,
-            headers: parts
-                .headers
-                .iter()
-                .filter(|(k, _)| *k != header::DATE)
-                .map(|(k, v)| (k.as_str().to_string(), v.clone()))
-                .collect(),
-            body: bytes.clone(),
-            stored: Instant::now(),
-            ttl,
-        },
-    );
+    let entry = CachedResponse {
+        status,
+        headers: parts
+            .headers
+            .iter()
+            .filter(|(k, _)| *k != header::DATE)
+            .map(|(k, v)| (k.as_str().to_string(), v.clone()))
+            .collect(),
+        body: bytes.clone(),
+        stored: std::time::SystemTime::now(),
+        ttl,
+    };
+    // Written in the background, so a slow store never delays the response.
+    let store = shared.store.load_full();
+    tokio::spawn(async move { store.cache_put(key, entry).await });
     let mut resp = Response::from_parts(parts, full(bytes));
     if shared.dev {
         resp.headers_mut()
@@ -1196,9 +1199,13 @@ fn health(ctx: &Ctx) -> Response<Body> {
     let degraded = runtimes
         .iter()
         .any(|(_, started, alive, crashes)| (*started && *alive == 0) || *crashes >= 5);
+    // A store outage doesn't make the instance unhealthy: every instance
+    // shares the store, so they'd all be pulled at once.
+    let store = ctx.shared.store.load();
     let body = json!({
         "status": if degraded { "degraded" } else { "ok" },
         "version": unsworn_core::VERSION,
+        "store": { "backend": store.backend_name(), "reachable": store.is_up() },
         "runtimes": runtimes.iter().map(|(name, started, alive, crashes)| json!({
             "name": name,
             "started": started,

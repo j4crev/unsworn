@@ -227,7 +227,3 @@ per-target capability table.
 - **Response validation** defaults to `log`.
 - **Tier 2 encoding:** length-prefixed frames carrying the same JSON as
   Tier 1, plus raw body bytes (see [`protocol.md`](protocol.md)).
-
-## Open questions
-
-- A shared store (Redis first) for rate limits and caches across instances.

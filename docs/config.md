@@ -163,15 +163,29 @@ protected-resource metadata and answers missing tokens with the
 
 ### `[store]`
 
+Where `rate_limit` and `cache` keep their state.
+
 ```toml
 [store]
-backend = "memory"
+backend  = "redis"              # "memory" (the default) | "redis"
+url      = "{env.REDIS_URL}"    # redis://, rediss:// (TLS) or redis+unix://
+prefix   = "billing:"           # optional, prepended to every key
+on_error = "open"               # "open" (the default) | "closed"
 ```
 
-v1 supports only `memory`, which is fine on a single node. Shared backends
-(Redis and platform stores) come with the edge and serverless targets, which
-need them for `rate_limit` and `cache`; `unsworn check --target <t>` reports
-this.
+`memory` keeps state in the process, which is fine for a single instance.
+With several instances, each would count its own rate limits and fill its
+own cache, so use `redis` (or anything that speaks its protocol, such as
+Valkey, Dragonfly or a managed Redis) to share them.
+
+- **`prefix`:** set it when separate projects or environments share one
+  Redis. Without it, two projects with the same routes share rate limits and
+  can serve each other's cached responses.
+- **`on_error`:** if Redis can't be reached, rate-limited routes let requests
+  through uncounted (`"open"`), or answer `503` (`"closed"`). Caching is
+  skipped either way. Unsworn reconnects on its own, logs the outage, and
+  reports it in `/_unsworn/health` and the `unsworn_store_up` metric without
+  marking the instance unhealthy, since every instance shares the store.
 
 ### `{env.NAME}`
 

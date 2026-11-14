@@ -29,7 +29,7 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
         "--target",
         format!("the {target} target is planned for {version}; this only checks capabilities"),
     ));
-    let stateless_memory = project.store.backend == "memory";
+    let stateless_memory = project.store.backend == crate::config::StoreBackend::Memory;
     for route in &project.routes {
         let eff = project.effective(route, "GET", &route.path.replace("{*", "{"));
         if stateless_memory && eff.rate_limit.is_some() {
