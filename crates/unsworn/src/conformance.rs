@@ -16,7 +16,8 @@ use crate::load;
 use crate::workers::{CallError, Pool, PoolOptions, Reply, ReplyBody, SocketDir};
 
 const HANDLERS: &[&str] = &[
-    "echo", "text", "binary", "status", "stream", "fail", "slow", "crash", "allow", "deny", "noisy",
+    "echo", "text", "binary", "status", "stream", "fail", "slow", "crash", "allow", "deny",
+    "noisy", "log",
 ];
 
 struct Suite {
@@ -43,7 +44,9 @@ impl Suite {
         body: Option<Bytes>,
         timeout: Duration,
     ) -> Result<Reply, CallError> {
-        self.pool.call(req, body, Instant::now() + timeout).await
+        self.pool
+            .call(req, body, Instant::now() + timeout, "conformance".into())
+            .await
     }
 
     fn report(&mut self, name: &str, result: Result<(), String>) {
@@ -106,6 +109,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
     let mut single = (*rt).clone();
     single.workers = Some(1);
     let sockets = SocketDir::create().map_err(|e| e.to_string())?;
+    let (log_tx, mut logs) = mpsc::unbounded_channel();
     let pool = Pool::standalone(
         Arc::new(single),
         refs,
@@ -114,6 +118,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
             dev: true,
             build: true,
             socket_dir: sockets.path().to_path_buf(),
+            log_tap: Some(log_tx),
         },
     );
 
@@ -333,6 +338,28 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
     });
     s.report("stray output doesn't break the worker", res);
 
+    // log records
+    let r = s.call(s.request("log"), None, Duration::from_secs(5)).await;
+    let res = expect_response(r).and_then(|_| {
+        // The record is sent before the response, so it has arrived by now.
+        while let Ok(log) = logs.try_recv() {
+            if log.message != "conformance log" {
+                continue;
+            }
+            return if log.level != unsworn_proto::LogLevel::Info {
+                Err(format!("level {:?} (want info)", log.level))
+            } else if log.fields.get("n") != Some(&json!(1)) {
+                Err(format!("fields {:?} (want n: 1)", log.fields))
+            } else if log.id.is_none() {
+                Err("the record has no request id".into())
+            } else {
+                Ok(())
+            };
+        }
+        Err("no `log` message \"conformance log\" arrived".into())
+    });
+    s.report("`log` records tied to their request", res);
+
     // concurrency
     let max = pool.max_in_flight();
     if max > 1 {
@@ -343,8 +370,13 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
             let req = s.request("slow");
             let p = pool.clone();
             tasks.push(tokio::spawn(async move {
-                p.call(req, None, Instant::now() + Duration::from_secs(10))
-                    .await
+                p.call(
+                    req,
+                    None,
+                    Instant::now() + Duration::from_secs(10),
+                    "conformance".into(),
+                )
+                .await
             }));
         }
         let mut ok = true;

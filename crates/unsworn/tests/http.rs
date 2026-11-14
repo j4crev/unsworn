@@ -802,3 +802,82 @@ fn published_schema_is_up_to_date() {
         "schema/unsworn.schema.json is stale: run `unsworn schema > schema/unsworn.schema.json`"
     );
 }
+
+#[test]
+fn worker_log_records() {
+    if !needs_python() {
+        return;
+    }
+    // A worker with no SDK: one `log` message, one JSON line on stderr in the
+    // shape JSON loggers write, and one plain stderr line.
+    let worker = r##"
+import json, os, sys
+out = sys.stdout.buffer
+def send(m):
+    out.write(json.dumps(m).encode() + b"\n"); out.flush()
+send({"type": "ready", "protocol": 1})
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("type") != "request":
+        continue
+    rid = msg["id"]
+    send({"type": "log", "id": rid, "level": "warn", "message": "via protocol", "fields": {"amount": 1200}})
+    print(json.dumps({"level": 30, "msg": "via json stderr", "id": rid, "user": "ada"}), file=sys.stderr, flush=True)
+    print("plain stderr line", file=sys.stderr, flush=True)
+    send({"type": "response", "id": rid, "status": 200, "json": {"level": os.environ.get("UNSWORN_LOG_LEVEL")}})
+"##;
+    let cfg = format!(
+        r#"{PY}
+[[route]]
+path = "/work"
+handler = "src/work.py"
+"#
+    );
+    let p = Project::new(&[
+        ("unsworn.toml", &cfg),
+        ("worker.py", worker),
+        ("src/work.py", ""),
+    ]);
+    let s = p.start_with(&["serve", "--log-format", "json"]);
+    let r = s.request("GET", "/work", &[("x-request-id", "req-abc")], b"");
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(
+        r.json()["level"],
+        "info",
+        "workers learn Unsworn's log level"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let find = |message: &str| loop {
+        let found = s
+            .logs()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find(|v| v["message"] == message);
+        if let Some(v) = found {
+            return v;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no log record {message:?} in:\n{}",
+            s.logs()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+
+    let v = find("via protocol");
+    assert_eq!(v["level"], "WARN");
+    assert_eq!(v["id"], "req-abc");
+    assert_eq!(v["route"], "/work");
+    assert_eq!(v["runtime"], "py");
+    assert_eq!(v["fields"], r#"{"amount":1200}"#);
+
+    let v = find("via json stderr");
+    assert_eq!(v["level"], "INFO");
+    assert_eq!(v["id"], "req-abc");
+    assert_eq!(v["fields"], r#"{"user":"ada"}"#);
+
+    let v = find("plain stderr line");
+    assert_eq!(v["stream"], "stderr");
+    assert!(v.get("id").is_none());
+}

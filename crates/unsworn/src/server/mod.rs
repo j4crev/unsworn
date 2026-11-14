@@ -88,6 +88,7 @@ fn make_generation(
             dev,
             build,
             socket_dir: dir,
+            log_tap: None,
         },
     );
     Ok(Generation {

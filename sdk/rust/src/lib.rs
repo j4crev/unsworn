@@ -30,6 +30,7 @@
 //! `get_user`. See [`Handlers`].
 
 mod handlers;
+mod logging;
 mod worker;
 
 use std::collections::BTreeMap;
@@ -47,6 +48,7 @@ use serde_json::{Map, Value};
 use tokio::sync::Notify;
 
 pub use handlers::Handlers;
+pub use logging::LogLayer;
 pub use serde_json::{Value as JsonValue, json};
 pub use unsworn_proto::Phase;
 pub use worker::{run, serve};

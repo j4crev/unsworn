@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import importlib.util
 import inspect
+import json
+import logging
 import os
 import sys
+import threading
 import traceback
 from typing import Any, Callable
 
@@ -17,6 +22,11 @@ ROOT = os.environ.get("UNSWORN_ROOT", os.getcwd())
 TRANSPORT = os.environ.get("UNSWORN_TRANSPORT", "stdio")
 MAX_IN_FLIGHT = int(os.environ.get("UNSWORN_MAX_IN_FLIGHT", "32"))
 DEV = os.environ.get("UNSWORN_DEV") == "1"
+# Set by Unsworn versions that accept `log` messages. Without it, logging
+# keeps Python's defaults (stderr).
+LOG_LEVEL = os.environ.get("UNSWORN_LOG_LEVEL")
+
+_current_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("unsworn_request_id", default=None)
 
 _modules: dict[str, Any] = {}
 
@@ -53,6 +63,66 @@ def resolve(ref: str) -> Callable:
     if not callable(fn):
         raise TypeError(f"{ref} isn't callable")
     return fn
+
+
+_LEVELS = {"error": logging.ERROR, "warn": logging.WARNING, "info": logging.INFO, "debug": logging.DEBUG, "trace": 5}
+# Attributes every LogRecord has; anything else came from `extra=`.
+_RECORD_ATTRS = set(vars(logging.LogRecord("", 0, "", 0, "", None, None))) | {"message", "asctime", "taskName"}
+
+
+def _level_name(levelno: int) -> str:
+    if levelno >= logging.ERROR:
+        return "error"
+    if levelno >= logging.WARNING:
+        return "warn"
+    if levelno >= logging.INFO:
+        return "info"
+    if levelno >= logging.DEBUG:
+        return "debug"
+    return "trace"
+
+
+class LogHandler(logging.Handler):
+    """Sends ``logging`` records to Unsworn, tagged with the current request."""
+
+    def __init__(self, worker: "Worker", loop: asyncio.AbstractEventLoop) -> None:
+        super().__init__()
+        self.worker = worker
+        self.loop = loop
+        self.loop_thread = threading.get_ident()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = record.getMessage()
+            if record.exc_info:
+                message += "\n" + self.formatter_exception(record)
+            fields = {k: v for k, v in vars(record).items() if k not in _RECORD_ATTRS}
+            if record.name != "root":
+                fields["logger"] = record.name
+            out: dict[str, Any] = {"type": "log", "level": _level_name(record.levelno), "message": message}
+            rid = _current_id.get()
+            if rid is not None:
+                out["id"] = rid
+            if fields:
+                out["fields"] = json.loads(json.dumps(fields, default=str))
+            if threading.get_ident() == self.loop_thread:
+                self.worker.send(out)
+            else:
+                self.loop.call_soon_threadsafe(self.worker.send, out)
+        except Exception:  # noqa: BLE001 - logging must never raise
+            self.handleError(record)
+
+    @staticmethod
+    def formatter_exception(record: logging.LogRecord) -> str:
+        return logging.Formatter().formatException(record.exc_info)  # type: ignore[arg-type]
+
+
+def _install_logging(worker: "Worker") -> None:
+    if LOG_LEVEL is None:
+        return
+    root = logging.getLogger()
+    root.addHandler(LogHandler(worker, asyncio.get_running_loop()))
+    root.setLevel(_LEVELS.get(LOG_LEVEL, logging.CRITICAL + 1))
 
 
 class Worker:
@@ -109,13 +179,16 @@ class Worker:
         )
         self.requests[rid] = req
         ctx = msg.get("context") or {}
+        # Each task has its own context, so this only tags this request's logs.
+        _current_id.set(rid)
         try:
             fn = resolve(req.handler)
             if inspect.iscoroutinefunction(fn):
                 result = await fn(req, ctx)
             else:
                 loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(None, fn, req, ctx)
+                call = functools.partial(contextvars.copy_context().run, fn, req, ctx)
+                result = await loop.run_in_executor(None, call)
                 if inspect.isawaitable(result):
                     result = await result
             await self.reply(rid, result, req)
@@ -211,6 +284,7 @@ async def _run_stdio() -> None:
     reader = asyncio.StreamReader()
     await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer)
     worker.send(_ready())
+    _install_logging(worker)
     while True:
         data = await reader.read(65536)
         if not data:
@@ -223,6 +297,7 @@ async def _run_unix(path: str) -> None:
     reader, writer = await asyncio.open_unix_connection(path)
     worker = Worker(FramedCodec(), writer.write)
     worker.send(_ready())
+    _install_logging(worker)
     while True:
         data = await reader.read(65536)
         if not data:

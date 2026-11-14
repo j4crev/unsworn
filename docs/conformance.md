@@ -43,6 +43,7 @@ Each handler is called by name (`<file>#<name>`). Every request arrives with
 | `allow` | before | Send `continue` with the context `{ "checked": true }`. |
 | `deny` | before | Respond `403`. |
 | `noisy` | handle | Write a line that isn't a protocol message to stdout (Tier 1) or to the log, then respond `200`. |
+| `log` | handle | Log `conformance log` at `info` with the field `n: 1`, through the SDK's logging integration, then respond `200`. |
 
 `does_not_exist` is listed in the `verify` request but must not exist, so
 the worker reports it as missing. Workers that don't support `verify` skip
@@ -60,6 +61,7 @@ that check.
 - `error` messages
 - `before` handlers continuing with context, and rejecting
 - stray stdout output doesn't break the worker
+- a `log` record arrives with its level, fields and request `id`
 - several requests in flight at once, when `max_in_flight` is above 1
 - a timed-out request is cancelled, and the worker keeps answering
 - a crash fails only the request in flight, and the worker is restarted

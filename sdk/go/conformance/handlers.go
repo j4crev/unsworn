@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 )
 
 func main() {
-	unsworn.Serve(echo, text, binary, status, stream, fail, slow, crash, allow, deny, noisy)
+	unsworn.Serve(echo, text, binary, status, stream, fail, slow, crash, allow, deny, noisy, log)
 }
 
 func echo(req *unsworn.Request) (unsworn.Reply, error) {
@@ -86,4 +87,9 @@ func deny(req *unsworn.Request) (unsworn.Reply, error) {
 func noisy(req *unsworn.Request) (unsworn.Reply, error) {
 	fmt.Println("this goes to stderr, not the protocol stream")
 	return unsworn.Text("ok"), nil
+}
+
+func log(req *unsworn.Request) (unsworn.Reply, error) {
+	slog.InfoContext(req.Context(), "conformance log", "n", 1)
+	return unsworn.Status(200), nil
 }

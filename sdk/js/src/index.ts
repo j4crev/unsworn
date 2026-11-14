@@ -38,7 +38,40 @@ export interface UnswornRequest<S extends Shape = Shape> {
   /** The handler reference, e.g. `src/users.ts#getUser`. */
   handler: string;
   phase: "handle" | "before";
+  /** Logs to Unsworn, tagged with this request. */
+  log: Logger;
 }
+
+/** Sends log records to Unsworn. `fields` are kept as structured data. */
+export interface Logger {
+  error(message: string, fields?: Record<string, unknown>): void;
+  warn(message: string, fields?: Record<string, unknown>): void;
+  info(message: string, fields?: Record<string, unknown>): void;
+  debug(message: string, fields?: Record<string, unknown>): void;
+  trace(message: string, fields?: Record<string, unknown>): void;
+}
+
+function fallback(level: string) {
+  return (message: string, fields?: Record<string, unknown>) =>
+    console.error(`[${level}] ${message}`, ...(fields ? [fields] : []));
+}
+
+function worker(): Logger | undefined {
+  return (globalThis as Record<symbol, Logger | undefined>)[Symbol.for("unsworn.log")];
+}
+
+/**
+ * Logs to Unsworn from anywhere in handler code. Records written while a
+ * request is being handled are tagged with it. Outside the worker (in
+ * tests, say), records go to stderr.
+ */
+export const log: Logger = {
+  error: (m, f) => (worker()?.error ?? fallback("error"))(m, f),
+  warn: (m, f) => (worker()?.warn ?? fallback("warn"))(m, f),
+  info: (m, f) => (worker()?.info ?? fallback("info"))(m, f),
+  debug: (m, f) => (worker()?.debug ?? fallback("debug"))(m, f),
+  trace: (m, f) => (worker()?.trace ?? fallback("trace"))(m, f),
+};
 
 /** Verified credentials plus anything added by `before` handlers. */
 export interface Context {

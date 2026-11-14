@@ -84,6 +84,8 @@ func run(c codec, out io.Writer) error {
 	}, nil); err != nil {
 		return err
 	}
+	installLogging(w)
+	defer active.CompareAndSwap(w, nil)
 	for {
 		m, body, err := c.read()
 		if errors.Is(err, io.EOF) {
@@ -154,6 +156,7 @@ func (w *worker) start(m *inMessage, body []byte) {
 	} else {
 		ctx, cancel = context.WithCancel(context.Background())
 	}
+	ctx = context.WithValue(ctx, requestIDKey{}, m.ID)
 	w.mu.Lock()
 	w.inFlight[m.ID] = &call{cancel: cancel}
 	w.mu.Unlock()

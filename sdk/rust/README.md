@@ -96,6 +96,18 @@ anything before handlers added), `json`, `text`, `body`, `handler` and
 Each request runs as its own Tokio task. `run` starts a multi-threaded
 runtime; inside an existing one, call `unsworn_sdk::serve(handlers).await`.
 
+## Logging
+
+The worker sends `tracing` events, and `log` records, to Unsworn, tagged with
+the request being handled:
+
+```rust
+tracing::info!(amount = 1200, "charged card");
+```
+
+If the program sets its own global subscriber first, add
+`unsworn_sdk::LogLayer` to it.
+
 ## Route files
 
 Route file names such as `users.[id].get.rs` aren't valid module names, so

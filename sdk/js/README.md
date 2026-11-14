@@ -54,6 +54,20 @@ path = "/{*rest}"
 handler = "src/app.ts"     # export default app
 ```
 
+## Logging
+
+`req.log.info("charged card", { amount: 1200 })` sends a log record to
+Unsworn, tagged with the request. `log`, exported from `@unswornjs/sdk`, does
+the same from any module, using the request that is running:
+
+```ts
+import { log } from "@unswornjs/sdk";
+
+log.warn("retrying payment", { attempt: 2 });
+```
+
+Levels are `error`, `warn`, `info`, `debug` and `trace`.
+
 ## Notes
 
 - `req.signal` is aborted when Unsworn cancels the request.

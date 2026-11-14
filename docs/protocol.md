@@ -24,6 +24,7 @@ variables:
 | `UNSWORN_TRANSPORT` | `stdio` or `unix:/run/unsworn/ts-0.sock` | Where to talk |
 | `UNSWORN_ROOT` | `/app` | Project root; handler paths are relative to it |
 | `UNSWORN_WORKER_ID` | `ts-0` | Worker id, for logs |
+| `UNSWORN_LOG_LEVEL` | `info` | The most verbose [`log`](#log-worker--unsworn) level Unsworn keeps: `error`, `warn`, `info`, `debug`, `trace` or `off` |
 
 **The worker speaks first** by sending `ready`. Unsworn sends nothing until it
 arrives, so a worker never has to handle a greeting.
@@ -165,6 +166,27 @@ The handler failed. Unsworn returns `500` to the client and logs the message.
 Without `id`, the error concerns the whole worker; Unsworn logs it and
 restarts the worker.
 
+### `log` (worker → Unsworn)
+
+```json
+{"type":"log","id":"r-81","level":"info","message":"charged card","fields":{"amount":1200}}
+```
+
+- `level`: `error`, `warn`, `info`, `debug` or `trace`.
+- `id`: optional. Unsworn tags the record with that request's route and its
+  HTTP request id (the `x-request-id` it returns), so a handler's logs line
+  up with the access log.
+- `fields`: optional, kept as structured data.
+
+Workers may skip records more verbose than `UNSWORN_LOG_LEVEL`. When that
+variable isn't set, the Unsworn version doesn't accept `log`, so SDKs write
+to stderr instead.
+
+Output on stderr (and on stdout, on Tier 2) is logged too. A line that is a
+JSON object with `level` and `message` or `msg`, as JSON loggers such as
+pino, structlog, zap and Go's slog write, is logged as a structured record,
+tied to its request if it has an `id` field naming one in flight.
+
 ### Failure handling
 
 | Situation | Client gets | Unsworn does |
@@ -221,6 +243,8 @@ for line in sys.stdin:
     if msg["type"] != "request":
         continue  # e.g. cancel: safe to ignore in a sequential worker
     user = {"id": msg["params"]["id"], "name": "Ada"}
+    log = {"type": "log", "id": msg["id"], "level": "info", "message": "found user"}
+    print(json.dumps(log), flush=True)
     reply = {"type": "response", "id": msg["id"], "status": 200, "json": user}
     print(json.dumps(reply), flush=True)
 ```
@@ -296,8 +320,6 @@ the target language before running it.
 
 - Request body streaming to workers (`request` with `"stream": true` followed
   by `chunk` messages), in v1 or later?
-- Should workers be able to send log records through the protocol, with
-  levels and fields, in addition to stderr?
 - WebSockets: proxy-only in v1, or a message type for handler-owned sockets?
 - A `progress` message (worker → Unsworn) for long-running work, which
   Unsworn would turn into MCP progress notifications for tool calls.

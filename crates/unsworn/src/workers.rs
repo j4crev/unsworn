@@ -20,7 +20,8 @@ use unsworn_core::Project;
 use unsworn_core::config::Protocol;
 use unsworn_core::project::Runtime;
 use unsworn_proto::{
-    self as proto, Cancel, DecodeError, Frame, Message, PROTOCOL_VERSION, Request, Response, Verify,
+    self as proto, Cancel, DecodeError, Frame, LogLevel, Message, PROTOCOL_VERSION, Request,
+    Response, Verify,
 };
 
 /// What a handler call produced.
@@ -66,10 +67,26 @@ enum Pending {
     Verify(oneshot::Sender<Vec<proto::MissingHandler>>),
 }
 
+/// What a worker's log records about a request are tagged with.
+struct CallInfo {
+    request_id: String,
+    route: String,
+    /// When the request finished. Kept a little longer, since stderr is
+    /// read separately and can lag behind the response.
+    done: Option<Instant>,
+}
+
+const LOG_GRACE: Duration = Duration::from_secs(5);
+
+/// Requests in flight on one worker, by protocol id. Shared with the
+/// worker's output readers, so log lines can be tied to their request.
+type Calls = Arc<Mutex<HashMap<String, CallInfo>>>;
+
 struct Worker {
     id: String,
     tx: mpsc::UnboundedSender<Frame>,
     pending: Mutex<HashMap<String, Pending>>,
+    calls: Calls,
     inflight: AtomicUsize,
     max_in_flight: usize,
     alive: AtomicBool,
@@ -118,6 +135,8 @@ pub struct PoolOptions {
     /// Run each runtime's `build` command before its workers start.
     pub build: bool,
     pub socket_dir: PathBuf,
+    /// Receives a copy of every `log` message, for the conformance suite.
+    pub log_tap: Option<mpsc::UnboundedSender<proto::Log>>,
 }
 
 pub struct Pool {
@@ -362,6 +381,7 @@ impl Pool {
             .env("UNSWORN_VERSION", unsworn_core::VERSION)
             .env("UNSWORN_ROOT", &self.opts.root)
             .env("UNSWORN_WORKER_ID", &worker_id)
+            .env("UNSWORN_LOG_LEVEL", worker_log_level())
             .envs(&rt.env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -395,8 +415,15 @@ impl Pool {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("can't start `{}`: {e}", rt.command))?;
+        let calls = Calls::default();
         let stderr = child.stderr.take().expect("stderr piped");
-        spawn_log_reader(stderr, rt.name.clone(), worker_id.clone(), "stderr");
+        spawn_log_reader(
+            stderr,
+            rt.name.clone(),
+            worker_id.clone(),
+            "stderr",
+            calls.clone(),
+        );
         let stdout = child.stdout.take().expect("stdout piped");
 
         let startup = rt.startup_timeout;
@@ -410,11 +437,18 @@ impl Pool {
                     Protocol::Jsonl,
                     child,
                     startup,
+                    calls,
                 )
                 .await
             }
             Some(listener) => {
-                spawn_log_reader(stdout, rt.name.clone(), worker_id.clone(), "stdout");
+                spawn_log_reader(
+                    stdout,
+                    rt.name.clone(),
+                    worker_id.clone(),
+                    "stdout",
+                    calls.clone(),
+                );
                 let accepted = tokio::select! {
                     a = listener.accept() => a.map_err(|e| e.to_string()),
                     status = child.wait() => Err(format!("worker exited before connecting ({})", status.map(|s| s.to_string()).unwrap_or_default())),
@@ -424,8 +458,16 @@ impl Pool {
                 match accepted {
                     Ok((stream, _)) => {
                         let (r, w) = stream.into_split();
-                        self.connect(worker_id.clone(), r, w, Protocol::Framed, child, startup)
-                            .await
+                        self.connect(
+                            worker_id.clone(),
+                            r,
+                            w,
+                            Protocol::Framed,
+                            child,
+                            startup,
+                            calls,
+                        )
+                        .await
                     }
                     Err(e) => Err(e),
                 }
@@ -442,6 +484,7 @@ impl Pool {
         protocol: Protocol,
         mut child: Child,
         startup: Duration,
+        calls: Calls,
     ) -> Result<Arc<Worker>, String>
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -486,6 +529,7 @@ impl Pool {
             id: worker_id.clone(),
             tx,
             pending: Mutex::new(HashMap::new()),
+            calls,
             inflight: AtomicUsize::new(0),
             max_in_flight: ready.max_in_flight.unwrap_or(1).max(1) as usize,
             alive: AtomicBool::new(true),
@@ -584,7 +628,7 @@ impl Pool {
                             (None, None, Some(t)) => ReplyBody::Bytes(Bytes::from(t.clone())),
                             _ => ReplyBody::Empty,
                         };
-                        self.release(w);
+                        self.release(w, &id);
                         let _ = tx.send(Ok(Reply::Response { response, body }));
                     }
                 }
@@ -600,7 +644,7 @@ impl Pool {
                         {
                             // The client went away.
                             w.pending.lock().unwrap().remove(&chunk.id);
-                            self.release(w);
+                            self.release(w, &chunk.id);
                             let _ = w.tx.send(Frame::new(Message::Cancel(Cancel {
                                 id: chunk.id,
                                 reason: Some("client disconnected".into()),
@@ -610,23 +654,23 @@ impl Pool {
                 }
                 Message::End(end) => {
                     if w.pending.lock().unwrap().remove(&end.id).is_some() {
-                        self.release(w);
+                        self.release(w, &end.id);
                     }
                 }
                 Message::Continue(c) => {
                     if let Some(Pending::Call(tx)) = w.pending.lock().unwrap().remove(&c.id) {
-                        self.release(w);
+                        self.release(w, &c.id);
                         let _ = tx.send(Ok(Reply::Continue(c.context)));
                     }
                 }
                 Message::Error(e) => match e.id {
                     Some(id) => match w.pending.lock().unwrap().remove(&id) {
                         Some(Pending::Call(tx)) => {
-                            self.release(w);
+                            self.release(w, &id);
                             let _ = tx.send(Err(CallError::Handler(e.message)));
                         }
                         Some(Pending::Stream(tx)) => {
-                            self.release(w);
+                            self.release(w, &id);
                             let _ = tx.try_send(Err(e.message));
                         }
                         _ => {}
@@ -641,6 +685,23 @@ impl Pool {
                         let _ = tx.send(v.missing);
                     }
                 }
+                Message::Log(log) => {
+                    if let Some(tap) = &self.opts.log_tap {
+                        let _ = tap.send(log.clone());
+                    }
+                    let calls = w.calls.lock().unwrap();
+                    let call = log.id.as_deref().and_then(|id| calls.get(id));
+                    let fields =
+                        (!log.fields.is_empty()).then(|| Value::Object(log.fields).to_string());
+                    emit_log(
+                        log.level,
+                        &self.runtime.name,
+                        &w.id,
+                        call,
+                        &log.message,
+                        fields.as_deref(),
+                    );
+                }
                 Message::Ready(_) | Message::Unknown => {}
                 other => {
                     tracing::warn!(worker = %w.id, "unexpected message from worker: {other:?}");
@@ -649,7 +710,10 @@ impl Pool {
         }
     }
 
-    fn release(&self, w: &Worker) {
+    fn release(&self, w: &Worker, id: &str) {
+        if let Some(call) = w.calls.lock().unwrap().get_mut(id) {
+            call.done = Some(Instant::now());
+        }
         w.inflight.fetch_sub(1, Ordering::AcqRel);
         self.capacity.notify_one();
     }
@@ -695,14 +759,16 @@ impl Pool {
     }
 
     /// Sends a request to a worker and waits for its reply.
+    /// `request_id` is the HTTP request's id, used to tag the worker's logs.
     pub fn call(
         self: &Arc<Self>,
         request: Request,
         body: Option<Bytes>,
         deadline: Instant,
+        request_id: String,
     ) -> futures_util::future::BoxFuture<'static, Result<Reply, CallError>> {
         let pool = self.clone();
-        Box::pin(async move { pool.call_inner(request, body, deadline).await })
+        Box::pin(async move { pool.call_inner(request, body, deadline, request_id).await })
     }
 
     async fn call_inner(
@@ -710,6 +776,7 @@ impl Pool {
         mut request: Request,
         body: Option<Bytes>,
         deadline: Instant,
+        request_id: String,
     ) -> Result<Reply, CallError> {
         if let Some(reason) = self.missing.lock().unwrap().get(&request.handler) {
             return Err(CallError::MissingHandler(format!(
@@ -755,6 +822,18 @@ impl Pool {
                 .as_millis() as u64,
         );
         let (tx, rx) = oneshot::channel();
+        {
+            let mut calls = worker.calls.lock().unwrap();
+            calls.retain(|_, c| c.done.is_none_or(|t| t.elapsed() < LOG_GRACE));
+            calls.insert(
+                id.clone(),
+                CallInfo {
+                    request_id,
+                    route: request.route.clone(),
+                    done: None,
+                },
+            );
+        }
         worker
             .pending
             .lock()
@@ -765,7 +844,7 @@ impl Pool {
                 Ok(f) => f,
                 Err(e) => {
                     worker.pending.lock().unwrap().remove(&id);
-                    self.release(&worker);
+                    self.release(&worker, &id);
                     return Err(CallError::WorkerFailed(e.to_string()));
                 }
             },
@@ -773,7 +852,7 @@ impl Pool {
         };
         if worker.tx.send(frame).is_err() {
             worker.pending.lock().unwrap().remove(&id);
-            self.release(&worker);
+            self.release(&worker, &id);
             return Err(CallError::WorkerFailed("the worker stopped".into()));
         }
 
@@ -845,7 +924,7 @@ impl Drop for CancelGuard {
             .remove(&self.id)
             .is_some()
         {
-            self.pool.release(&self.worker);
+            self.pool.release(&self.worker, &self.id);
             let _ = self.worker.tx.send(Frame::new(Message::Cancel(Cancel {
                 id: self.id.clone(),
                 reason: Some("timeout or client disconnected".into()),
@@ -860,18 +939,126 @@ fn shell(command: &str) -> Command {
     cmd
 }
 
+/// Logs a worker's stderr (and stdout on Tier 2) line by line. A line that
+/// is a JSON object with `level` and `message` (or `msg`) is logged as a
+/// structured record, tied to its request when it has an in-flight `id`.
 fn spawn_log_reader<R: AsyncRead + Unpin + Send + 'static>(
     stream: R,
     runtime: String,
     worker: String,
     kind: &'static str,
+    calls: Calls,
 ) {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stream).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            tracing::info!(target: "worker", runtime = %runtime, worker = %worker, stream = kind, "{line}");
+            match parse_json_log(&line) {
+                Some(mut record) => {
+                    let calls = calls.lock().unwrap();
+                    let call = match record.fields.get("id") {
+                        Some(Value::String(id)) => calls.get(id),
+                        _ => None,
+                    };
+                    if call.is_some() {
+                        record.fields.remove("id");
+                    }
+                    let fields = (!record.fields.is_empty())
+                        .then(|| Value::Object(record.fields).to_string());
+                    emit_log(
+                        record.level,
+                        &runtime,
+                        &worker,
+                        call,
+                        &record.message,
+                        fields.as_deref(),
+                    );
+                }
+                None => {
+                    tracing::info!(target: "worker", runtime = %runtime, worker = %worker, stream = kind, "{line}");
+                }
+            }
         }
     });
+}
+
+struct JsonLog {
+    level: LogLevel,
+    message: String,
+    fields: Map<String, Value>,
+}
+
+/// Parses a line written by a JSON logger (pino, structlog, zap, slog...).
+fn parse_json_log(line: &str) -> Option<JsonLog> {
+    let line = line.trim();
+    if !line.starts_with('{') {
+        return None;
+    }
+    let Ok(Value::Object(mut fields)) = serde_json::from_str::<Value>(line) else {
+        return None;
+    };
+    let level = match fields.get("level")? {
+        Value::String(s) => LogLevel::parse(s)?,
+        // pino's numeric levels
+        Value::Number(n) => match n.as_u64()? {
+            0..=10 => LogLevel::Trace,
+            11..=20 => LogLevel::Debug,
+            21..=30 => LogLevel::Info,
+            31..=40 => LogLevel::Warn,
+            _ => LogLevel::Error,
+        },
+        _ => return None,
+    };
+    let message = match fields.get("message").or_else(|| fields.get("msg"))? {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    for key in ["level", "message", "msg"] {
+        fields.remove(key);
+    }
+    Some(JsonLog {
+        level,
+        message,
+        fields,
+    })
+}
+
+fn emit_log(
+    level: LogLevel,
+    runtime: &str,
+    worker: &str,
+    call: Option<&CallInfo>,
+    message: &str,
+    fields: Option<&str>,
+) {
+    use tracing::field::display;
+    let id = call.map(|c| display(&c.request_id));
+    let route = call.map(|c| display(&c.route));
+    let fields = fields.map(display);
+    macro_rules! event {
+        ($level:expr) => {
+            tracing::event!(target: "worker", $level, runtime = %runtime, worker = %worker, id, route, fields, "{message}")
+        };
+    }
+    match level {
+        LogLevel::Error => event!(tracing::Level::ERROR),
+        LogLevel::Warn => event!(tracing::Level::WARN),
+        LogLevel::Info => event!(tracing::Level::INFO),
+        LogLevel::Debug => event!(tracing::Level::DEBUG),
+        LogLevel::Trace => event!(tracing::Level::TRACE),
+    }
+}
+
+/// The most verbose level Unsworn logs, so workers can skip the rest.
+fn worker_log_level() -> &'static str {
+    use tracing::level_filters::LevelFilter;
+    match LevelFilter::current() {
+        LevelFilter::OFF => "off",
+        LevelFilter::ERROR => "error",
+        LevelFilter::WARN => "warn",
+        LevelFilter::INFO => "info",
+        LevelFilter::DEBUG => "debug",
+        _ => "trace",
+    }
 }
 
 async fn write_loop<W: AsyncWrite + Unpin>(
