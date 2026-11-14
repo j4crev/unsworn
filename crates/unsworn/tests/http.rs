@@ -881,3 +881,117 @@ handler = "src/work.py"
     assert_eq!(v["stream"], "stderr");
     assert!(v.get("id").is_none());
 }
+
+#[test]
+fn stream_body_uploads() {
+    if !needs_python() {
+        return;
+    }
+    let cfg = r#"
+[runtimes.py]
+extensions = [".py"]
+command = "python3 -u -m unsworn.worker"
+protocol = "framed"
+workers = 1
+
+[runtimes.legacy]
+extensions = [".legacy"]
+command = "python3 -u worker.py"
+workers = 1
+
+[[route]]
+path = "/upload"
+method = "POST"
+handler = "src/upload.py#upload"
+stream_body = true
+max_body = "4MB"
+
+[[route]]
+path = "/legacy"
+method = "POST"
+handler = "src/old.legacy"
+stream_body = true
+"#;
+    let handler = r#"
+from unsworn import json
+
+async def upload(req, ctx):
+    n = total = 0
+    async for chunk in req.stream:
+        n += len(chunk)
+        total = (total + sum(chunk)) % (1 << 32)
+    return json({"bytes": n, "sum": total})
+"#;
+    let p = Project::new(&[
+        ("unsworn.toml", cfg),
+        ("src/upload.py", handler),
+        ("worker.py", ECHO_WORKER),
+        ("src/old.legacy", ""),
+    ]);
+    let s = p.serve();
+
+    // Larger than the credit window, so the worker's acks pace the upload.
+    let body: Vec<u8> = (0..3 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+    let sum = body
+        .iter()
+        .fold(0u64, |acc, b| (acc + *b as u64) % (1 << 32));
+    let r = s.request("POST", "/upload", &[], &body);
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["bytes"], body.len());
+    assert_eq!(r.json()["sum"], sum);
+
+    // A declared length over max_body is refused up front...
+    let big = vec![0u8; 5 * 1024 * 1024];
+    assert_eq!(upload(&s, "/upload", &big, false).status, 413);
+    // ...and a chunked body is cut off once it passes max_body.
+    assert_eq!(upload(&s, "/upload", &big, true).status, 413);
+
+    // Workers that don't support streamed bodies are reported, not hung.
+    let r = s.request("POST", "/legacy", &[], b"hello");
+    assert_eq!(r.status, 500);
+    assert!(
+        s.logs().contains("doesn't accept streamed request bodies"),
+        "{}",
+        s.logs()
+    );
+}
+
+/// POSTs `body`, chunked (so Unsworn can't know its length up front) or
+/// with a Content-Length, and reads the answer even if Unsworn stops
+/// reading the body early.
+fn upload(s: &common::Server, path: &str, body: &[u8], chunked: bool) -> common::Response {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(s.addr).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(20)))
+        .unwrap();
+    let length = if chunked {
+        "Transfer-Encoding: chunked".to_string()
+    } else {
+        format!("Content-Length: {}", body.len())
+    };
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n{length}\r\n\r\n",
+        s.addr
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    for chunk in body.chunks(64 * 1024) {
+        let sent = if chunked {
+            stream
+                .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                .and_then(|_| stream.write_all(chunk))
+                .and_then(|_| stream.write_all(b"\r\n"))
+        } else {
+            stream.write_all(chunk)
+        };
+        if sent.is_err() {
+            break; // Unsworn answered and closed the connection
+        }
+    }
+    if chunked {
+        let _ = stream.write_all(b"0\r\n\r\n");
+    }
+    let mut raw = Vec::new();
+    let _ = stream.read_to_end(&mut raw);
+    common::parse_response(&raw)
+}

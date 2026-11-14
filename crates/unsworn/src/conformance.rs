@@ -13,11 +13,11 @@ use tokio::sync::mpsc;
 use unsworn_proto::{Phase, Request};
 
 use crate::load;
-use crate::workers::{CallError, Pool, PoolOptions, Reply, ReplyBody, SocketDir};
+use crate::workers::{CallBody, CallError, Pool, PoolOptions, Reply, ReplyBody, SocketDir};
 
 const HANDLERS: &[&str] = &[
     "echo", "text", "binary", "status", "stream", "fail", "slow", "crash", "allow", "deny",
-    "noisy", "log",
+    "noisy", "log", "upload",
 ];
 
 struct Suite {
@@ -45,7 +45,12 @@ impl Suite {
         timeout: Duration,
     ) -> Result<Reply, CallError> {
         self.pool
-            .call(req, body, Instant::now() + timeout, "conformance".into())
+            .call(
+                req,
+                body.into(),
+                Instant::now() + timeout,
+                "conformance".into(),
+            )
             .await
     }
 
@@ -113,6 +118,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
     let pool = Pool::standalone(
         Arc::new(single),
         refs,
+        Vec::new(),
         PoolOptions {
             root: root.to_path_buf(),
             dev: true,
@@ -258,6 +264,48 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
     });
     s.report("raw binary bodies in both directions", res);
 
+    // streamed request body, larger than the credit window
+    if pool.stream_body_supported() {
+        let payload: Bytes = (0..1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+        let pieces: Vec<Result<http_body::Frame<Bytes>, crate::server::support::BoxError>> =
+            payload
+                .chunks(16 * 1024)
+                .map(|c| Ok(http_body::Frame::data(Bytes::copy_from_slice(c))))
+                .collect();
+        let body = http_body_util::StreamBody::new(futures_util::stream::iter(pieces));
+        let r = s
+            .pool
+            .call(
+                s.request("upload"),
+                CallBody::Stream(http_body_util::BodyExt::boxed_unsync(body)),
+                Instant::now() + Duration::from_secs(10),
+                "conformance".into(),
+            )
+            .await;
+        let res = match expect_response(r) {
+            Ok((resp, body)) => {
+                let got = match body {
+                    ReplyBody::Stream(rx) => drain(rx).await.map(Bytes::from),
+                    other => Ok(body_bytes(other)),
+                };
+                match got {
+                    Ok(got) if resp.status == 200 && got == payload => Ok(()),
+                    Ok(got) => Err(format!(
+                        "status {}, {} bytes back (want 200 and the {} bytes sent)",
+                        resp.status,
+                        got.len(),
+                        payload.len()
+                    )),
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        };
+        s.report("streamed request bodies, with `ack`", res);
+    } else {
+        println!("  - stream_body: not supported by this worker (optional)");
+    }
+
     // status from query
     let mut req = s.request("status");
     req.query.insert("code".into(), json!(418));
@@ -372,7 +420,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
             tasks.push(tokio::spawn(async move {
                 p.call(
                     req,
-                    None,
+                    CallBody::Empty,
                     Instant::now() + Duration::from_secs(10),
                     "conformance".into(),
                 )

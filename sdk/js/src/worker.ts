@@ -128,7 +128,8 @@ function fetchAdapter(app: { fetch: (r: Request) => Response | Promise<Response>
     const url = `http://${host}${req.path}${req.rawQuery ? `?${req.rawQuery}` : ""}`;
     let body: BodyInit | undefined;
     if (req.method !== "GET" && req.method !== "HEAD") {
-      if (req.json !== undefined) body = JSON.stringify(req.json);
+      if (req.stream) body = req.stream;
+      else if (req.json !== undefined) body = JSON.stringify(req.json);
       else if (req.text !== undefined) body = req.text;
       else if (req.body) body = req.body;
     }
@@ -140,7 +141,9 @@ function fetchAdapter(app: { fetch: (r: Request) => Response | Promise<Response>
         // skip headers the platform refuses
       }
     }
-    return app.fetch(new Request(url, { method: req.method, headers, body, signal: req.signal }));
+    // `duplex` is required by Node and Deno for a streamed body.
+    const init = { method: req.method, headers, body, signal: req.signal, duplex: "half" } as RequestInit;
+    return app.fetch(new Request(url, init));
   };
 }
 
@@ -149,6 +152,59 @@ function fetchAdapter(app: { fetch: (r: Request) => Response | Promise<Response>
 
 const inFlight = new Map<string, AbortController>();
 const encoder = new TextEncoder();
+
+/** A streamed request body. Each chunk is acknowledged as the handler reads it. */
+class IncomingBody {
+  private chunks: Uint8Array[] = [];
+  private done = false;
+  private error?: Error;
+  private wake?: () => void;
+  private id: string;
+  readonly stream: ReadableStream<Uint8Array>;
+
+  constructor(id: string) {
+    this.id = id;
+    this.stream = new ReadableStream<Uint8Array>(
+      {
+        pull: async (controller) => {
+          const chunk = await this.next();
+          if (chunk === undefined) controller.close();
+          else controller.enqueue(chunk);
+        },
+      },
+      { highWaterMark: 0 },
+    );
+  }
+
+  push(chunk: Uint8Array) {
+    this.chunks.push(chunk);
+    this.wake?.();
+  }
+
+  end(error?: Error) {
+    this.done = true;
+    this.error ??= error;
+    this.wake?.();
+  }
+
+  private async next(): Promise<Uint8Array | undefined> {
+    for (;;) {
+      const chunk = this.chunks.shift();
+      if (chunk) {
+        send({ type: "ack", id: this.id, bytes: chunk.length });
+        return chunk;
+      }
+      if (this.error) throw this.error;
+      if (this.done) return undefined;
+      await new Promise<void>((resolve) => {
+        this.wake = resolve;
+      });
+      this.wake = undefined;
+    }
+  }
+}
+
+const bodies = new Map<string, IncomingBody>();
 
 function toBytes(chunk: unknown): Uint8Array {
   if (chunk instanceof Uint8Array) return chunk;
@@ -256,6 +312,7 @@ async function handle(msg: RequestMessage, body: Uint8Array | undefined) {
       json: msg.json,
       text: msg.text,
       body,
+      stream: bodies.get(msg.id)?.stream,
       signal: controller.signal,
       handler: msg.handler,
       phase: msg.phase ?? "handle",
@@ -271,6 +328,7 @@ async function handle(msg: RequestMessage, body: Uint8Array | undefined) {
     }
   } finally {
     inFlight.delete(msg.id);
+    bodies.delete(msg.id);
   }
 }
 
@@ -290,9 +348,19 @@ function dispatch(frame: Frame) {
   const msg = frame.message;
   switch (msg.type) {
     case "request":
+      if ((msg as RequestMessage).stream) bodies.set(msg.id!, new IncomingBody(msg.id!));
       void handle(msg as RequestMessage, frame.body);
       break;
+    case "chunk": {
+      const data = frame.body ?? encoder.encode((msg as { text?: string }).text ?? "");
+      if (data.length) bodies.get(msg.id!)?.push(data);
+      break;
+    }
+    case "end":
+      bodies.get(msg.id!)?.end();
+      break;
     case "cancel":
+      bodies.get(msg.id!)?.end(new Error("the request was cancelled"));
       inFlight.get((msg as { id: string }).id)?.abort();
       break;
     case "verify":
@@ -307,7 +375,14 @@ function dispatch(frame: Frame) {
 // Transport
 
 function ready() {
-  send({ type: "ready", protocol: PROTOCOL_VERSION, max_in_flight: maxInFlight, verify: true, sdk: "unsworn-js/0.1.0" });
+  send({
+    type: "ready",
+    protocol: PROTOCOL_VERSION,
+    max_in_flight: maxInFlight,
+    verify: true,
+    stream_body: true,
+    sdk: "unsworn-js/0.1.0",
+  });
 }
 
 if (transport.startsWith("unix:")) {

@@ -461,6 +461,35 @@ impl Project {
         layer.finalize(self.server.timeout, self.server.max_body)
     }
 
+    /// Whether a route's handler gets its request body as a stream.
+    pub fn streams_body(&self, route: &Route) -> bool {
+        if !matches!(route.action, Action::Handler(_)) {
+            return false;
+        }
+        let probe = route.path.replace("{*", "{");
+        let methods: Vec<&str> = match &route.methods {
+            Some(list) => list.iter().map(String::as_str).collect(),
+            None => vec!["POST"],
+        };
+        methods
+            .iter()
+            .any(|m| self.effective(route, m, &probe).stream_body)
+    }
+
+    /// Handlers whose routes stream request bodies, by runtime.
+    pub fn stream_handlers_by_runtime(&self) -> BTreeMap<String, Vec<String>> {
+        let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for r in self.routes.iter().filter(|r| self.streams_body(r)) {
+            if let Some(h) = r.handler() {
+                let list = out.entry(h.runtime.clone()).or_default();
+                if !list.contains(&h.raw) {
+                    list.push(h.raw.clone());
+                }
+            }
+        }
+        out
+    }
+
     /// The prefix entries that apply to a route's own pattern, for display.
     pub fn prefixes_for(&self, route: &Route) -> Vec<&PrefixEntry> {
         let probe = route.path.replace("{*", "{");
@@ -1277,6 +1306,7 @@ impl<'h> Compiler<'h> {
         };
         own.timeout = raw.timeout.map(|d| d.0);
         own.max_body = raw.max_body.map(|b| b.0);
+        own.stream_body = raw.stream_body;
         own.headers = raw.headers.as_ref().map(|h| match h {
             OrOff::Off => OrOff::Off,
             OrOff::On(h) => OrOff::On(HeaderRules {
@@ -1980,6 +2010,19 @@ impl<'h> Compiler<'h> {
             }
             layer.merge_from(&r.high);
             let eff = layer.finalize(Duration::from_secs(30), 0);
+            if eff.stream_body && r.validation.body.is_some() {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!("{}", r.source),
+                        format!(
+                            "{} {} sets both `stream_body` and `body` validation, but a streamed body isn't read before the handler runs",
+                            r.method_label(),
+                            r.path
+                        ),
+                    )
+                    .hint("remove `body`, or set `stream_body = false` for this route"),
+                );
+            }
             if let (Some(cache), AuthReq::AnyOf(_)) = (&eff.cache, &eff.auth)
                 && !rules::cache_separates_users(
                     cache,

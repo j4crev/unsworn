@@ -98,6 +98,8 @@ anything before handlers added), `JSON`, `Text`, `Body`, `Handler` and
   `req.BindQuery(&v)` decode params and query into a struct.
 - `req.Context()` is cancelled when the client goes away or the route's
   timeout passes. Pass it to database and HTTP calls.
+- On routes with `stream_body = true`, `req.BodyReader` reads the body as it
+  arrives. `HTTPHandler` apps get it as `r.Body`.
 
 Each request runs in its own goroutine.
 

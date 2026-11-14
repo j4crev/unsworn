@@ -55,3 +55,7 @@ export const log_: Handler = async () => {
   return { status: 200 };
 };
 export { log_ as log };
+
+export const upload: Handler = async (req) => ({
+  body: new Uint8Array(await new Response(req.stream).arrayBuffer()),
+});

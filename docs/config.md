@@ -286,6 +286,7 @@ rate_limit = { requests = 100, per = "1m", key = "auth.sub" }   # or "ip", "head
 cache      = { ttl = "30s", vary = ["Authorization"] }
 timeout    = "5s"
 max_body   = "10MB"
+stream_body = true                    # handler reads the body as it arrives
 headers    = { set = { "Cache-Control" = "no-store" }, remove = ["Server"] }
 before     = ["src/auth.ts#tenant"]   # handlers that run first, in order
 use        = ["public_cached"]        # named policy sets, applied in order
@@ -301,6 +302,15 @@ route's own `before` both run. `before = "off"` clears the inherited ones.
 `headers` on a route has two meanings: `{ set = {...}, remove = [...] }` is
 the response-headers policy shown here, and any other table validates request
 headers (see [Validation](#validation)).
+
+`stream_body = true` passes the request body to the handler as it arrives
+instead of reading it first, for large uploads. A slow handler slows the
+upload rather than having Unsworn hold the body in memory. `max_body` still
+applies (`413`), a body that stalls for 30 seconds gets `408`, and the route's
+`timeout` covers the whole upload, so raise it for large files. A streamed
+body can't also have `body` validation, and `before` handlers don't see it.
+Each upload holds a worker slot while it arrives, so consider a separate
+runtime for upload routes.
 
 Rate limits use a token bucket per route and key, so `requests` can arrive in
 a burst and then refill evenly over `per`. A request over the limit gets

@@ -125,12 +125,53 @@ def _install_logging(worker: "Worker") -> None:
     root.setLevel(_LEVELS.get(LOG_LEVEL, logging.CRITICAL + 1))
 
 
+class BodyStream:
+    """A streamed request body. Iterate it with ``async for`` or, in a sync
+    handler, ``for``. Each chunk is acknowledged as the handler reads it."""
+
+    def __init__(self, worker: "Worker", rid: str, loop: asyncio.AbstractEventLoop) -> None:
+        self.worker = worker
+        self.rid = rid
+        self.loop = loop
+        self.queue: asyncio.Queue[bytes | BaseException | None] = asyncio.Queue()
+
+    def push(self, chunk: bytes) -> None:
+        self.queue.put_nowait(chunk)
+
+    def end(self, error: BaseException | None = None) -> None:
+        self.queue.put_nowait(error)
+
+    def __aiter__(self) -> "BodyStream":
+        return self
+
+    async def __anext__(self) -> bytes:
+        item = await self.queue.get()
+        if item is None:
+            self.queue.put_nowait(None)  # stay finished
+            raise StopAsyncIteration
+        if isinstance(item, BaseException):
+            self.queue.put_nowait(item)
+            raise item
+        self.worker.send({"type": "ack", "id": self.rid, "bytes": len(item)})
+        return item
+
+    def __iter__(self) -> "BodyStream":
+        return self
+
+    def __next__(self) -> bytes:
+        try:
+            return asyncio.run_coroutine_threadsafe(self.__anext__(), self.loop).result()
+        except StopAsyncIteration:
+            raise StopIteration from None
+
+
 class Worker:
     def __init__(self, codec: Any, write: Callable[[bytes], Any]) -> None:
         self.codec = codec
         self.write = write
         self.tasks: dict[str, asyncio.Task] = {}
         self.requests: dict[str, Request] = {}
+        self.bodies: dict[str, BodyStream] = {}
 
     def send(self, message: dict, body: bytes | None = None) -> None:
         self.write(self.codec.encode(message, body))
@@ -138,10 +179,25 @@ class Worker:
     def dispatch(self, message: dict, raw: bytes | None) -> None:
         kind = message.get("type")
         if kind == "request":
+            if message.get("stream"):
+                loop = asyncio.get_running_loop()
+                self.bodies[message["id"]] = BodyStream(self, message["id"], loop)
             task = asyncio.ensure_future(self.handle(message, raw))
             self.tasks[message["id"]] = task
             task.add_done_callback(lambda _t, i=message["id"]: self._done(i))
+        elif kind == "chunk":
+            stream = self.bodies.get(message.get("id", ""))
+            data = raw if raw is not None else (message.get("text") or "").encode()
+            if stream is not None and data:
+                stream.push(data)
+        elif kind == "end":
+            stream = self.bodies.get(message.get("id", ""))
+            if stream is not None:
+                stream.end()
         elif kind == "cancel":
+            stream = self.bodies.get(message.get("id", ""))
+            if stream is not None:
+                stream.end(ConnectionAbortedError("the request was cancelled"))
             req = self.requests.get(message.get("id", ""))
             if req is not None:
                 req.cancelled = True
@@ -160,6 +216,7 @@ class Worker:
     def _done(self, rid: str) -> None:
         self.tasks.pop(rid, None)
         self.requests.pop(rid, None)
+        self.bodies.pop(rid, None)
 
     async def handle(self, msg: dict, raw: bytes | None) -> None:
         rid = msg["id"]
@@ -176,6 +233,7 @@ class Worker:
             json=msg.get("json"),
             text=msg.get("text"),
             body=raw,
+            stream=self.bodies.get(rid),
         )
         self.requests[rid] = req
         ctx = msg.get("context") or {}
@@ -266,6 +324,7 @@ def _ready() -> dict:
         "protocol": PROTOCOL_VERSION,
         "max_in_flight": MAX_IN_FLIGHT,
         "verify": True,
+        "stream_body": True,
         "sdk": f"unsworn-python/{__version__}",
     }
 

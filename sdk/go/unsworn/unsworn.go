@@ -81,6 +81,9 @@ type Request struct {
 	Text string
 	// Body is the request's raw body, when it had one.
 	Body []byte
+	// BodyReader reads the body as it arrives, on routes with
+	// stream_body = true. It is nil otherwise.
+	BodyReader io.Reader
 
 	ctx context.Context
 }

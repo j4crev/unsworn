@@ -350,6 +350,9 @@ pub struct RawPolicies {
     pub cache: Option<OrOff<RawCache>>,
     pub timeout: Option<ConfigDuration>,
     pub max_body: Option<ConfigSize>,
+    /// Pass the request body to the handler as it arrives, instead of
+    /// reading it first.
+    pub stream_body: Option<bool>,
     pub headers: Option<OrOff<RawHeaders>>,
     pub before: Option<OrOff<Vec<String>>>,
     #[serde(rename = "use")]
@@ -468,6 +471,9 @@ pub struct RawRoute {
     pub cache: Option<OrOff<RawCache>>,
     pub timeout: Option<ConfigDuration>,
     pub max_body: Option<ConfigSize>,
+    /// Pass the request body to the handler as it arrives, instead of
+    /// reading it first.
+    pub stream_body: Option<bool>,
     /// Either request-header validation (a table of param rules) or the
     /// `headers` policy (`{ set = ..., remove = ... }`). See
     /// [`RawRoute::split_headers`].
@@ -530,6 +536,7 @@ impl RawRoute {
             cache: self.cache.clone(),
             timeout: self.timeout,
             max_body: self.max_body,
+            stream_body: self.stream_body,
             headers: self.split_headers()?.policy,
             before: self.before.clone(),
             use_sets: self.use_sets.clone(),

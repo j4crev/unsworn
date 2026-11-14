@@ -3,6 +3,7 @@ package unsworn
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -60,12 +61,17 @@ func toHTTPRequest(req *Request) (*http.Request, error) {
 	if req.RawQuery != "" {
 		target += "?" + req.RawQuery
 	}
-	hr, err := http.NewRequestWithContext(req.Context(), req.Method, target, bytes.NewReader(body))
+	var reader io.Reader = bytes.NewReader(body)
+	length := int64(len(body))
+	if req.BodyReader != nil {
+		reader, length = req.BodyReader, -1
+	}
+	hr, err := http.NewRequestWithContext(req.Context(), req.Method, target, reader)
 	if err != nil {
 		return nil, err
 	}
 	hr.RequestURI = target
-	hr.ContentLength = int64(len(body))
+	hr.ContentLength = length
 	for k, v := range req.Headers {
 		hr.Header.Set(k, v)
 	}

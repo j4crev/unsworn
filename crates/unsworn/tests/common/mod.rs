@@ -207,6 +207,12 @@ pub fn http(
     parse(&raw, method == "HEAD")
 }
 
+/// Parses a raw HTTP/1.1 response.
+#[allow(dead_code)] // not every test binary uses it
+pub fn parse_response(raw: &[u8]) -> Response {
+    parse(raw, false)
+}
+
 fn parse(raw: &[u8], head: bool) -> Response {
     let split = raw
         .windows(4)

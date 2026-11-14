@@ -44,6 +44,7 @@ Each handler is called by name (`<file>#<name>`). Every request arrives with
 | `deny` | before | Respond `403`. |
 | `noisy` | handle | Write a line that isn't a protocol message to stdout (Tier 1) or to the log, then respond `200`. |
 | `log` | handle | Log `conformance log` at `info` with the field `n: 1`, through the SDK's logging integration, then respond `200`. |
+| `upload` | handle | Read the streamed request body and respond `200` with it as the raw response body. Only called when the worker's `ready` has `stream_body: true`. |
 
 `does_not_exist` is listed in the `verify` request but must not exist, so
 the worker reports it as missing. Workers that don't support `verify` skip
@@ -62,6 +63,8 @@ that check.
 - `before` handlers continuing with context, and rejecting
 - stray stdout output doesn't break the worker
 - a `log` record arrives with its level, fields and request `id`
+- a 1 MiB streamed request body arrives intact, paced by `ack`, if the
+  worker declares `stream_body`
 - several requests in flight at once, when `max_in_flight` is above 1
 - a timed-out request is cancelled, and the worker keeps answering
 - a crash fails only the request in flight, and the worker is restarted

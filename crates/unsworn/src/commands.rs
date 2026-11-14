@@ -138,6 +138,9 @@ fn layer_summary(layer: &Layer) -> Vec<String> {
     if let Some(b) = layer.max_body {
         out.push(format!("max_body={b}"));
     }
+    if let Some(s) = layer.stream_body {
+        out.push(format!("stream_body={s}"));
+    }
     match &layer.before {
         Some(OrOff::On(list)) => out.push(format!(
             "before=[{}]",

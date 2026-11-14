@@ -97,6 +97,8 @@ impl Out {
 }
 
 type InFlight = Arc<Mutex<HashMap<String, (AbortHandle, Cancel)>>>;
+/// Senders for streamed request bodies, by request id.
+type Bodies = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<crate::Result<Bytes>>>>>;
 
 async fn run_loop<R, W>(
     handlers: Handlers,
@@ -126,12 +128,14 @@ where
         protocol: PROTOCOL_VERSION,
         max_in_flight: Some(max_in_flight),
         verify: true,
+        stream_body: true,
         sdk: Some(format!("unsworn-rust/{}", crate::VERSION)),
     })));
     crate::logging::install(&out);
 
     let handlers = Arc::new(handlers);
     let in_flight: InFlight = Arc::default();
+    let bodies: Bodies = Arc::default();
     let mut jsonl_decoder = jsonl::Decoder::default();
     let mut framed_decoder = framed::Decoder::default();
     let mut buf = BytesMut::with_capacity(64 * 1024);
@@ -156,8 +160,20 @@ where
             Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
         };
         match frame.message {
-            Message::Request(req) => start(&handlers, &in_flight, &out, req, frame.body),
+            Message::Request(req) => start(&handlers, &in_flight, &bodies, &out, req, frame.body),
+            Message::Chunk(chunk) => {
+                let data = frame.body.or_else(|| chunk.text.map(Bytes::from));
+                if let (Some(tx), Some(data)) = (bodies.lock().unwrap().get(&chunk.id), data) {
+                    let _ = tx.send(Ok(data));
+                }
+            }
+            Message::End(end) => {
+                bodies.lock().unwrap().remove(&end.id);
+            }
             Message::Cancel(cancel) => {
+                if let Some(tx) = bodies.lock().unwrap().remove(&cancel.id) {
+                    let _ = tx.send(Err(crate::Error::msg("the request was cancelled")));
+                }
                 if let Some((task, token)) = in_flight.lock().unwrap().remove(&cancel.id) {
                     token.cancel();
                     task.abort();
@@ -194,12 +210,18 @@ where
 fn start(
     handlers: &Arc<Handlers>,
     in_flight: &InFlight,
+    bodies: &Bodies,
     out: &Out,
     msg: unsworn_proto::Request,
     body: Option<Bytes>,
 ) {
     let cancel = Cancel::default();
     let id = msg.id.clone();
+    let stream = msg.stream.then(|| {
+        let (tx, rx) = mpsc::unbounded_channel();
+        bodies.lock().unwrap().insert(id.clone(), tx);
+        crate::BodyStream::new(id.clone(), rx, out.clone())
+    });
     let req = Request {
         id: msg.id,
         phase: msg.phase,
@@ -215,11 +237,13 @@ fn start(
         json: msg.json,
         text: msg.text,
         body,
+        stream,
         cancel: cancel.clone(),
     };
     let handlers = handlers.clone();
     let out = out.clone();
     let registry = in_flight.clone();
+    let body_registry = bodies.clone();
     let task_id = id.clone();
     let task_cancel = cancel.clone();
     // Holding the lock while spawning means the task can't finish and
@@ -248,6 +272,7 @@ fn start(
             }
         }
         registry.lock().unwrap().remove(&id);
+        body_registry.lock().unwrap().remove(&id);
     }));
     map.insert(id, (task.abort_handle(), cancel));
 }

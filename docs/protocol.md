@@ -47,6 +47,9 @@ string chosen by Unsworn that is unique per worker connection.
   leaves this at `1`, and Unsworn starts more processes for concurrency.
 - `verify`: optional, default `false`. Whether the worker answers
   [`verify`](#verify-unsworn--worker) requests.
+- `stream_body`: optional, default `false`. Whether the worker accepts
+  [streamed request bodies](#streamed-request-bodies-chunk-end-and-ack).
+  Handlers on `stream_body` routes are reported missing otherwise.
 - `sdk`: optional, for logs and diagnostics.
 
 ### `request` (Unsworn → worker)
@@ -84,6 +87,8 @@ string chosen by Unsworn that is unique per worker connection.
   - `json`: the parsed JSON body, when the request had a JSON body
   - `text`: a UTF-8 text body
   - `body_len`: the number of raw body bytes that follow (see each tier)
+  - `"stream": true`: the body follows as `chunk` messages, on routes with
+    `stream_body` (see [below](#streamed-request-bodies-chunk-end-and-ack))
 - `deadline_ms`: time left before Unsworn times the request out.
 - `raw_query`: the query string as sent, without the `?`. Useful for handlers
   that wrap an existing app with its own query parsing.
@@ -120,6 +125,25 @@ After a `response` with `"stream": true`:
 ```
 
 Used for server-sent events, large downloads and generated output.
+
+### Streamed request bodies: `chunk`, `end` and `ack`
+
+After a `request` with `"stream": true`, Unsworn sends the body the same way
+a worker streams a response, and the worker acknowledges what it has read:
+
+```json
+{"type":"chunk","id":"r-81","body_len":65536}
+{"type":"ack","id":"r-81","bytes":65536}
+{"type":"end","id":"r-81"}
+```
+
+- `ack` (worker → Unsworn) says the handler has read `bytes` more of the
+  body. Unsworn keeps at most 256 KiB unacknowledged per request, so a slow
+  handler slows the upload instead of the body piling up in memory.
+- The handler may respond before reading the whole body. Unsworn then
+  stops sending it.
+- If the body passes `max_body`, stalls for 30 seconds or the client goes
+  away, Unsworn sends `cancel`, and the client gets `413` or `408`.
 
 ### `cancel` (Unsworn → worker)
 
@@ -318,8 +342,6 @@ the target language before running it.
 
 ## Open questions
 
-- Request body streaming to workers (`request` with `"stream": true` followed
-  by `chunk` messages), in v1 or later?
 - WebSockets: proxy-only in v1, or a message type for handler-owned sockets?
 - A `progress` message (worker → Unsworn) for long-running work, which
   Unsworn would turn into MCP progress notifications for tool calls.
