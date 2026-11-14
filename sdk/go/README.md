@@ -147,16 +147,23 @@ route. The Go toolchain skips files whose names start with `_`, so a root
 `_before.go` is never compiled; list Go before handlers with `before = [...]`
 in `unsworn.toml` instead.
 
+## Production
+
+`unsworn serve` runs `build` too, which would need Go and the source on the
+server. Build the worker ahead of time instead, in CI or a Docker build stage,
+ship the binary, and skip the build:
+
+```sh
+go build -o .unsworn/go-worker .
+unsworn serve --no-build    # or UNSWORN_NO_BUILD=1
+```
+
+Set `eager = true` on the runtime so a missing binary or handler stops
+startup instead of failing the first request.
+
 ## Tiers
 
 The worker reads `UNSWORN_TRANSPORT` and speaks either tier. Tier 1 (stdio)
 points `os.Stdout` at stderr, so `fmt.Println` output ends up in Unsworn's
 logs. Tier 2 (`protocol = "binary"`) is recommended for Go.
 
-## Status
-
-Not tagged yet. Until it is, point Go at a local checkout:
-
-```
-go mod edit -replace github.com/j4crev/unsworn/sdk/go=../unsworn/sdk/go
-```

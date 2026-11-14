@@ -129,7 +129,7 @@ rate_limit = { requests = 100, per = "1m", key = "auth.sub" }
 ```toml
 [runtimes.ts]
 extensions = [".ts"]
-command    = "bun run node_modules/@unswornjs/js/src/worker.ts"
+command    = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
 protocol   = "binary"
 
 [[route]]
@@ -143,7 +143,7 @@ handler = "src/users.ts#getUser"
 
 ```ts
 // src/users.ts
-import type { Handler } from "@unswornjs/js";
+import type { Handler } from "@unswornjs/sdk";
 
 export const getUser = (async (req, ctx) => {
   // req.params.id is already validated as an integer >= 1,
@@ -231,7 +231,7 @@ unsworn dev         # serves it, reloads on changes, verifies handler names
 
 | Command | What it does |
 |---|---|
-| `unsworn serve` | Run the router (`--listen`, `--log-format json`); `SIGHUP` reloads |
+| `unsworn serve` | Run the router (`--listen`, `--log-format json`, `--no-build` for prebuilt workers); `SIGHUP` reloads |
 | `unsworn dev` | Serve with file watching, every runtime started up front, and detailed errors |
 | `unsworn check` | Validate config, routes and handler files; `--deep` asks workers whether every handler exists; `--target <t>` checks a deployment target |
 | `unsworn routes` | Print the route table and each route's source; `--policies` shows merged policies |

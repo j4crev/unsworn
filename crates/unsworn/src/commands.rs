@@ -39,6 +39,7 @@ pub async fn check(
             PoolOptions {
                 root: root.to_path_buf(),
                 dev: true,
+                build: true,
                 socket_dir: sockets.path().to_path_buf(),
             },
         );
@@ -271,7 +272,7 @@ listen = "0.0.0.0:8080"
 # How to run handlers written in TypeScript (with the Bun SDK).
 # [runtimes.ts]
 # extensions = [".ts"]
-# command = "bun run node_modules/@unswornjs/js/src/worker.ts"
+# command = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
 # protocol = "binary"
 
 [[route]]

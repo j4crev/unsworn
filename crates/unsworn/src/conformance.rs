@@ -112,6 +112,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
         PoolOptions {
             root: root.to_path_buf(),
             dev: true,
+            build: true,
             socket_dir: sockets.path().to_path_buf(),
         },
     );
