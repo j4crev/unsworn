@@ -426,3 +426,42 @@ protocol = "binary"
     let project = compiled.project.expect("project compiles");
     assert_eq!(project.runtimes["ts"].protocol, Protocol::Framed);
 }
+
+#[test]
+fn stream_body_rejects_body_validation() {
+    let cfg = format!(
+        r#"{RUNTIMES}
+[[route]]
+path = "/upload"
+method = "POST"
+handler = "src/upload.ts"
+stream_body = true
+body = {{ type = "object" }}
+"#
+    );
+    let errs = errors(&[("unsworn.toml", &cfg), ("src/upload.ts", "")]);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("`stream_body` and `body` validation")),
+        "{errs:?}"
+    );
+
+    let cfg = format!(
+        r#"{RUNTIMES}
+[policies.uploads]
+stream_body = true
+
+[[route]]
+path = "/upload"
+method = "POST"
+handler = "src/upload.ts"
+use = ["uploads"]
+"#
+    );
+    let p = project(&[("unsworn.toml", &cfg), ("src/upload.ts", "")]);
+    assert!(p.streams_body(&p.routes[0]));
+    assert_eq!(
+        p.stream_handlers_by_runtime()["ts"],
+        vec!["src/upload.ts".to_string()]
+    );
+}

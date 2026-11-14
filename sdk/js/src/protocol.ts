@@ -21,6 +21,7 @@ export interface RequestMessage {
   json?: unknown;
   text?: string;
   body_len?: number;
+  stream?: boolean;
   deadline_ms?: number;
 }
 

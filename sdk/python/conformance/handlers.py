@@ -66,3 +66,7 @@ def noisy(req, ctx):
 def log(req, ctx):
     logging.getLogger().info("conformance log", extra={"n": 1})
     return {"status": 200}
+
+
+def upload(req, ctx):
+    return body(b"".join(req.stream))

@@ -222,13 +222,12 @@ per-target capability table.
 - **HTTP:** HTTP/1.1 and HTTP/2, with TLS from certificate files. WebSockets
   are proxied. HTTP/3 and automatic certificates (ACME) come later; until
   then, run behind a platform load balancer, Caddy or Cloudflare for those.
-- **Request bodies** are buffered up to `max_body` before reaching a worker.
-  Proxied requests stream.
+- **Request bodies** are buffered up to `max_body` before reaching a worker,
+  unless the route sets `stream_body`. Proxied requests stream.
 - **Response validation** defaults to `log`.
 - **Tier 2 encoding:** length-prefixed frames carrying the same JSON as
   Tier 1, plus raw body bytes (see [`protocol.md`](protocol.md)).
 
 ## Open questions
 
-- Request body streaming to workers, for large uploads.
 - A shared store (Redis first) for rate limits and caches across instances.

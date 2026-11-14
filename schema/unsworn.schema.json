@@ -597,6 +597,13 @@
             }
           ]
         },
+        "stream_body": {
+          "description": "Pass the request body to the handler as it arrives, instead of\nreading it first.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "timeout": {
           "anyOf": [
             {
@@ -970,6 +977,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "stream_body": {
+          "description": "Pass the request body to the handler as it arrives, instead of\nreading it first.",
+          "type": [
+            "boolean",
+            "null"
           ]
         },
         "timeout": {

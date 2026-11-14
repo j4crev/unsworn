@@ -33,6 +33,8 @@ export interface UnswornRequest<S extends Shape = Shape> {
   text?: string;
   /** A raw body, for anything that isn't JSON or text. */
   body?: Uint8Array;
+  /** The body as it arrives, on routes with `stream_body = true`. */
+  stream?: ReadableStream<Uint8Array>;
   /** Aborted when Unsworn cancels the request (timeout or client gone). */
   signal: AbortSignal;
   /** The handler reference, e.g. `src/users.ts#getUser`. */

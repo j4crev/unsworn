@@ -43,6 +43,9 @@ params = { id = { type = "integer", min = 1 } }
 `phase`, and `cancelled` (set when Unsworn cancels the request). `ctx` is a
 dict with `auth` (verified claims) and anything `before` handlers added.
 
+On routes with `stream_body = true`, `req.stream` yields the body in chunks
+as it arrives: `async for chunk in req.stream`, or `for` in a sync handler.
+
 Sync handlers run in a thread pool, so they don't block other requests.
 `print()` output goes to stderr, which Unsworn collects into its logs.
 

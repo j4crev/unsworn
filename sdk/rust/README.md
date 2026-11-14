@@ -89,6 +89,8 @@ anything before handlers added), `json`, `text`, `body`, `handler` and
   single values.
 - `req.params::<T>()`, `req.query::<T>()` and `req.body_json::<T>()`
   deserialize into a struct.
+- On routes with `stream_body = true`, `req.body_stream()` returns the body
+  as a `Stream` of chunks as it arrives.
 - When Unsworn cancels a request (the client went away or the route's
   timeout passed), the handler's future is dropped. `req.cancelled()` and
   `req.is_cancelled()` are there for work it spawned.

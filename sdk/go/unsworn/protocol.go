@@ -30,6 +30,7 @@ type inMessage struct {
 	JSON       json.RawMessage   `json:"json"`
 	Text       *string           `json:"text"`
 	BodyLen    int64             `json:"body_len"`
+	Stream     bool              `json:"stream"`
 	DeadlineMs *int64            `json:"deadline_ms"`
 	Handlers   []string          `json:"handlers"`
 }
@@ -39,7 +40,14 @@ type readyMessage struct {
 	Protocol    int    `json:"protocol"`
 	MaxInFlight int    `json:"max_in_flight"`
 	Verify      bool   `json:"verify"`
+	StreamBody  bool   `json:"stream_body"`
 	SDK         string `json:"sdk"`
+}
+
+type ackMessage struct {
+	Type  string `json:"type"`
+	ID    string `json:"id"`
+	Bytes int    `json:"bytes"`
 }
 
 type responseMessage struct {

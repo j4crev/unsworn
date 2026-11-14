@@ -43,6 +43,9 @@ class Request:
     json: Any = None
     text: str | None = None
     body: bytes | None = None
+    #: The body as it arrives, on routes with ``stream_body = true``: iterate
+    #: it with ``async for`` (or ``for`` in a sync handler).
+    stream: Any = None
     #: True once Unsworn has cancelled the request (timeout or client gone).
     cancelled: bool = False
 

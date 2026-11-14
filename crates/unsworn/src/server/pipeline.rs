@@ -26,7 +26,7 @@ use super::support::{
     Body, CachedResponse, MAX_CACHED_BODY, empty, full, json_response, problem, problem_with,
 };
 use super::{Generation, Shared};
-use crate::workers::{CallError, Reply, ReplyBody};
+use crate::workers::{BodyError, CallBody, CallError, Reply, ReplyBody};
 
 /// Per-request facts used across steps.
 struct Ctx {
@@ -293,6 +293,8 @@ struct Prepared {
     raw_body: Option<Bytes>,
     body_bytes: Option<Bytes>,
     streaming_body: Option<Body>,
+    /// The handler gets `streaming_body` as it arrives.
+    stream_body: bool,
     cache_key: Option<String>,
     context: Map<String, Value>,
 }
@@ -407,8 +409,9 @@ fn prepare<'a>(
             return Err(cached_response(&hit, &method, ctx.shared.dev));
         }
 
-        let needs_body =
-            matches!(route.action, Action::Handler(_)) || route.validation.body.is_some();
+        // A handler with `stream_body` reads the body as it arrives instead.
+        let needs_body = (matches!(route.action, Action::Handler(_)) && !eff.stream_body)
+            || route.validation.body.is_some();
         let (parts, incoming) = req.into_parts();
         if let Some(len) = parts
             .headers
@@ -458,6 +461,7 @@ fn prepare<'a>(
             raw_body,
             body_bytes,
             streaming_body,
+            stream_body: eff.stream_body && matches!(route.action, Action::Handler(_)),
             cache_key,
             context,
         })
@@ -694,7 +698,12 @@ fn run_befores<'a>(
             };
             let request = for_handler(template, before, Phase::Before, &context);
             match pool
-                .call(request, raw_body.clone(), deadline, ctx.request_id.clone())
+                .call(
+                    request,
+                    raw_body.clone().into(),
+                    deadline,
+                    ctx.request_id.clone(),
+                )
                 .await
             {
                 Ok(Reply::Continue(more)) => {
@@ -727,6 +736,7 @@ fn run_action<'a>(
             raw_body,
             body_bytes,
             streaming_body,
+            stream_body,
             context,
             ..
         } = prepared;
@@ -820,8 +830,12 @@ fn run_action<'a>(
                     return problem(StatusCode::INTERNAL_SERVER_ERROR, "runtime not found");
                 };
                 let request = for_handler(&template, h, Phase::Handle, &context);
+                let body = match streaming_body {
+                    Some(stream) if stream_body => CallBody::Stream(stream),
+                    _ => raw_body.into(),
+                };
                 let result = pool
-                    .call(request, raw_body, deadline, ctx.request_id.clone())
+                    .call(request, body, deadline, ctx.request_id.clone())
                     .await;
                 match result {
                     Ok(Reply::Response { response, body }) => {
@@ -1089,7 +1103,11 @@ fn auth_failure(ctx: &Ctx, failure: &AuthFailure) -> Response<Body> {
 }
 
 fn call_error(ctx: &Ctx, handler: &HandlerRef, e: CallError) -> Response<Body> {
-    tracing::error!(handler = %handler.raw, "{e}");
+    if matches!(e, CallError::Body(_)) {
+        tracing::info!(handler = %handler.raw, "{e}");
+    } else {
+        tracing::error!(handler = %handler.raw, "{e}");
+    }
     let dev = ctx.shared.dev;
     let (status, public) = match &e {
         CallError::Unavailable(_) => (
@@ -1103,6 +1121,17 @@ fn call_error(ctx: &Ctx, handler: &HandlerRef, e: CallError) -> Response<Body> {
         CallError::Timeout => (StatusCode::GATEWAY_TIMEOUT, "the handler timed out"),
         CallError::WorkerFailed(_) => (StatusCode::BAD_GATEWAY, "the handler's worker failed"),
         CallError::Handler(_) => (StatusCode::INTERNAL_SERVER_ERROR, "the handler failed"),
+        CallError::Body(BodyError::TooLarge) => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "the body is larger than this route allows",
+        ),
+        CallError::Body(BodyError::Idle) => (
+            StatusCode::REQUEST_TIMEOUT,
+            "the request body stopped arriving",
+        ),
+        CallError::Body(BodyError::Read) => {
+            (StatusCode::BAD_REQUEST, "couldn't read the request body")
+        }
     };
     if dev {
         problem(status, format!("{e} ({})", handler.raw))

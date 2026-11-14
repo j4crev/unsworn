@@ -12,17 +12,27 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
+use http_body_util::BodyExt;
 use serde_json::{Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, Semaphore, mpsc, oneshot};
 use unsworn_core::Project;
 use unsworn_core::config::Protocol;
 use unsworn_core::project::Runtime;
 use unsworn_proto::{
-    self as proto, Cancel, DecodeError, Frame, LogLevel, Message, PROTOCOL_VERSION, Request,
-    Response, Verify,
+    self as proto, Cancel, Chunk, DecodeError, End, Frame, LogLevel, Message, PROTOCOL_VERSION,
+    Request, Response, Verify,
 };
+
+use crate::server::support::Body;
+
+/// Unacknowledged bytes of a streamed request body allowed per request.
+const STREAM_WINDOW: usize = 256 * 1024;
+/// Largest `chunk` sent for a streamed request body.
+const STREAM_CHUNK: usize = 64 * 1024;
+/// How long a streamed request body may go without new data.
+pub const BODY_IDLE: Duration = Duration::from_secs(30);
 
 /// What a handler call produced.
 pub enum Reply {
@@ -36,6 +46,32 @@ pub enum ReplyBody {
     Stream(mpsc::Receiver<Result<Bytes, String>>),
 }
 
+/// A request body for [`Pool::call`].
+pub enum CallBody {
+    Empty,
+    Bytes(Bytes),
+    /// Sent to the worker as it arrives, as `chunk` messages, keeping at
+    /// most [`STREAM_WINDOW`] bytes unacknowledged.
+    Stream(Body),
+}
+
+impl From<Option<Bytes>> for CallBody {
+    fn from(b: Option<Bytes>) -> CallBody {
+        match b {
+            Some(b) if !b.is_empty() => CallBody::Bytes(b),
+            _ => CallBody::Empty,
+        }
+    }
+}
+
+/// Why a streamed request body couldn't be delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyError {
+    TooLarge,
+    Idle,
+    Read,
+}
+
 #[derive(Debug, Clone)]
 pub enum CallError {
     /// The runtime couldn't start or has no healthy workers.
@@ -47,6 +83,8 @@ pub enum CallError {
     WorkerFailed(String),
     /// The handler sent an `error` message.
     Handler(String),
+    /// A streamed request body failed: too large, stalled or unreadable.
+    Body(BodyError),
 }
 
 impl std::fmt::Display for CallError {
@@ -57,6 +95,11 @@ impl std::fmt::Display for CallError {
             CallError::Timeout => write!(f, "the handler timed out"),
             CallError::WorkerFailed(m) => write!(f, "worker failed: {m}"),
             CallError::Handler(m) => write!(f, "handler error: {m}"),
+            CallError::Body(BodyError::TooLarge) => write!(f, "the request body is too large"),
+            CallError::Body(BodyError::Idle) => {
+                write!(f, "the request body stalled for {}s", BODY_IDLE.as_secs())
+            }
+            CallError::Body(BodyError::Read) => write!(f, "couldn't read the request body"),
         }
     }
 }
@@ -91,6 +134,53 @@ struct Worker {
     max_in_flight: usize,
     alive: AtomicBool,
     verify: bool,
+    stream_body: bool,
+    /// Credit windows for streamed request bodies, by request id.
+    credits: Mutex<HashMap<String, Arc<Credit>>>,
+}
+
+/// The credit window for one streamed request body. Permits are bytes the
+/// worker may receive before acknowledging more.
+struct Credit {
+    window: Semaphore,
+    outstanding: AtomicU64,
+    closed: Notify,
+}
+
+impl Credit {
+    fn new() -> Credit {
+        Credit {
+            window: Semaphore::new(STREAM_WINDOW),
+            outstanding: AtomicU64::new(0),
+            closed: Notify::new(),
+        }
+    }
+
+    /// The request is over: stops the body pump.
+    fn close(&self) {
+        self.window.close();
+        self.closed.notify_waiters();
+    }
+
+    fn ack(&self, bytes: u64) {
+        // Never grant more than was sent, whatever the worker claims.
+        let mut current = self.outstanding.load(Ordering::Acquire);
+        loop {
+            let n = bytes.min(current);
+            match self.outstanding.compare_exchange(
+                current,
+                current - n,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    self.window.add_permits(n as usize);
+                    return;
+                }
+                Err(actual) => current = actual,
+            }
+        }
+    }
 }
 
 impl Worker {
@@ -112,6 +202,9 @@ impl Worker {
                 }
                 Pending::Verify(_) => {}
             }
+        }
+        for (_, credit) in self.credits.lock().unwrap().drain() {
+            credit.close();
         }
     }
 }
@@ -147,6 +240,8 @@ pub struct Pool {
     capacity: Notify,
     start: tokio::sync::Mutex<StartState>,
     missing: Mutex<HashMap<String, String>>,
+    /// Handlers whose routes stream request bodies.
+    stream_handlers: Vec<String>,
     next_id: AtomicU64,
     shutting_down: AtomicBool,
     crashes: Mutex<Vec<Instant>>,
@@ -161,14 +256,16 @@ pub struct Pools {
 impl Pools {
     pub fn new(project: &Project, opts: PoolOptions) -> Arc<Pools> {
         let handlers = project.handlers_by_runtime();
+        let streaming = project.stream_handlers_by_runtime();
         let pools = project
             .runtimes
             .iter()
             .map(|(name, runtime)| {
                 let handlers = handlers.get(name).cloned().unwrap_or_default();
+                let streaming = streaming.get(name).cloned().unwrap_or_default();
                 (
                     name.clone(),
-                    Pool::standalone(runtime.clone(), handlers, opts.clone()),
+                    Pool::standalone(runtime.clone(), handlers, streaming, opts.clone()),
                 )
             })
             .collect();
@@ -255,6 +352,7 @@ impl Pool {
     pub fn standalone(
         runtime: Arc<Runtime>,
         handlers: Vec<String>,
+        stream_handlers: Vec<String>,
         opts: PoolOptions,
     ) -> Arc<Pool> {
         let worker_count = runtime
@@ -273,6 +371,7 @@ impl Pool {
             capacity: Notify::new(),
             start: tokio::sync::Mutex::new(StartState::NotStarted),
             missing: Mutex::new(HashMap::new()),
+            stream_handlers,
             next_id: AtomicU64::new(1),
             shutting_down: AtomicBool::new(false),
             crashes: Mutex::new(Vec::new()),
@@ -283,6 +382,11 @@ impl Pool {
     /// Whether this runtime's workers answer `verify`.
     pub fn verify_supported(&self) -> bool {
         self.workers.lock().unwrap().iter().any(|w| w.verify)
+    }
+
+    /// Whether this runtime's workers accept streamed request bodies.
+    pub fn stream_body_supported(&self) -> bool {
+        self.workers.lock().unwrap().iter().any(|w| w.stream_body)
     }
 
     /// The highest `max_in_flight` among the workers.
@@ -534,6 +638,8 @@ impl Pool {
             max_in_flight: ready.max_in_flight.unwrap_or(1).max(1) as usize,
             alive: AtomicBool::new(true),
             verify: ready.verify,
+            stream_body: ready.stream_body,
+            credits: Mutex::new(HashMap::new()),
         });
         tokio::spawn(write_loop(writer, rx, protocol));
 
@@ -580,6 +686,22 @@ impl Pool {
                 _ => {
                     tracing::warn!(worker = %worker_id, "worker didn't answer `verify`");
                 }
+            }
+        }
+
+        if !ready.stream_body && !self.stream_handlers.is_empty() {
+            let mut map = self.missing.lock().unwrap();
+            for h in &self.stream_handlers {
+                tracing::error!(
+                    runtime = %self.runtime.name,
+                    handler = %h,
+                    "the worker doesn't accept streamed request bodies, which `stream_body` needs"
+                );
+                map.insert(
+                    h.clone(),
+                    "the worker doesn't accept streamed request bodies (`stream_body`); update its SDK"
+                        .into(),
+                );
             }
         }
 
@@ -702,6 +824,12 @@ impl Pool {
                         fields.as_deref(),
                     );
                 }
+                Message::Ack(ack) => {
+                    let credit = w.credits.lock().unwrap().get(&ack.id).cloned();
+                    if let Some(credit) = credit {
+                        credit.ack(ack.bytes);
+                    }
+                }
                 Message::Ready(_) | Message::Unknown => {}
                 other => {
                     tracing::warn!(worker = %w.id, "unexpected message from worker: {other:?}");
@@ -713,6 +841,9 @@ impl Pool {
     fn release(&self, w: &Worker, id: &str) {
         if let Some(call) = w.calls.lock().unwrap().get_mut(id) {
             call.done = Some(Instant::now());
+        }
+        if let Some(credit) = w.credits.lock().unwrap().remove(id) {
+            credit.close();
         }
         w.inflight.fetch_sub(1, Ordering::AcqRel);
         self.capacity.notify_one();
@@ -763,7 +894,7 @@ impl Pool {
     pub fn call(
         self: &Arc<Self>,
         request: Request,
-        body: Option<Bytes>,
+        body: CallBody,
         deadline: Instant,
         request_id: String,
     ) -> futures_util::future::BoxFuture<'static, Result<Reply, CallError>> {
@@ -774,7 +905,7 @@ impl Pool {
     async fn call_inner(
         self: Arc<Self>,
         mut request: Request,
-        body: Option<Bytes>,
+        body: CallBody,
         deadline: Instant,
         request_id: String,
     ) -> Result<Reply, CallError> {
@@ -815,6 +946,12 @@ impl Pool {
         };
 
         let id = format!("r-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        if matches!(body, CallBody::Stream(_)) && !worker.stream_body {
+            self.release(&worker, &id);
+            return Err(CallError::Unavailable(
+                "the runtime's workers don't accept streamed request bodies".into(),
+            ));
+        }
         request.id = id.clone();
         request.deadline_ms = Some(
             deadline
@@ -839,21 +976,37 @@ impl Pool {
             .lock()
             .unwrap()
             .insert(id.clone(), Pending::Call(tx));
-        let frame = match body {
-            Some(b) if !b.is_empty() => match Frame::with_body(Message::Request(request), b) {
-                Ok(f) => f,
+        let (frame, stream) = match body {
+            CallBody::Bytes(b) => match Frame::with_body(Message::Request(request), b) {
+                Ok(f) => (f, None),
                 Err(e) => {
                     worker.pending.lock().unwrap().remove(&id);
                     self.release(&worker, &id);
                     return Err(CallError::WorkerFailed(e.to_string()));
                 }
             },
-            _ => Frame::new(Message::Request(request)),
+            CallBody::Empty => (Frame::new(Message::Request(request)), None),
+            CallBody::Stream(body) => {
+                request.stream = true;
+                let credit = Arc::new(Credit::new());
+                worker
+                    .credits
+                    .lock()
+                    .unwrap()
+                    .insert(id.clone(), credit.clone());
+                (Frame::new(Message::Request(request)), Some((body, credit)))
+            }
         };
         if worker.tx.send(frame).is_err() {
             worker.pending.lock().unwrap().remove(&id);
             self.release(&worker, &id);
             return Err(CallError::WorkerFailed("the worker stopped".into()));
+        }
+        if let Some((body, credit)) = stream {
+            // The pump outlives this call when the handler streams its
+            // response while still reading the request. It stops when the
+            // body ends or fails, or when the request is released.
+            tokio::spawn(self.clone().pump(worker.clone(), id.clone(), body, credit));
         }
 
         let mut guard = CancelGuard {
@@ -874,6 +1027,92 @@ impl Pool {
             }
             Err(_) => Err(CallError::Timeout), // guard sends `cancel`
         }
+    }
+
+    /// Sends a streamed request body to the worker as `chunk` messages,
+    /// then `end`. Fails the request if the body is too large, stalls or
+    /// can't be read.
+    async fn pump(
+        self: Arc<Self>,
+        worker: Arc<Worker>,
+        id: String,
+        mut body: Body,
+        credit: Arc<Credit>,
+    ) {
+        let error = loop {
+            let closed = credit.closed.notified();
+            tokio::pin!(closed);
+            closed.as_mut().enable();
+            if credit.window.is_closed() {
+                return;
+            }
+            let next = tokio::select! {
+                _ = closed => return, // answered or cancelled: stop reading
+                next = tokio::time::timeout(BODY_IDLE, body.frame()) => next,
+            };
+            let frame = match next {
+                Err(_) => break BodyError::Idle,
+                Ok(None) => {
+                    if worker.pending.lock().unwrap().contains_key(&id) {
+                        let _ = worker.tx.send(Frame::new(Message::End(End { id })));
+                    }
+                    return;
+                }
+                Ok(Some(Err(e))) if e.is::<http_body_util::LengthLimitError>() => {
+                    break BodyError::TooLarge;
+                }
+                Ok(Some(Err(_))) => break BodyError::Read,
+                Ok(Some(Ok(frame))) => frame,
+            };
+            let Ok(mut data) = frame.into_data() else {
+                continue; // trailers
+            };
+            while !data.is_empty() {
+                let piece = data.split_to(data.len().min(STREAM_CHUNK));
+                // Waits for the worker to read earlier chunks. Closed when
+                // the request is released.
+                let Ok(permits) = credit.window.acquire_many(piece.len() as u32).await else {
+                    return;
+                };
+                permits.forget();
+                credit
+                    .outstanding
+                    .fetch_add(piece.len() as u64, Ordering::AcqRel);
+                if !worker.pending.lock().unwrap().contains_key(&id) {
+                    return; // already answered or cancelled
+                }
+                let chunk = Message::Chunk(Chunk {
+                    id: id.clone(),
+                    text: None,
+                    body_len: None,
+                });
+                let Ok(frame) = Frame::with_body(chunk, piece) else {
+                    return;
+                };
+                if worker.tx.send(frame).is_err() {
+                    return;
+                }
+            }
+        };
+        let pending = worker.pending.lock().unwrap().remove(&id);
+        match pending {
+            Some(Pending::Call(tx)) => {
+                let _ = tx.send(Err(CallError::Body(error)));
+            }
+            Some(Pending::Stream(tx)) => {
+                let _ = tx.try_send(Err(CallError::Body(error).to_string()));
+            }
+            Some(other) => {
+                worker.pending.lock().unwrap().insert(id, other);
+                return;
+            }
+            None => return,
+        }
+        self.release(&worker, &id);
+        let _ = worker.tx.send(Frame::new(Message::Cancel(Cancel {
+            id,
+            reason: Some(CallError::Body(error).to_string()),
+        })));
     }
 
     fn pick(&self) -> Option<Arc<Worker>> {

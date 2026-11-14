@@ -38,6 +38,7 @@ pub enum Message {
     Verify(Verify),
     Verified(Verified),
     Log(Log),
+    Ack(Ack),
     /// A message type this version doesn't know. Receivers ignore it.
     #[serde(other)]
     Unknown,
@@ -57,6 +58,7 @@ impl Message {
             Message::Verify(m) => Some(&m.id),
             Message::Verified(m) => Some(&m.id),
             Message::Log(m) => m.id.as_deref(),
+            Message::Ack(m) => Some(&m.id),
             Message::Ready(_) | Message::Unknown => None,
         }
     }
@@ -92,6 +94,9 @@ pub struct Ready {
     pub max_in_flight: Option<u32>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub verify: bool,
+    /// The worker accepts streamed request bodies and acknowledges them.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stream_body: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sdk: Option<String>,
 }
@@ -132,6 +137,9 @@ pub struct Request {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_len: Option<u64>,
+    /// The body follows as `chunk` messages, ending with `end`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stream: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline_ms: Option<u64>,
 }
@@ -249,6 +257,13 @@ pub struct Verified {
 pub struct MissingHandler {
     pub handler: String,
     pub reason: String,
+}
+
+/// The worker has read `bytes` more of a streamed request body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Ack {
+    pub id: String,
+    pub bytes: u64,
 }
 
 /// A log record from a worker. With `id`, it belongs to that request.
@@ -628,6 +643,7 @@ mod tests {
                 protocol: 1,
                 max_in_flight: None,
                 verify: false,
+                stream_body: false,
                 sdk: None
             })
         );

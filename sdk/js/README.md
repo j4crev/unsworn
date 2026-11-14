@@ -71,5 +71,7 @@ Levels are `error`, `warn`, `info`, `debug` and `trace`.
 ## Notes
 
 - `req.signal` is aborted when Unsworn cancels the request.
+- On routes with `stream_body = true`, `req.stream` is the body as a
+  `ReadableStream`, and fetch-style apps get it as their request body.
 - On the stdio transport, `console.log` output goes to stderr, which Unsworn
   collects into its logs.

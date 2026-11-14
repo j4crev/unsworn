@@ -6,7 +6,7 @@ use unsworn_sdk::{Error, Reply, Request, Result, handlers, json};
 
 fn main() {
     unsworn_sdk::run(handlers![
-        echo, text, binary, status, stream, fail, slow, crash, allow, deny, noisy, log
+        echo, text, binary, status, stream, fail, slow, crash, allow, deny, noisy, log, upload
     ]);
 }
 
@@ -65,6 +65,13 @@ async fn deny(_: Request) -> Result {
 async fn noisy(_: Request) -> Result {
     println!("this goes to stderr, not the protocol stream");
     Ok(Reply::text("ok"))
+}
+
+async fn upload(mut req: Request) -> Result {
+    let stream = req
+        .body_stream()
+        .ok_or_else(|| Error::msg("no streamed body"))?;
+    Ok(Reply::bytes(stream.bytes().await?))
 }
 
 async fn log(_: Request) -> Result {

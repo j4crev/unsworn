@@ -29,6 +29,7 @@
 //! The reference `src/users.rs#get_user` finds the function registered as
 //! `get_user`. See [`Handlers`].
 
+mod body;
 mod handlers;
 mod logging;
 mod worker;
@@ -47,6 +48,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use tokio::sync::Notify;
 
+pub use body::BodyStream;
 pub use handlers::Handlers;
 pub use logging::LogLayer;
 pub use serde_json::{Value as JsonValue, json};
@@ -117,6 +119,7 @@ pub struct Request {
     pub text: Option<String>,
     /// The raw body, when the request had one.
     pub body: Option<Bytes>,
+    stream: Option<BodyStream>,
     cancel: Cancel,
 }
 
@@ -156,6 +159,12 @@ impl Request {
         }
     }
 
+    /// The body as it arrives, on routes with `stream_body = true`. Returns
+    /// `None` on other routes, or if it was already taken.
+    pub fn body_stream(&mut self) -> Option<BodyStream> {
+        self.stream.take()
+    }
+
     /// Whether Unsworn has cancelled the request: the client went away or
     /// the route's timeout passed.
     pub fn is_cancelled(&self) -> bool {
@@ -187,6 +196,7 @@ impl Request {
             json: None,
             text: None,
             body: None,
+            stream: None,
             cancel: Cancel::default(),
         }
     }

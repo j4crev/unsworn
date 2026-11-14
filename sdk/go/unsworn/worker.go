@@ -62,6 +62,16 @@ type worker struct {
 type call struct {
 	cancel    context.CancelFunc
 	cancelled bool
+	body      *bodyReader
+}
+
+func (w *worker) body(id string) *bodyReader {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if c, ok := w.inFlight[id]; ok {
+		return c.body
+	}
+	return nil
 }
 
 func run(c codec, out io.Writer) error {
@@ -80,6 +90,7 @@ func run(c codec, out io.Writer) error {
 		Protocol:    ProtocolVersion,
 		MaxInFlight: maxInFlight,
 		Verify:      true,
+		StreamBody:  true,
 		SDK:         "unsworn-go/" + Version,
 	}, nil); err != nil {
 		return err
@@ -97,7 +108,23 @@ func run(c codec, out io.Writer) error {
 		switch m.Type {
 		case "request":
 			w.start(m, body)
+		case "chunk":
+			if b := w.body(m.ID); b != nil {
+				if body == nil && m.Text != nil {
+					body = []byte(*m.Text)
+				}
+				if len(body) > 0 {
+					b.push(body)
+				}
+			}
+		case "end":
+			if b := w.body(m.ID); b != nil {
+				b.end(nil)
+			}
 		case "cancel":
+			if b := w.body(m.ID); b != nil {
+				b.end(errors.New("unsworn: the request was cancelled"))
+			}
 			w.cancel(m.ID)
 		case "verify":
 			w.verify(m)
@@ -157,8 +184,12 @@ func (w *worker) start(m *inMessage, body []byte) {
 		ctx, cancel = context.WithCancel(context.Background())
 	}
 	ctx = context.WithValue(ctx, requestIDKey{}, m.ID)
+	c := &call{cancel: cancel}
+	if m.Stream {
+		c.body = newBodyReader(w, m.ID, ctx)
+	}
 	w.mu.Lock()
-	w.inFlight[m.ID] = &call{cancel: cancel}
+	w.inFlight[m.ID] = c
 	w.mu.Unlock()
 
 	req := &Request{
@@ -176,6 +207,9 @@ func (w *worker) start(m *inMessage, body []byte) {
 		JSON:     m.JSON,
 		Body:     body,
 		ctx:      ctx,
+	}
+	if c.body != nil {
+		req.BodyReader = c.body
 	}
 	if req.Phase == "" {
 		req.Phase = "handle"
