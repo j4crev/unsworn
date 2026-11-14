@@ -42,6 +42,33 @@ A handler returns an object or a web `Response`:
 | `new Response(...)` | As given; `text/event-stream` responses are streamed |
 | `next({ tenant: "acme" })` | From a `before` handler: continue, adding context |
 
+## MCP tools
+
+A handler listed in `[[mcp.tool]]` is an ordinary handler. Its arguments
+arrive as `req.json`, already validated, and `ctx.mcp` has the `tool` name,
+`protocol_version` and, when the client sends it, `client`. Unsworn turns
+the reply into an MCP tool result (see
+[`docs/mcp.md`](../../docs/mcp.md#how-results-are-mapped)):
+
+```ts
+import { type Handler, content, json, toolError } from "@unswornjs/sdk";
+
+export const getForecast: Handler<{ json: { city: string } }> = (req, ctx) => {
+  const { city } = req.json;
+  if (!cities.has(city)) return toolError(`unknown city ${city}`); // the model sees this
+  return json({ city, days: forecast(city) });
+};
+
+export const chart: Handler = () => content([{ type: "image", data: pngBase64, mimeType: "image/png" }]);
+```
+
+| Return | Tool result |
+|---|---|
+| `json(value)` or `{ json }` | Structured content, plus a text copy |
+| `text(value)` or `{ text }` | One text block |
+| `content(blocks, json?)` or `{ mcpContent, json? }` | MCP content blocks as given; with `json`, structured content too |
+| `toolError(message)` | `isError: true` with `message` |
+
 ## Existing apps
 
 A module whose export has a `fetch(Request)` method, such as a Hono or

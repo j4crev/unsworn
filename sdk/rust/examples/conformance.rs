@@ -6,7 +6,8 @@ use unsworn_sdk::{Error, Reply, Request, Result, handlers, json};
 
 fn main() {
     unsworn_sdk::run(handlers![
-        echo, text, binary, status, stream, fail, slow, crash, allow, deny, noisy, log, upload
+        echo, text, binary, status, stream, fail, slow, crash, allow, deny, noisy, log, upload,
+        content, mcp
     ]);
 }
 
@@ -77,4 +78,17 @@ async fn upload(mut req: Request) -> Result {
 async fn log(_: Request) -> Result {
     tracing::info!(n = 1, "conformance log");
     Ok(Reply::status(200))
+}
+
+async fn content(_: Request) -> Result {
+    Ok(Reply::json(json!({ "ok": true })).with_content(json!([{ "type": "text", "text": "hi" }])))
+}
+
+async fn mcp(req: Request) -> Result {
+    let call = req.mcp().ok_or_else(|| Error::msg("not an MCP call"))?;
+    Ok(Reply::json(json!({
+        "tool": call.tool,
+        "protocol_version": call.protocol_version,
+        "client": call.client.map(|c| c.name),
+    })))
 }

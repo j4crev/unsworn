@@ -36,6 +36,34 @@ params = { id = { type = "integer", min = 1 } }
 | `{"status": 204}` | No body |
 | `next({"tenant": "acme"})` | From a `before` handler: continue, adding context |
 
+## MCP tools
+
+A handler listed in `[[mcp.tool]]` is an ordinary handler. Its arguments
+arrive as `req.json`, already validated, and `ctx["mcp"]` has the `tool`
+name, `protocol_version` and, when the client sends it, `client`. Unsworn
+turns the reply into an MCP tool result (see
+[`docs/mcp.md`](../../docs/mcp.md#how-results-are-mapped)):
+
+```python
+from unsworn import content, json, tool_error
+
+def get_forecast(req, ctx):
+    city = req.json["city"]
+    if city not in CITIES:
+        return tool_error(f"unknown city {city}")  # the model sees this
+    return json({"city": city, "days": forecast(city)})
+
+def chart(req, ctx):
+    return content([{"type": "image", "data": png_b64, "mimeType": "image/png"}])
+```
+
+| Return | Tool result |
+|---|---|
+| `json(value)` | Structured content, plus a text copy |
+| `text(value)` | One text block |
+| `content(blocks, json=value)` | MCP content blocks as given; with `json`, structured content too |
+| `tool_error(message)` | `isError: true` with `message` |
+
 ## The request
 
 `req` has `method`, `path`, `route`, `params`, `query`, `raw_query`,

@@ -176,6 +176,43 @@ impl Request {
     pub async fn cancelled(&self) {
         self.cancel.cancelled().await
     }
+
+    /// The MCP tool call this request is, or `None` when the handler isn't
+    /// running as an MCP tool. The tool's arguments are the JSON body; see
+    /// [`Request::body_json`].
+    pub fn mcp(&self) -> Option<McpCall> {
+        let call = self.ctx.get("mcp")?;
+        let text = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(String::from);
+        Some(McpCall {
+            tool: text(call, "tool")?,
+            protocol_version: text(call, "protocol_version").unwrap_or_default(),
+            client: call.get("client").and_then(|c| {
+                Some(McpClient {
+                    name: text(c, "name")?,
+                    version: text(c, "version").unwrap_or_default(),
+                })
+            }),
+        })
+    }
+}
+
+/// An MCP tool call. See [`Request::mcp`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpCall {
+    /// The tool's name.
+    pub tool: String,
+    /// The call's MCP protocol version, such as `2026-07-28`.
+    pub protocol_version: String,
+    /// What the client says about itself, if anything. Use it for logs, not
+    /// decisions.
+    pub client: Option<McpClient>,
+}
+
+/// An MCP client's name and version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpClient {
+    pub name: String,
+    pub version: String,
 }
 
 impl Request {
@@ -249,6 +286,8 @@ pub struct Reply {
     pub(crate) status: u16,
     pub(crate) headers: Vec<(String, String)>,
     pub(crate) body: Body,
+    /// MCP content blocks, for handlers that run as MCP tools.
+    pub(crate) mcp_content: Option<Value>,
 }
 
 impl Default for Reply {
@@ -263,6 +302,7 @@ impl Reply {
             status,
             headers: Vec::new(),
             body,
+            mcp_content: None,
         }
     }
 
@@ -303,6 +343,30 @@ impl Reply {
         )
     }
 
+    /// `200` with MCP content blocks, for a handler that runs as an MCP tool.
+    /// `blocks` is a JSON array of MCP content blocks, such as
+    /// `json!([{ "type": "image", "data": b64, "mimeType": "image/png" }])`.
+    /// Add structured content with `Reply::json(v).with_content(blocks)`
+    /// instead.
+    pub fn content(blocks: Value) -> Reply {
+        Reply::status(200).with_content(blocks)
+    }
+
+    /// An error the model sees and can react to, such as "city not found".
+    /// Unsworn turns it into an MCP tool result with `isError` set. As an
+    /// HTTP reply, it's a `400` with `{"error": message}`; change that with
+    /// [`Reply::with_status`].
+    pub fn tool_error(message: impl Into<String>) -> Reply {
+        Reply::json(serde_json::json!({ "error": message.into() })).with_status(400)
+    }
+
+    /// Adds MCP content blocks, for a handler that runs as an MCP tool. See
+    /// [`Reply::content`].
+    pub fn with_content(mut self, blocks: Value) -> Reply {
+        self.mcp_content = Some(blocks);
+        self
+    }
+
     /// From a before handler: let the request continue, adding the fields of
     /// `context` (a JSON object) to its context.
     pub fn next(context: Value) -> Reply {
@@ -321,5 +385,29 @@ impl Reply {
         self.headers
             .push((name.into().to_ascii_lowercase(), value.into()));
         self
+    }
+}
+
+#[cfg(test)]
+mod mcp_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_call_and_replies() {
+        let mut req = Request::test();
+        assert!(req.mcp().is_none());
+        req.ctx.insert(
+            "mcp".into(),
+            json!({"tool": "get_forecast", "protocol_version": "2026-07-28", "client": {"name": "c", "version": "1"}}),
+        );
+        let call = req.mcp().unwrap();
+        assert_eq!(call.tool, "get_forecast");
+        assert_eq!(call.client.unwrap().name, "c");
+
+        let e = Reply::tool_error("city not found");
+        assert_eq!(e.status, 400);
+        assert!(matches!(&e.body, Body::Json(Ok(v)) if v["error"] == "city not found"));
+        let c = Reply::content(json!([{"type": "text", "text": "hi"}]));
+        assert_eq!((c.status, c.mcp_content.is_some()), (200, true));
     }
 }

@@ -74,6 +74,15 @@ while True:
     elif name == "noisy":
         print("not a protocol message", flush=True)
         reply(rid, text="ok")
+    elif name == "content":
+        reply(rid, json={"ok": True}, mcp_content=[{"type": "text", "text": "hi"}])
+    elif name == "mcp":
+        call = msg.get("context", {}).get("mcp", {})
+        reply(rid, json={
+            "tool": call.get("tool"),
+            "protocol_version": call.get("protocol_version"),
+            "client": (call.get("client") or {}).get("name"),
+        })
     elif name == "log":
         send({"type": "log", "id": rid, "level": "info", "message": "conformance log", "fields": {"n": 1}})
         reply(rid, 200)

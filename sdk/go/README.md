@@ -84,6 +84,34 @@ Add `.WithStatus(code)` and `.WithHeader(name, value)` to any of them:
 message is logged and shown to the client only under `unsworn dev`. Panics
 are recovered and treated the same way.
 
+## MCP tools
+
+A handler listed in `[[mcp.tool]]` is an ordinary handler. Its arguments
+are the JSON body, already validated (read them with `req.Bind`), and
+`req.MCP()` returns the tool name, protocol version and client (`nil`
+outside a tool call). Unsworn turns the reply into an MCP tool result (see
+[`docs/mcp.md`](../../docs/mcp.md#how-results-are-mapped)):
+
+```go
+func GetForecast(req *unsworn.Request) (unsworn.Reply, error) {
+	var args struct{ City string `json:"city"` }
+	if err := req.Bind(&args); err != nil {
+		return unsworn.Reply{}, err
+	}
+	if !known(args.City) {
+		return unsworn.ToolError("unknown city " + args.City), nil // the model sees this
+	}
+	return unsworn.JSON(forecast(args.City)), nil
+}
+```
+
+| Return | Tool result |
+|---|---|
+| `unsworn.JSON(v)` | Structured content, plus a text copy |
+| `unsworn.Text(s)` | One text block |
+| `unsworn.Content(blocks)`, or `unsworn.JSON(v).WithContent(blocks)` | MCP content blocks as given; with `JSON`, structured content too |
+| `unsworn.ToolError(message)` | `isError: true` with `message` |
+
 ## The request
 
 `req` has `Method`, `Path`, `Route`, `Params`, `Query`, `RawQuery`,

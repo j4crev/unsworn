@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 
-from unsworn import body, json, next
+from unsworn import body, content as content_reply, json, next
 from unsworn import text as text_reply
 
 
@@ -70,3 +70,18 @@ def log(req, ctx):
 
 def upload(req, ctx):
     return body(b"".join(req.stream))
+
+
+def content(req, ctx):
+    return content_reply([{"type": "text", "text": "hi"}], json={"ok": True})
+
+
+def mcp(req, ctx):
+    call = ctx.get("mcp") or {}
+    return json(
+        {
+            "tool": call.get("tool"),
+            "protocol_version": call.get("protocol_version"),
+            "client": (call.get("client") or {}).get("name"),
+        }
+    )

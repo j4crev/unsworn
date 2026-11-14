@@ -1,9 +1,8 @@
 # MCP servers with Unsworn
 
 > Level 1 and the shared building blocks are implemented in v1. Level 2
-> (tools as handlers, and per-tool policies for a proxied MCP server) is
-> implemented; SDK helpers for `mcp_content` are still to come. Level 3 is
-> planned.
+> (tools as handlers, with SDK helpers, and per-tool policies for a proxied
+> MCP server) is implemented. Level 3 is planned.
 
 A remote [Model Context Protocol](https://modelcontextprotocol.io) (MCP)
 server lets AI agents call tools over HTTP. Running one in production needs
@@ -376,12 +375,32 @@ A tool handler gets the normal `request` message from
 `client` is what the client says about itself, and clients may leave it
 out. It's for logs, not for decisions.
 
-In an SDK, that's an ordinary function:
+A tool handler is an ordinary handler, with the same signature as a route
+handler. That's what lets [level 3](#level-3-routes-as-tools) offer a route
+as a tool without changing its handler. In the Python SDK:
 
 ```python
-def get_forecast(args, ctx):
-    return {"city": args["city"], "days": forecast(args["city"], args["days"])}
+from unsworn import json, tool_error
+
+def get_forecast(req, ctx):
+    city = req.json["city"]
+    if city not in CITIES:
+        return tool_error(f"unknown city {city}")  # the model sees this
+    return json({"city": city, "days": forecast(city, req.json.get("days", 3))})
 ```
+
+Each SDK has helpers for tools:
+
+| | JS/TS | Python | Go | Rust |
+|---|---|---|---|---|
+| The call's details | `ctx.mcp` | `ctx["mcp"]` | `req.MCP()` | `req.mcp()` |
+| Content blocks | `content(blocks, json?)` | `content(blocks, json=...)` | `Content(blocks)`, `.WithContent(blocks)` | `Reply::content(blocks)`, `.with_content(blocks)` |
+| An error for the model | `toolError(message)` | `tool_error(message)` | `ToolError(message)` | `Reply::tool_error(message)` |
+
+A tool error is a `400` with `{"error": message}`, so Unsworn returns
+`message` to the model as a tool result with `isError: true`. An exception
+or returned error is different: it's logged, and the model only sees that
+the tool failed.
 
 ### How results are mapped
 

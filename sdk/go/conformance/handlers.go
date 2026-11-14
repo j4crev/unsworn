@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	unsworn.Serve(echo, text, binary, status, stream, fail, slow, crash, allow, deny, noisy, log, upload)
+	unsworn.Serve(echo, text, binary, status, stream, fail, slow, crash, allow, deny, noisy, log, upload, content, mcp)
 }
 
 func echo(req *unsworn.Request) (unsworn.Reply, error) {
@@ -100,4 +100,25 @@ func upload(req *unsworn.Request) (unsworn.Reply, error) {
 func log(req *unsworn.Request) (unsworn.Reply, error) {
 	slog.InfoContext(req.Context(), "conformance log", "n", 1)
 	return unsworn.Status(200), nil
+}
+
+func content(req *unsworn.Request) (unsworn.Reply, error) {
+	blocks := []map[string]any{{"type": "text", "text": "hi"}}
+	return unsworn.JSON(map[string]any{"ok": true}).WithContent(blocks), nil
+}
+
+func mcp(req *unsworn.Request) (unsworn.Reply, error) {
+	call := req.MCP()
+	if call == nil {
+		return unsworn.Reply{}, errors.New("not an MCP call")
+	}
+	var client any
+	if call.Client != nil {
+		client = call.Client.Name
+	}
+	return unsworn.JSON(map[string]any{
+		"tool":             call.Tool,
+		"protocol_version": call.ProtocolVersion,
+		"client":           client,
+	}), nil
 }

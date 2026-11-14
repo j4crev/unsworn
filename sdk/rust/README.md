@@ -78,6 +78,37 @@ converts with `?`. An error sends a `500`; the message is logged and shown
 to the client only under `unsworn dev`. Panics are caught and treated the
 same way.
 
+## MCP tools
+
+A handler listed in `[[mcp.tool]]` is an ordinary handler. Its arguments
+are the JSON body, already validated (read them with `req.body_json()`),
+and `req.mcp()` returns the tool name, protocol version and client (`None`
+outside a tool call). Unsworn turns the reply into an MCP tool result (see
+[`docs/mcp.md`](../../docs/mcp.md#how-results-are-mapped)):
+
+```rust
+#[derive(serde::Deserialize)]
+struct Args {
+    city: String,
+}
+
+async fn get_forecast(req: Request) -> Result {
+    let args: Args = req.body_json()?;
+    if !known(&args.city) {
+        let message = format!("unknown city {}", args.city);
+        return Ok(Reply::tool_error(message)); // the model sees this
+    }
+    Ok(Reply::json(forecast(&args.city)))
+}
+```
+
+| Return | Tool result |
+|---|---|
+| `Reply::json(value)` | Structured content, plus a text copy |
+| `Reply::text(s)` | One text block |
+| `Reply::content(blocks)`, or `Reply::json(v).with_content(blocks)` | MCP content blocks as given; with `json`, structured content too |
+| `Reply::tool_error(message)` | `isError: true` with `message` |
+
 ## The request
 
 `req` has `method`, `path`, `route`, `params`, `query`, `raw_query`,

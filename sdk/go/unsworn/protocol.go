@@ -59,6 +59,8 @@ type responseMessage struct {
 	Text    *string         `json:"text,omitempty"`
 	BodyLen int             `json:"body_len,omitempty"`
 	Stream  bool            `json:"stream,omitempty"`
+	// MCPContent is only used by handlers that run as MCP tools.
+	MCPContent json.RawMessage `json:"mcp_content,omitempty"`
 }
 
 type continueMessage struct {

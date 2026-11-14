@@ -274,6 +274,13 @@ func (w *worker) reply(req *Request, r Reply) error {
 	if res.Status == 0 {
 		res.Status = 204
 	}
+	if r.content != nil {
+		data, err := marshal(r.content)
+		if err != nil {
+			return fmt.Errorf("can't encode the MCP content: %w", err)
+		}
+		res.MCPContent = data
+	}
 	if len(r.headers) > 0 {
 		res.Headers = make(map[string]any, len(r.headers))
 		for k, v := range r.headers {

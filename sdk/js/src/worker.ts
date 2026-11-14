@@ -274,6 +274,7 @@ async function reply(id: string, result: unknown, signal: AbortSignal) {
   }
   const base: Outgoing = { type: "response", id, status: r.status ?? 200 };
   if (r.headers) base.headers = r.headers;
+  if (r.mcpContent !== undefined) base.mcp_content = r.mcpContent;
   if (r.json !== undefined) {
     send({ ...base, json: r.json });
   } else if (r.text !== undefined) {
