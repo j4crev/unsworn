@@ -233,13 +233,15 @@ No new message types are needed: a tool call is a normal `request`.
   endpoint.
 - `json` holds the tool's arguments, already validated against its input
   schema.
-- `context.mcp` holds `tool`, `session` (when sessions are on) and `client`
-  (`name` and `version`).
+- `context.mcp` holds `tool`, `protocol_version` and, when the client sends
+  it, `client` (`name` and `version`). MCP has no sessions, so there's no
+  session ID.
 - A `response` may use one extra body field, `mcp_content`: an array of MCP
-  content blocks (text, images, audio, embedded resources) passed to the
-  client as they are. How other responses map to tool results is described in
-  [`mcp.md`](mcp.md#how-results-are-mapped).
-- An MCP cancellation from the client becomes a `cancel` message.
+  content blocks (text, images, audio, resource links, embedded resources)
+  passed to the client as they are. How other responses map to tool results
+  is described in [`mcp.md`](mcp.md#how-results-are-mapped).
+- An MCP client cancels a call by closing its connection, which becomes a
+  `cancel` message like for any other request.
 
 ## Tier 1: JSON lines over stdio
 
@@ -345,5 +347,9 @@ the target language before running it.
 - WebSockets: proxy-only in v1, or a message type for handler-owned sockets?
 - A `progress` message (worker → Unsworn) for long-running work, which
   Unsworn would turn into MCP progress notifications for tool calls.
-- Messages for requests from an MCP server to the client mid-call (sampling,
-  elicitation), so a handler can ask a question and wait for the answer.
+- A way for an MCP tool handler to ask the user a question (elicitation).
+  MCP 2026-07-28 does this without keeping the call open: the tool returns
+  an "input required" result, and the client calls the tool again with the
+  answers. That likely needs a response field for the input request and a
+  `context.mcp` field carrying the answers on the retry, rather than a new
+  message type.

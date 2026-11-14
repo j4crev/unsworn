@@ -631,3 +631,238 @@ jwks_url = "https://auth.example.com/jwks"
     };
     assert!(matches!(&jwt.keys, JwtKeys::Jwks(u) if u == "https://auth.example.com/jwks"));
 }
+
+const MCP_AUTH: &str = r#"
+[auth.oauth]
+type = "jwt"
+secret = "shh"
+audience = "https://api.example.com/mcp"
+"#;
+
+#[test]
+fn mcp_tools_compile_to_hidden_routes() {
+    let cfg = format!(
+        r#"{RUNTIMES}{MCP_AUTH}
+[defaults]
+timeout = "10s"
+
+[[route]]
+path = "/{{*rest}}"
+rate_limit = {{ requests = 100, per = "1m" }}
+
+[mcp]
+name = "acme-tools"
+auth = {{ scheme = "oauth", scopes = ["tools:read"] }}
+origin = {{ allow = ["https://claude.ai"] }}
+
+[[mcp.tool]]
+name = "get_forecast"
+description = "Weather forecast for a city"
+input = {{ type = "object", properties = {{ city = {{ type = "string", x-mcp-header = "City" }} }}, required = ["city"] }}
+handler = "tools/weather.ts#getForecast"
+annotations = {{ read_only = true }}
+
+[[mcp.tool]]
+name = "create_invoice"
+description = "Create a draft invoice"
+handler = "src/billing.go"
+auth = {{ scheme = "oauth", scopes = ["billing:write"] }}
+timeout = "20s"
+"#
+    );
+    let p = project(&[
+        ("unsworn.toml", &cfg),
+        ("tools/weather.ts", ""),
+        ("src/billing.go", ""),
+    ]);
+    let mcp = p.mcp.as_ref().unwrap();
+    assert_eq!(mcp.path, "/mcp");
+    assert_eq!(mcp.server.name, "acme-tools");
+    assert!(mcp.hosted());
+
+    // The endpoint only takes POST; GET and DELETE get 405.
+    let m = found(&p, "POST", "/mcp");
+    assert!(matches!(m.route.action, Action::Mcp));
+    assert_eq!(m.route.id, mcp.route);
+    for method in ["GET", "DELETE"] {
+        match p.match_request(None, method, "/mcp") {
+            MatchResult::MethodNotAllowed(allowed) => assert_eq!(allowed, vec!["POST"]),
+            other => panic!("{method} /mcp: {other:?}"),
+        }
+    }
+
+    // Tools are sorted by name and never matched by path.
+    let names: Vec<&str> = mcp.tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, vec!["create_invoice", "get_forecast"]);
+    assert!(matches!(
+        p.match_request(None, "POST", "mcp:get_forecast"),
+        MatchResult::NotFound
+    ));
+
+    let forecast = mcp.tool("get_forecast").unwrap();
+    let route = &p.routes[forecast.route];
+    assert_eq!(route.mcp_tool(), Some("get_forecast"));
+    assert_eq!(route.handler().unwrap().runtime, "ts");
+    assert!(route.validation.body.is_some());
+    assert_eq!(forecast.param_headers[0].header, "mcp-param-city");
+    assert_eq!(forecast.definition()["annotations"]["readOnlyHint"], true);
+    assert!(!p.streams_body(route));
+    assert_eq!(
+        p.handlers_by_runtime()["go"],
+        vec!["src/billing.go".to_string()]
+    );
+
+    // Tool policies: [defaults], prefix entries for /mcp, [mcp], the tool.
+    let invoice = mcp.tool("create_invoice").unwrap();
+    let eff = p.tool_effective(invoice);
+    assert_eq!(eff.timeout, Duration::from_secs(20));
+    assert!(
+        eff.rate_limit.is_some(),
+        "the /{{*rest}} prefix entry applies"
+    );
+    assert_eq!(
+        eff.origin.as_deref(),
+        Some(&["https://claude.ai".to_string()][..])
+    );
+    let AuthReq::AnyOf(alts) = &eff.auth else {
+        panic!("auth")
+    };
+    assert_eq!(alts[0].scopes, vec!["billing:write"]);
+    // `own` holds only what the tool sets, so calls know what to check again.
+    assert!(invoice.own.auth.is_some() && invoice.own.origin.is_none());
+    assert!(forecast.own.auth.is_none());
+    assert_eq!(p.tool_effective(forecast).timeout, Duration::from_secs(10));
+
+    // Tools aren't in the OpenAPI export.
+    let doc = crate::export::openapi(&p);
+    assert!(doc["paths"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn mcp_defaults_and_line_numbers() {
+    let cfg = format!(
+        r#"{RUNTIMES}
+[mcp]
+
+[[mcp.tool]]
+name = "ping_db"
+description = "Check the database"
+handler = "tools/db.ts"
+"#
+    );
+    let p = project(&[("unsworn.toml", &cfg), ("tools/db.ts", "")]);
+    let mcp = p.mcp.as_ref().unwrap();
+    assert_eq!(mcp.server.name, "unsworn");
+    assert_eq!(mcp.server.version, crate::VERSION);
+    assert_eq!(mcp.list_ttl, Duration::from_secs(300));
+    assert_eq!(mcp.list_tools, config::ListTools::Permitted);
+    let tool = &mcp.tools[0];
+    assert_eq!(
+        tool.input_schema,
+        serde_json::json!({"type": "object", "additionalProperties": false})
+    );
+    assert_eq!(p.routes[mcp.route].source.to_string(), "unsworn.toml:10");
+    assert_eq!(p.routes[tool.route].source.to_string(), "unsworn.toml:12");
+}
+
+#[test]
+fn proxied_mcp_tools_only_add_policies() {
+    let cfg = format!(
+        r#"{MCP_AUTH}
+[mcp]
+proxy = "http://127.0.0.1:4000"
+auth = {{ scheme = "oauth", scopes = ["tools:read"] }}
+
+[[mcp.tool]]
+name = "create_invoice"
+auth = {{ scheme = "oauth", scopes = ["billing:write"] }}
+rate_limit = {{ requests = 10, per = "1m", key = "auth.sub" }}
+"#
+    );
+    let p = project(&[("unsworn.toml", &cfg)]);
+    let mcp = p.mcp.as_ref().unwrap();
+    assert!(!mcp.hosted());
+    let route = &p.routes[mcp.tools[0].route];
+    assert!(
+        matches!(&route.action, Action::Proxy(px) if px.upstreams == ["http://127.0.0.1:4000"])
+    );
+}
+
+#[test]
+fn mcp_config_errors() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "[[mcp.tool]]\nname = \"get forecast\"\nhandler = \"t.ts\"\n",
+            "can only use letters",
+        ),
+        (
+            "[[mcp.tool]]\nname = \"a\"\nhandler = \"t.ts\"\n[[mcp.tool]]\nname = \"a\"\nhandler = \"t.ts\"\n",
+            "already defined",
+        ),
+        ("[[mcp.tool]]\nname = \"a\"\n", "has no handler"),
+        (
+            "[[mcp.tool]]\nname = \"a\"\nhandler = \"t.ts\"\ninput = { type = \"string\" }\n",
+            "\"type\": \"object\"",
+        ),
+        (
+            "[[mcp.tool]]\nname = \"a\"\nhandler = \"t.ts\"\ninput = { type = \"object\", properties = { n = { type = \"number\", x-mcp-header = \"N\" } } }\n",
+            "x-mcp-header",
+        ),
+        (
+            "[[mcp.tool]]\nname = \"a\"\nhandler = \"t.ts\"\nauth = \"none\"\n",
+            "can't loosen",
+        ),
+        (
+            "[[mcp.tool]]\nname = \"a\"\nhandler = \"t.ts\"\nrate_limit = \"off\"\n",
+            "can't switch off",
+        ),
+        (
+            "[policies.web]\ncors = { origins = \"*\" }\n[mcp]\n[[mcp.tool]]\nname = \"a\"\nhandler = \"t.ts\"\nuse = [\"web\"]\n",
+            "`cors` can't be set on a tool",
+        ),
+        (
+            "[policies.c]\ncache = { ttl = \"1m\" }\n[mcp]\nuse = [\"c\"]\n",
+            "`cache` doesn't apply",
+        ),
+        (
+            "[mcp]\nproxy = \"http://127.0.0.1:4000\"\n[[mcp.tool]]\nname = \"a\"\nhandler = \"t.ts\"\n",
+            "doesn't apply to a tool of a proxied",
+        ),
+        ("[mcp]\npath = \"/mcp/{id}\"\n", "can't have parameters"),
+        (
+            "[mcp]\n[[route]]\npath = \"/mcp\"\nmethod = \"POST\"\nproxy = \"http://x:1\"\n",
+            "already defined",
+        ),
+        ("[mcp]\nlist_tools = \"some\"\n", "unknown variant"),
+    ];
+    for (body, want) in cases {
+        let cfg = format!("{RUNTIMES}{MCP_AUTH}\n{body}");
+        let errs = errors(&[("unsworn.toml", &cfg), ("t.ts", "")]);
+        assert!(errs.iter().any(|e| e.contains(want)), "{body}\n→ {errs:?}");
+    }
+}
+
+#[test]
+fn mcp_warnings() {
+    let cfg = format!("{RUNTIMES}\n[mcp]\n\n[[mcp.tool]]\nname = \"a\"\nhandler = \"t.ts\"\n");
+    let host = MemHost::with(&[("unsworn.toml", &cfg), ("t.ts", "")]);
+    let compiled = compile(&host, "unsworn.toml");
+    assert!(compiled.project.is_some());
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("has no description"))
+    );
+
+    let empty = compile(
+        &MemHost::with(&[("unsworn.toml", "[mcp]\n")]),
+        "unsworn.toml",
+    );
+    assert!(
+        empty
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("no tools"))
+    );
+}

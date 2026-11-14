@@ -31,7 +31,7 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
     ));
     let stateless_memory = project.store.backend == crate::config::StoreBackend::Memory;
     for route in &project.routes {
-        let eff = project.effective(route, "GET", &route.path.replace("{*", "{"));
+        let eff = project.route_effective(route);
         if stateless_memory && eff.rate_limit.is_some() {
             out.push(
                 Diagnostic::error(

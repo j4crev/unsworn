@@ -81,6 +81,9 @@ fn make_generation(
     socket_dir: &Path,
     generation: u64,
 ) -> Result<Generation, String> {
+    if project.mcp.is_some() {
+        return Err("[mcp]: serving MCP endpoints isn't available yet; `unsworn check` and `unsworn routes` already understand it".into());
+    }
     let client_ip = ClientIp::new(&project.server.trusted_proxies)?;
     let well_known = project.protected_resource_docs().into_iter().collect();
     let dir = socket_dir.join(format!("g{generation}"));

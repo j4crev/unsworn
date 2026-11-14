@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use unsworn_core::config::OrOff;
 use unsworn_core::policy::{AuthReq, Layer};
-use unsworn_core::{Project, export, targets};
+use unsworn_core::{Project, Route, export, targets};
 
 use crate::load;
 use crate::workers::{PoolOptions, Pools, SocketDir};
@@ -65,8 +65,18 @@ pub async fn check(
     if errors > 0 {
         return Err(format!("{errors} error(s)"));
     }
-    let n = project.routes.len();
-    println!("✓ {n} route{} OK", if n == 1 { "" } else { "s" });
+    let tools = project.mcp.as_ref().map_or(0, |m| m.tools.len());
+    let n = project.routes.len() - tools;
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    if project.mcp.is_some() {
+        println!(
+            "✓ {n} route{} and {tools} MCP tool{} OK",
+            plural(n),
+            plural(tools)
+        );
+    } else {
+        println!("✓ {n} route{} OK", plural(n));
+    }
     Ok(())
 }
 
@@ -155,6 +165,38 @@ fn layer_summary(layer: &Layer) -> Vec<String> {
     out
 }
 
+/// The auth a request needs. A tool call is checked against the endpoint's
+/// auth first, then against the tool's own.
+fn route_auth(project: &Project, route: &Route, auth: &AuthReq) -> String {
+    let own = route
+        .mcp_tool()
+        .zip(project.mcp.as_ref())
+        .and_then(|(name, mcp)| Some((mcp, mcp.tool(name)?)));
+    match own {
+        Some((mcp, tool)) if tool.own.auth.is_some() => {
+            let endpoint = project.route_effective(&project.routes[mcp.route]);
+            format!("{}, then {}", auth_label(&endpoint.auth), auth_label(auth))
+        }
+        _ => auth_label(auth),
+    }
+}
+
+/// `TOOL` for an MCP tool's hidden route, otherwise the methods.
+fn route_method(r: &Route) -> String {
+    match r.mcp_tool() {
+        Some(_) => "TOOL".into(),
+        None => r.method_label(),
+    }
+}
+
+/// The tool name for an MCP tool's hidden route, otherwise the path.
+fn route_path(r: &Route) -> String {
+    match r.mcp_tool() {
+        Some(name) => name.to_string(),
+        None => r.path.clone(),
+    }
+}
+
 pub fn routes(root: &Path, config: &str, policies: bool, as_json: bool) -> Result<(), String> {
     let project = load_or_fail(root, config)?;
     if as_json {
@@ -162,10 +204,11 @@ pub fn routes(root: &Path, config: &str, policies: bool, as_json: bool) -> Resul
             .routes
             .iter()
             .map(|r| {
-                let eff = project.effective(r, "GET", &r.path.replace("{*", "{"));
+                let eff = project.route_effective(r);
                 json!({
-                    "method": r.method_label(),
-                    "path": r.path,
+                    "method": route_method(r),
+                    "path": route_path(r),
+                    "tool": r.mcp_tool(),
                     "host": r.host,
                     "action": r.action.describe(),
                     "source": r.source.to_string(),
@@ -184,10 +227,10 @@ pub fn routes(root: &Path, config: &str, policies: bool, as_json: bool) -> Resul
         .iter()
         .map(|r| {
             [
-                r.method_label(),
+                route_method(r),
                 match &r.host {
                     Some(h) => format!("{h}{}", r.path),
-                    None => r.path.clone(),
+                    None => route_path(r),
                 },
                 r.action.describe(),
                 r.source.to_string(),
@@ -217,8 +260,8 @@ pub fn routes(root: &Path, config: &str, policies: bool, as_json: bool) -> Resul
     for (row, route) in rows.iter().zip(&project.routes) {
         println!("{}", line([&row[0], &row[1], &row[2], &row[3]]).trim_end());
         if policies {
-            let eff = project.effective(route, "GET", &route.path.replace("{*", "{"));
-            println!("    auth: {}", auth_label(&eff.auth));
+            let eff = project.route_effective(route);
+            println!("    auth: {}", route_auth(&project, route, &eff.auth));
             for (source, layer) in &route.layers {
                 let summary = layer_summary(layer);
                 if !summary.is_empty() {

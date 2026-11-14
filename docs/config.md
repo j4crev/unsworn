@@ -52,7 +52,7 @@ into a second programming language.
 [server]       # listen address, TLS, limits
 [routes]       # optional: route directory
 [openapi]      # optional: OpenAPI spec as a route source
-[mcp]          # optional: serve MCP tools (v2; see mcp.md)
+[mcp]          # optional: an MCP endpoint and its tools (v2; see mcp.md)
 [runtimes.*]   # how to run handlers for each language
 [auth.*]       # named authentication schemes
 [store]        # shared state for rate limits and caches
@@ -308,7 +308,7 @@ host   = "api.example.com"        # optional
 | `respond` | `respond = { status = 200, json = { ok = true } }` | No |
 | `redirect` | `redirect = { to = "/v2/users/{id}", status = 308 }` | No |
 | `static` | `static = { dir = "public", spa_fallback = "index.html" }` | No |
-| `proxy` | `proxy = "http://old-api:8080"` or `{ upstreams = [...], strip_prefix = "/legacy", sticky = "header:mcp-session-id" }` | No |
+| `proxy` | `proxy = "http://old-api:8080"` or `{ upstreams = [...], strip_prefix = "/legacy", sticky = "header:x-tenant-id" }` | No |
 | `handler` | `handler = "src/users.ts#getUser"` | Yes |
 
 ### Handler references
@@ -759,7 +759,7 @@ MCP support is described in [`mcp.md`](mcp.md). In config it adds:
 |---|---|---|
 | `protected_resource` | `[auth.<name>]` | v1 |
 | `origin` policy, `sticky` proxying, SSE pass-through | routes | v1 |
-| `[mcp]` and `[[mcp.tool]]`, including `list_tools` | top level | v2 |
+| `[mcp]` and `[[mcp.tool]]`, including `list_tools` and `list_ttl` ([reference](mcp.md#config-reference)) | top level | v2 |
 | `[mcp] proxy`, with handler-less `[[mcp.tool]]` entries for per-tool policies | top level | v2 |
 | `mcp = { tool = ... }` | `[[route]]` with a handler | v3 |
 | `mcp_tools` | `[openapi]` | v3 |
