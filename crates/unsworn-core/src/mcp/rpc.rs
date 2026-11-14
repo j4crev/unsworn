@@ -735,6 +735,8 @@ mod tests {
             param_headers: params,
             route: 0,
             own: Layer::default(),
+            input_rule: None,
+            binding: None,
         }
     }
 

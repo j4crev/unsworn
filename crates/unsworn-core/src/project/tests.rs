@@ -870,3 +870,207 @@ fn mcp_warnings() {
             .any(|d| d.message.contains("no tools"))
     );
 }
+
+#[test]
+fn routes_as_tools() {
+    let cfg = format!(
+        r#"{RUNTIMES}{MCP_AUTH}
+[routes]
+dir = "routes"
+
+[mcp]
+auth = {{ scheme = "oauth", scopes = ["tools:read"] }}
+timeout = "45s"
+before = ["src/audit.ts"]
+
+[[route]]
+path = "/users/{{id}}"
+method = "GET"
+handler = "src/users.ts#getUser"
+params = {{ id = {{ type = "integer", min = 1 }} }}
+query = {{ verbose = {{ type = "boolean" }}, limit = {{ type = "integer", default = 20 }} }}
+auth = {{ scheme = "oauth", scopes = ["users:read"] }}
+rate_limit = {{ requests = 5, per = "1m" }}
+before = ["src/tenant.ts"]
+mcp = {{ tool = "get_user", description = "Look up a user", annotations = {{ read_only = true }} }}
+
+[[route]]
+path = "/users"
+method = "POST"
+handler = "src/users.ts#createUser"
+body = {{ type = "object", required = ["name"], properties = {{ name = {{ type = "string" }}, email = {{ type = "string" }} }} }}
+timeout = "5s"
+mcp = {{ tool = "create_user", description = "Create a user" }}
+
+[[route]]
+path = "/users/{{id}}"
+method = "PUT"
+handler = "src/users.ts#replaceUser"
+body = {{ type = "object", properties = {{ id = {{ type = "integer" }} }} }}
+mcp = {{ tool = "replace_user", description = "Replace a user" }}
+
+# A route from a route file, offered as a tool by a policy-only entry.
+[[route]]
+path = "/health"
+method = "GET"
+mcp = {{ tool = "health", description = "Check health" }}
+"#
+    );
+    let p = project(&[
+        ("unsworn.toml", &cfg),
+        ("src/users.ts", ""),
+        ("src/audit.ts", ""),
+        ("src/tenant.ts", ""),
+        ("routes/health.get.ts", ""),
+    ]);
+    let mcp = p.mcp.as_ref().unwrap();
+    let names: Vec<&str> = mcp.tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["create_user", "get_user", "health", "replace_user"]);
+
+    // Path and query parameters are top-level arguments, typed as declared.
+    let get = mcp.tool("get_user").unwrap();
+    let route = &p.routes[get.route];
+    assert_eq!(
+        (route.path.as_str(), route.mcp_tool()),
+        ("/users/{id}", None),
+        "the REST route itself"
+    );
+    assert_eq!(p.route_tool(route.id).unwrap().name, "get_user");
+    assert_eq!(
+        get.input_schema,
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "minimum": 1},
+                "limit": {"type": "integer", "default": 20},
+                "verbose": {"type": "boolean"}
+            },
+            "required": ["id"],
+            "additionalProperties": false
+        })
+    );
+    assert_eq!(get.definition()["annotations"]["readOnlyHint"], true);
+    let b = get.binding.as_ref().unwrap();
+    assert_eq!((b.method.as_str(), b.body), ("GET", BodyArgs::None));
+    // The route's auth and rate limit are checked on each call, and counted
+    // with REST requests (the same route id).
+    assert!(get.own.auth.is_some() && get.own.rate_limit.is_some());
+    // [mcp]'s before handlers run first, then the route's; [mcp]'s timeout
+    // applies when the route sets none.
+    let eff = p.tool_effective(get);
+    let befores: Vec<&str> = eff.before.iter().map(|h| h.raw.as_str()).collect();
+    assert_eq!(befores, ["src/audit.ts", "src/tenant.ts"]);
+    assert_eq!(eff.timeout, Duration::from_secs(45));
+    assert!(
+        get.input_rule
+            .as_ref()
+            .unwrap()
+            .check(&serde_json::json!({"id": 0}), "a")
+            .is_err()
+    );
+
+    // A body's fields sit next to the parameters when nothing collides.
+    let create = mcp.tool("create_user").unwrap();
+    assert_eq!(create.binding.as_ref().unwrap().body, BodyArgs::Flat);
+    assert_eq!(create.input_schema["required"], serde_json::json!(["name"]));
+    assert!(create.input_schema["properties"]["email"].is_object());
+    assert!(create.input_schema.get("additionalProperties").is_none());
+    assert_eq!(
+        p.tool_effective(create).timeout,
+        Duration::from_secs(5),
+        "the route's own timeout wins"
+    );
+
+    // ...and go under `body` when a field shares a parameter's name.
+    let replace = mcp.tool("replace_user").unwrap();
+    assert_eq!(replace.binding.as_ref().unwrap().body, BodyArgs::Nested);
+    assert!(replace.input_schema["properties"]["body"]["properties"]["id"].is_object());
+
+    let health = mcp.tool("health").unwrap();
+    assert_eq!(
+        p.routes[health.route].source.to_string(),
+        "routes/health.get.ts"
+    );
+    assert_eq!(health.input_schema["properties"], serde_json::json!({}));
+}
+
+#[test]
+fn route_tool_errors_and_warnings() {
+    let tool = |extra: &str| {
+        format!("handler = \"src/a.ts\"\nmcp = {{ tool = \"t\", description = \"T\" }}\n{extra}")
+    };
+    let cases: Vec<(String, &str)> = vec![
+        (format!("[[route]]\npath = \"/a\"\nmethod = \"GET\"\n{}", tool("")), "needs an [mcp] table"),
+        (
+            format!("[mcp]\nproxy = \"http://x:1\"\n[[route]]\npath = \"/a\"\nmethod = \"GET\"\n{}", tool("")),
+            "proxied MCP server",
+        ),
+        (
+            "[mcp]\n[[route]]\npath = \"/a\"\nrespond = { status = 200 }\nmcp = { tool = \"t\" }\n".into(),
+            "no handler",
+        ),
+        (format!("[mcp]\n[[route]]\npath = \"/a\"\n{}", tool("")), "several methods"),
+        (
+            format!("[mcp]\n[[route]]\npath = \"/a\"\nmethod = \"GET\"\n{}", tool("stream_body = true")),
+            "stream_body",
+        ),
+        (
+            format!("[mcp]\n[[route]]\npath = \"/a\"\nmethod = \"GET\"\n{}", tool("headers = { \"x-tenant\" = { required = true } }")),
+            "x-tenant",
+        ),
+        (
+            format!(
+                "[auth.key]\ntype = \"api_key\"\nkeys = \"k\"\n[mcp]\nauth = \"oauth\"\n[[route]]\npath = \"/a\"\nmethod = \"GET\"\n{}",
+                tool("auth = \"key\"")
+            ),
+            "shares no scheme",
+        ),
+        (
+            format!(
+                "[mcp]\n[[mcp.tool]]\nname = \"t\"\nhandler = \"src/a.ts\"\n[[route]]\npath = \"/a\"\nmethod = \"GET\"\n{}",
+                tool("")
+            ),
+            "already defined",
+        ),
+        (
+            "[mcp]\n[[route]]\npath = \"/a\"\nmethod = \"GET\"\nhandler = \"src/a.ts\"\nmcp = { tool = \"bad name\" }\n".into(),
+            "can only use letters",
+        ),
+        (
+            "[mcp]\n[[route]]\npath = \"/a/{*rest}\"\nauth = \"none\"\nmcp = { tool = \"t\" }\n".into(),
+            "prefix entry can't be an MCP tool",
+        ),
+        (
+            format!("[mcp]\n[[route]]\npath = \"/a\"\nmethod = [\"GET\", \"POST\"]\n{}", tool("").replace("}\n", ", method = \"PUT\" }\n")),
+            "doesn't accept PUT",
+        ),
+    ];
+    for (body, want) in cases {
+        let cfg = format!("{RUNTIMES}{MCP_AUTH}\n{body}");
+        let errs = errors(&[("unsworn.toml", &cfg), ("src/a.ts", "")]);
+        assert!(errs.iter().any(|e| e.contains(want)), "{body}\n→ {errs:?}");
+    }
+
+    // A POST route without a body schema still works, with a warning.
+    let cfg = format!(
+        "{RUNTIMES}\n[mcp]\n[[route]]\npath = \"/a\"\nmethod = \"POST\"\nhandler = \"src/a.ts\"\nmcp = {{ tool = \"t\" }}\n"
+    );
+    let compiled = compile(
+        &MemHost::with(&[("unsworn.toml", &cfg), ("src/a.ts", "")]),
+        "unsworn.toml",
+    );
+    assert!(compiled.project.is_some());
+    let warnings: Vec<String> = compiled
+        .diagnostics
+        .iter()
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        warnings.iter().any(|m| m.contains("no `body` schema")),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings.iter().any(|m| m.contains("no description")),
+        "{warnings:?}"
+    );
+}

@@ -1246,7 +1246,15 @@
           ]
         },
         "mcp": {
-          "description": "Planned for v3."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawRouteTool"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Offer the route as an MCP tool too."
         },
         "method": {
           "anyOf": [
@@ -1384,6 +1392,50 @@
       },
       "required": [
         "path"
+      ],
+      "type": "object"
+    },
+    "RawRouteTool": {
+      "additionalProperties": false,
+      "description": "`mcp = { tool = \"get_user\", description = \"...\" }` on a `[[route]]`:\nthe route is also an MCP tool, with arguments built from its contract.",
+      "properties": {
+        "annotations": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawToolAnnotations"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "description": "What the tool does. Defaults to the OpenAPI operation's summary or\ndescription.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "method": {
+          "description": "The method tool calls use, for a route that accepts several.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool": {
+          "description": "The tool name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool"
       ],
       "type": "object"
     },

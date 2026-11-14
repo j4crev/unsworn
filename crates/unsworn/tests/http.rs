@@ -1692,3 +1692,133 @@ timeout = "500ms"
         "The tool didn't finish within 0.5s."
     );
 }
+
+#[test]
+fn mcp_routes_as_tools() {
+    if !needs_python() {
+        return;
+    }
+    let cfg = format!(
+        r#"{PY}
+[auth.oauth]
+type = "jwt"
+secret = "test-secret"
+audience = "https://api.example.com/mcp"
+
+[mcp]
+auth = {{ scheme = "oauth", scopes = ["tools:read"] }}
+
+[[route]]
+path = "/users/{{id}}"
+method = "GET"
+handler = "src/app.py#echo"
+params = {{ id = {{ type = "integer", min = 1 }} }}
+query = {{ verbose = {{ type = "boolean" }}, limit = {{ type = "integer", default = 20 }} }}
+auth = "oauth"
+rate_limit = {{ requests = 2, per = "1m", key = "auth.sub" }}
+mcp = {{ tool = "get_user", description = "Look up a user" }}
+
+[[route]]
+path = "/users"
+method = "POST"
+handler = "src/app.py#echo"
+body = {{ type = "object", required = ["name"], properties = {{ name = {{ type = "string" }} }} }}
+auth = "oauth"
+mcp = {{ tool = "create_user", description = "Create a user" }}
+"#
+    );
+    let p = Project::new(&[
+        ("unsworn.toml", &cfg),
+        ("worker.py", ECHO_WORKER),
+        ("src/app.py", ""),
+    ]);
+    let s = p.serve();
+    let token = mcp_token("tools:read");
+    let call = |name: &str, args: serde_json::Value| {
+        let headers = [
+            ("authorization", token.as_str()),
+            ("content-type", "application/json"),
+            ("mcp-protocol-version", "2026-07-28"),
+            ("mcp-method", "tools/call"),
+            ("mcp-name", name),
+        ];
+        let body = mcp_body("tools/call", json!({"name": name, "arguments": args}));
+        let r = s.request("POST", "/mcp", &headers, &body);
+        assert_eq!(r.status, 200, "{}", r.text());
+        r.json()["result"].clone()
+    };
+    let same = |v: &serde_json::Value| json!({"method": v["method"], "path": v["path"], "params": v["params"], "query": v["query"], "json": v["json"]});
+
+    // The handler gets the same request either way.
+    let rest = s.request(
+        "GET",
+        "/users/42?verbose=true",
+        &[("authorization", token.as_str())],
+        b"",
+    );
+    assert_eq!(rest.status, 200, "{}", rest.text());
+    let rest = rest.json();
+    let tool = call("get_user", json!({"id": 42, "verbose": true}));
+    let sc = &tool["structuredContent"];
+    assert_eq!(same(sc), same(&rest));
+    assert_eq!(
+        same(sc),
+        json!({"method": "GET", "path": "/users/42", "params": {"id": 42}, "query": {"verbose": true, "limit": 20}, "json": null})
+    );
+    assert_eq!(
+        sc["context"]["mcp"]["tool"], "get_user",
+        "a tool call can still tell"
+    );
+    assert!(rest["context"].get("mcp").is_none());
+
+    // REST requests and tool calls share the route's rate limit.
+    let limited = call("get_user", json!({"id": 7}));
+    assert_eq!(limited["isError"], true, "{limited}");
+    assert!(
+        limited["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Rate limit exceeded")
+    );
+    let r = s.request("GET", "/users/7", &[("authorization", token.as_str())], b"");
+    assert_eq!(r.status, 429);
+
+    // Body fields are top-level arguments, and arguments are validated.
+    let created = call("create_user", json!({"name": "Ada"}));
+    assert_eq!(
+        same(&created["structuredContent"]),
+        json!({"method": "POST", "path": "/users", "params": {}, "query": {}, "json": {"name": "Ada"}})
+    );
+    let bad = call("create_user", json!({}));
+    assert_eq!(bad["isError"], true);
+    assert!(bad["content"][0]["text"].as_str().unwrap().contains("name"));
+
+    // The tools are listed with the schemas built from the routes.
+    let headers = [
+        ("authorization", token.as_str()),
+        ("content-type", "application/json"),
+        ("mcp-protocol-version", "2026-07-28"),
+        ("mcp-method", "tools/list"),
+    ];
+    let list = s
+        .request("POST", "/mcp", &headers, &mcp_body("tools/list", json!({})))
+        .json();
+    let tools = list["result"]["tools"].as_array().unwrap();
+    let get_user = tools.iter().find(|t| t["name"] == "get_user").unwrap();
+    assert_eq!(get_user["inputSchema"]["required"], json!(["id"]));
+    assert_eq!(get_user["description"], "Look up a user");
+
+    // `unsworn routes` shows the tools and where their arguments go.
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_unsworn"))
+        .args(["routes", "--policies"])
+        .current_dir(p.path())
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("src/app.py#echo (tool get_user)"), "{text}");
+    assert!(
+        text.contains("mcp tool get_user: id (path), limit (query), verbose (query)"),
+        "{text}"
+    );
+    assert!(text.contains("mcp tool create_user: name (body)"), "{text}");
+}

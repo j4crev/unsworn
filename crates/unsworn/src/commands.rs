@@ -181,6 +181,27 @@ fn route_auth(project: &Project, route: &Route, auth: &AuthReq) -> String {
     }
 }
 
+/// A route tool's arguments and where each one goes, such as
+/// `id (path), verbose (query), name (body)`.
+fn tool_arguments(tool: &unsworn_core::mcp::McpTool) -> String {
+    let Some(b) = &tool.binding else {
+        return String::new();
+    };
+    let names: Vec<String> = tool.input_schema["properties"]
+        .as_object()
+        .map(|p| {
+            p.keys()
+                .map(|k| format!("{k} ({})", b.location(k)))
+                .collect()
+        })
+        .unwrap_or_default();
+    if names.is_empty() {
+        "no arguments".into()
+    } else {
+        names.join(", ")
+    }
+}
+
 /// `TOOL` for an MCP tool's hidden route, otherwise the methods.
 fn route_method(r: &Route) -> String {
     match r.mcp_tool() {
@@ -208,7 +229,7 @@ pub fn routes(root: &Path, config: &str, policies: bool, as_json: bool) -> Resul
                 json!({
                     "method": route_method(r),
                     "path": route_path(r),
-                    "tool": r.mcp_tool(),
+                    "tool": r.mcp_tool().or_else(|| project.route_tool(r.id).map(|t| t.name.as_str())),
                     "host": r.host,
                     "action": r.action.describe(),
                     "source": r.source.to_string(),
@@ -232,7 +253,10 @@ pub fn routes(root: &Path, config: &str, policies: bool, as_json: bool) -> Resul
                     Some(h) => format!("{h}{}", r.path),
                     None => route_path(r),
                 },
-                r.action.describe(),
+                match project.route_tool(r.id) {
+                    Some(t) => format!("{} (tool {})", r.action.describe(), t.name),
+                    None => r.action.describe(),
+                },
                 r.source.to_string(),
             ]
         })
@@ -262,6 +286,9 @@ pub fn routes(root: &Path, config: &str, policies: bool, as_json: bool) -> Resul
         if policies {
             let eff = project.route_effective(route);
             println!("    auth: {}", route_auth(&project, route, &eff.auth));
+            if let Some(tool) = project.route_tool(route.id) {
+                println!("    mcp tool {}: {}", tool.name, tool_arguments(tool));
+            }
             for (source, layer) in &route.layers {
                 let summary = layer_summary(layer);
                 if !summary.is_empty() {

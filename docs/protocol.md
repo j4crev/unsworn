@@ -226,13 +226,16 @@ Error bodies sent to clients never include worker messages unless
 
 ## MCP tool calls
 
-Used by [MCP tools as handlers](mcp.md#level-2-mcp-tools-as-handlers) (v2).
-No new message types are needed: a tool call is a normal `request`.
+Used by [MCP tools as handlers](mcp.md#level-2-mcp-tools-as-handlers) (v2)
+and [routes as tools](mcp.md#level-3-routes-as-tools) (v3). No new message
+types are needed: a tool call is a normal `request`.
 
-- `route` is `mcp:<tool name>`, `method` is `POST` and `path` is the MCP
-  endpoint.
-- `json` holds the tool's arguments, already validated against its input
-  schema.
+- For a `[[mcp.tool]]`: `route` is `mcp:<tool name>`, `method` is `POST`,
+  `path` is the MCP endpoint, and `json` holds the tool's arguments, already
+  validated against its input schema.
+- For a route offered as a tool: the request is the one a REST client would
+  send to the route. `method`, `path`, `route`, `params`, `query`,
+  `raw_query` and `json` come from the arguments.
 - `context.mcp` holds `tool`, `protocol_version` and, when the client sends
   it, `client` (`name` and `version`). MCP has no sessions, so there's no
   session ID.

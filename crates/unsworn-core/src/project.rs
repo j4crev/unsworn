@@ -14,10 +14,10 @@ use crate::auth::{
 };
 use crate::config::{
     self, Format, OrOff, Protocol, RawAuth, RawAuthItem, RawAuthScheme, RawConfig, RawMcp,
-    RawPolicies, RawProxy, RawRoute, ResponseValidation, SchemaRef, TrailingSlash,
+    RawPolicies, RawProxy, RawRoute, RawRouteTool, ResponseValidation, SchemaRef, TrailingSlash,
 };
 use crate::diag::{Diagnostic, Diagnostics};
-use crate::mcp::{self, McpEndpoint, McpTool, ServerInfo};
+use crate::mcp::{self, BodyArgs, McpEndpoint, McpTool, RouteBinding, ServerInfo};
 use crate::openapi;
 use crate::policy::{
     AuthAlt, AuthReq, CacheRule, Cors, Effective, HandlerRef, HeaderRules, KeySource, Layer,
@@ -498,27 +498,57 @@ impl Project {
 
     /// The merged policies for a request to `route`.
     pub fn effective(&self, route: &Route, method: &str, path: &str) -> Effective {
-        let mut layer = route.low.clone();
-        for p in &self.prefixes {
-            if p.matches(method, path) {
-                layer.merge_from(&p.layer);
-            }
-        }
-        layer.merge_from(&route.high);
-        if route.catch_all.is_some() {
-            for e in &self.path_entries {
-                if e.matches_exact(method, path) {
-                    layer.merge_from(&e.layer);
-                }
-            }
-        }
-        layer.finalize(self.server.timeout, self.server.max_body)
+        merged_layer(route, &self.prefixes, &self.path_entries, method, path)
+            .finalize(self.server.timeout, self.server.max_body)
     }
 
-    /// The merged policies for a call to an MCP tool: `[defaults]`, prefix
-    /// entries for the endpoint path, `[mcp]`, then the tool's own.
+    /// The merged policies for a call to an MCP tool.
+    ///
+    /// For `[[mcp.tool]]`: `[defaults]`, prefix entries for the endpoint
+    /// path, `[mcp]`, then the tool's own. For a route offered as a tool: the
+    /// route's policies as a REST request sees them, with `[mcp]`'s `before`
+    /// handlers first, and `[mcp]`'s `timeout` unless the route sets one.
     pub fn tool_effective(&self, tool: &McpTool) -> Effective {
-        self.route_effective(&self.routes[tool.route])
+        let route = &self.routes[tool.route];
+        let Some(b) = &tool.binding else {
+            return self.route_effective(route);
+        };
+        let probe = b.pattern.replace("{*", "{");
+        let layer = merged_layer(route, &self.prefixes, &self.path_entries, &b.method, &probe);
+        let mut eff = layer.finalize(self.server.timeout, self.server.max_body);
+        if let Some(mcp) = &self.mcp {
+            let endpoint = merged_layer(
+                &self.routes[mcp.route],
+                &self.prefixes,
+                &self.path_entries,
+                "POST",
+                &mcp.path,
+            );
+            if layer.timeout.is_none()
+                && let Some(t) = endpoint.timeout
+            {
+                eff.timeout = t;
+            }
+            let mut before = endpoint
+                .finalize(self.server.timeout, self.server.max_body)
+                .before;
+            for h in eff.before {
+                if !before.contains(&h) {
+                    before.push(h);
+                }
+            }
+            eff.before = before;
+        }
+        eff
+    }
+
+    /// The MCP tool a route is offered as, if any.
+    pub fn route_tool(&self, route_id: usize) -> Option<&McpTool> {
+        self.mcp
+            .as_ref()?
+            .tools
+            .iter()
+            .find(|t| t.binding.is_some() && t.route == route_id)
     }
 
     /// A route's policies as a typical request sees them, for display and
@@ -620,6 +650,32 @@ impl Project {
     }
 }
 
+/// A route's policy layers merged for one request, before defaults are
+/// filled in.
+fn merged_layer(
+    route: &Route,
+    prefixes: &[PrefixEntry],
+    path_entries: &[PrefixEntry],
+    method: &str,
+    path: &str,
+) -> Layer {
+    let mut layer = route.low.clone();
+    for p in prefixes {
+        if p.matches(method, path) {
+            layer.merge_from(&p.layer);
+        }
+    }
+    layer.merge_from(&route.high);
+    if route.catch_all.is_some() {
+        for e in path_entries {
+            if e.matches_exact(method, path) {
+                layer.merge_from(&e.layer);
+            }
+        }
+    }
+    layer
+}
+
 /// The result of compiling: a project when there are no errors, plus all
 /// diagnostics (errors and warnings).
 pub struct Compiled {
@@ -637,6 +693,7 @@ pub fn compile(host: &dyn Host, config_file: &str) -> Compiled {
         schemes: BTreeMap::new(),
         sets: BTreeMap::new(),
         files: vec![config_file.to_string()],
+        route_tools: Vec::new(),
     };
     let project = c.run();
     let mut diagnostics = c.diags.items;
@@ -659,6 +716,9 @@ struct Compiler<'h> {
     schemes: BTreeMap<String, Arc<Scheme>>,
     sets: BTreeMap<String, Layer>,
     files: Vec<String>,
+    /// Routes to offer as MCP tools: route id, declaration, and where it
+    /// was declared.
+    route_tools: Vec<(usize, RawRouteTool, String)>,
 }
 
 /// An action-less `[[route]]` entry with an exact path.
@@ -670,6 +730,8 @@ struct ExactEntry {
     validation: RawValidation,
     source: Source,
     used: bool,
+    /// `mcp = {...}`: offer the route this entry matches as a tool.
+    mcp: Option<RawRouteTool>,
 }
 
 #[derive(Default, Clone)]
@@ -715,6 +777,8 @@ struct Draft {
     openapi_layer: Option<Layer>,
     folder_layers: Vec<(String, Layer)>,
     op: Option<OpInfo>,
+    /// `mcp = {...}` on the route's own `[[route]]` entry.
+    mcp: Option<RawRouteTool>,
 }
 
 /// Line numbers of the `[mcp]` table and its `[[mcp.tool]]` entries.
@@ -733,8 +797,9 @@ struct McpPending {
 
 impl McpPending {
     /// Links the endpoint and its tools to their compiled routes.
-    fn finish(mut self, routes: &[Route]) -> Option<McpEndpoint> {
+    fn finish(mut self, routes: &[Route], route_tools: Vec<McpTool>) -> Option<McpEndpoint> {
         self.endpoint.route = routes.iter().find(|r| matches!(r.action, Action::Mcp))?.id;
+        self.endpoint.tools.extend(route_tools);
         for mut tool in self.tools {
             if let Some(r) = routes
                 .iter()
@@ -922,6 +987,12 @@ impl<'h> Compiler<'h> {
                         "validation for a path served by a catch-all isn't supported; only policies",
                     );
                 }
+                if e.mcp.is_some() {
+                    self.diags.error(
+                        format!("{}.mcp", e.source.loc()),
+                        "a path served by a catch-all route can't be an MCP tool on its own",
+                    );
+                }
                 path_entries.push(PrefixEntry {
                     segs: parse_pattern(&e.path),
                     path: e.path.clone(),
@@ -944,7 +1015,18 @@ impl<'h> Compiler<'h> {
         // Shorter prefixes merge first.
         prefixes.sort_by_key(|p| p.segs.len());
 
-        let mcp = mcp_pending.and_then(|p| p.finish(&routes));
+        let route_tools =
+            self.compile_route_tools(&routes, &prefixes, &path_entries, mcp_pending.as_ref());
+        let mcp = mcp_pending.and_then(|p| p.finish(&routes, route_tools));
+        if let Some(m) = &mcp
+            && m.tools.is_empty()
+            && m.hosted()
+        {
+            self.diags.push(
+                Diagnostic::warning(routes[m.route].source.loc(), "the MCP endpoint has no tools")
+                    .hint("add [[mcp.tool]] entries, set `mcp` on routes, or set `proxy` to forward to an existing MCP server"),
+            );
+        }
 
         self.check_handlers(&routes, &prefixes);
         self.warnings(&routes, &prefixes);
@@ -1688,12 +1770,6 @@ impl<'h> Compiler<'h> {
         if !self.check_path(&r.path, &loc) {
             return;
         }
-        if r.mcp.is_some() {
-            self.diags.error(
-                format!("{loc}.mcp"),
-                "offering routes as MCP tools is planned for v3",
-            );
-        }
         let methods = self.methods(r.method.as_ref().map(|m| m.to_vec()), &loc);
         let policies = match r.policies() {
             Ok(p) => p,
@@ -1720,6 +1796,12 @@ impl<'h> Compiler<'h> {
                         "prefix entries only take policies; put validation on the routes themselves",
                     );
                 }
+                if r.mcp.is_some() {
+                    self.diags.error(
+                        format!("{loc}.mcp"),
+                        "a prefix entry can't be an MCP tool; set `mcp` on a route with one path",
+                    );
+                }
                 prefixes.push(PrefixEntry {
                     segs: parse_pattern(&r.path),
                     path: r.path.clone(),
@@ -1736,6 +1818,7 @@ impl<'h> Compiler<'h> {
                 validation,
                 source,
                 used: false,
+                mcp: r.mcp.clone(),
             }),
             1 => {
                 let action = self.action(r, &loc);
@@ -1752,6 +1835,7 @@ impl<'h> Compiler<'h> {
                         openapi_layer: None,
                         folder_layers: Vec::new(),
                         op: None,
+                        mcp: r.mcp.clone(),
                     });
                 }
             }
@@ -1934,6 +2018,7 @@ impl<'h> Compiler<'h> {
             openapi_layer: None,
             folder_layers: Vec::new(),
             op: None,
+            mcp: None,
         });
 
         let mut tools = Vec::new();
@@ -1961,13 +2046,6 @@ impl<'h> Compiler<'h> {
             if let Some(t) = self.mcp_tool(t, source, proxy.as_ref(), endpoint, drafts) {
                 tools.push(t);
             }
-        }
-        if raw.tool.is_empty() && proxy.is_none() {
-            self.diags.push(
-                Diagnostic::warning(&loc, "the MCP endpoint has no tools").hint(
-                    "add [[mcp.tool]] entries, or set `proxy` to forward to an existing MCP server",
-                ),
-            );
         }
         Some(McpPending {
             endpoint: McpEndpoint {
@@ -2098,6 +2176,7 @@ impl<'h> Compiler<'h> {
             }
         };
 
+        let input_for_rule = input.clone();
         drafts.push(Draft {
             methods: Some(vec!["POST".into()]),
             path: format!("mcp:{}", t.name),
@@ -2114,6 +2193,7 @@ impl<'h> Compiler<'h> {
             openapi_layer: None,
             folder_layers: Vec::new(),
             op: None,
+            mcp: None,
         });
         Some(McpTool {
             name: t.name.clone(),
@@ -2125,7 +2205,336 @@ impl<'h> Compiler<'h> {
             param_headers,
             route: 0,
             own,
+            input_rule: validate_input
+                .then(|| crate::validate::BodyRule::new(input_for_rule, true).ok())
+                .flatten(),
+            binding: None,
         })
+    }
+
+    /// Turns each route marked with `mcp = {...}` into an MCP tool whose
+    /// arguments are built from the route's contract.
+    fn compile_route_tools(
+        &mut self,
+        routes: &[Route],
+        prefixes: &[PrefixEntry],
+        path_entries: &[PrefixEntry],
+        pending: Option<&McpPending>,
+    ) -> Vec<McpTool> {
+        let decls = std::mem::take(&mut self.route_tools);
+        let mut tools: Vec<McpTool> = Vec::new();
+        let mut names: HashMap<String, String> = pending
+            .map(|p| {
+                p.tools
+                    .iter()
+                    .map(|t| (t.name.clone(), "[[mcp.tool]]".to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let endpoint_auth = routes
+            .iter()
+            .find(|r| matches!(r.action, Action::Mcp))
+            .zip(pending)
+            .map(|(r, p)| {
+                merged_layer(r, prefixes, path_entries, "POST", &p.endpoint.path)
+                    .finalize(Duration::from_secs(30), 0)
+                    .auth
+            });
+        for (id, decl, at) in decls {
+            let at = format!("{at}.mcp");
+            let Some(pending) = pending else {
+                self.diags.push(
+                    Diagnostic::error(&at, "offering a route as an MCP tool needs an [mcp] table")
+                        .hint("add [mcp], which sets the endpoint the tools are served on"),
+                );
+                continue;
+            };
+            if pending.endpoint.proxy.is_some() {
+                self.diags.push(
+                    Diagnostic::error(&at, "routes can't be tools of a proxied MCP server")
+                        .hint("remove `proxy` from [mcp] so Unsworn is the MCP server"),
+                );
+                continue;
+            }
+            let Some(route) = routes.iter().find(|r| r.id == id) else {
+                continue;
+            };
+            if let Err(e) = mcp::check_tool_name(&decl.tool) {
+                self.diags.error(format!("{at}.tool"), e);
+                continue;
+            }
+            if let Some(other) = names.insert(decl.tool.clone(), at.clone()) {
+                self.diags.error(
+                    format!("{at}.tool"),
+                    format!("tool \"{}\" is already defined at {other}", decl.tool),
+                );
+                continue;
+            }
+            if !matches!(route.action, Action::Handler(_)) {
+                self.diags.push(
+                    Diagnostic::error(
+                        &at,
+                        format!(
+                            "{} {} has no handler to run as a tool",
+                            route.method_label(),
+                            route.path
+                        ),
+                    )
+                    .hint("only routes with a `handler` can be MCP tools"),
+                );
+                continue;
+            }
+            let method = match (&decl.method, &route.methods) {
+                (Some(m), methods) => {
+                    let m = m.to_ascii_uppercase();
+                    if methods.as_ref().is_some_and(|list| !list.contains(&m)) {
+                        self.diags.error(
+                            format!("{at}.method"),
+                            format!("the route doesn't accept {m}"),
+                        );
+                        continue;
+                    }
+                    m
+                }
+                (None, Some(list)) if list.len() == 1 => list[0].clone(),
+                (None, _) => {
+                    self.diags.push(
+                        Diagnostic::error(&at, format!("{} {} accepts several methods", route.method_label(), route.path))
+                            .hint("set the one tool calls use, e.g. mcp = { tool = \"...\", method = \"GET\" }"),
+                    );
+                    continue;
+                }
+            };
+            let probe = route.path.replace("{*", "{");
+            let eff = merged_layer(route, prefixes, path_entries, &method, &probe)
+                .finalize(Duration::from_secs(30), 0);
+            if eff.stream_body {
+                self.diags.push(
+                    Diagnostic::error(&at, "a route with `stream_body` can't be an MCP tool")
+                        .hint("tool arguments arrive as one JSON object, not a stream"),
+                );
+                continue;
+            }
+            if let Some(h) = route
+                .validation
+                .headers
+                .as_ref()
+                .and_then(|h| h.specs.iter().find(|s| s.required))
+            {
+                self.diags.push(
+                    Diagnostic::error(
+                        &at,
+                        format!(
+                            "the route requires the header {}, which MCP clients don't send",
+                            h.name
+                        ),
+                    )
+                    .hint("make the header optional, or don't offer this route as a tool"),
+                );
+                continue;
+            }
+            // The tool call's credentials are the ones sent to /mcp.
+            if let (AuthReq::AnyOf(route_alts), Some(AuthReq::AnyOf(mcp_alts))) =
+                (&eff.auth, &endpoint_auth)
+                && !route_alts
+                    .iter()
+                    .any(|a| mcp_alts.iter().any(|m| m.scheme == a.scheme))
+            {
+                let names = |alts: &[crate::policy::AuthAlt]| {
+                    alts.iter()
+                        .map(|a| a.scheme.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                self.diags.push(
+                    Diagnostic::error(
+                        &at,
+                        format!(
+                            "the route's auth ({}) shares no scheme with [mcp] auth ({}), so no tool call could pass it",
+                            names(route_alts),
+                            names(mcp_alts)
+                        ),
+                    )
+                    .hint("tool calls carry the credentials sent to the MCP endpoint; let the route also accept the [mcp] scheme"),
+                );
+                continue;
+            }
+
+            let Some((input, binding)) = self.route_tool_schema(route, &method, &at) else {
+                continue;
+            };
+            let input_rule = match crate::validate::BodyRule::new(input.clone(), true) {
+                Ok(r) => r,
+                Err(e) => {
+                    self.diags.error(&at, e);
+                    continue;
+                }
+            };
+            let param_headers = match mcp::param_headers(&input) {
+                Ok(h) => h,
+                Err(errors) => {
+                    for e in errors {
+                        self.diags.error(&at, e);
+                    }
+                    continue;
+                }
+            };
+            let description = decl.description.clone().or_else(|| {
+                route
+                    .op
+                    .as_ref()
+                    .and_then(|op| op.description.clone().or_else(|| op.summary.clone()))
+            });
+            if description.is_none() {
+                self.diags.push(
+                    Diagnostic::warning(&at, format!("tool \"{}\" has no description", decl.tool))
+                        .hint("models choose tools by their descriptions; set `description`"),
+                );
+            }
+            let own = Layer {
+                auth: matches!(eff.auth, AuthReq::AnyOf(_)).then(|| eff.auth.clone()),
+                rate_limit: eff.rate_limit.clone().map(OrOff::On),
+                ..Default::default()
+            };
+            tools.push(McpTool {
+                name: decl.tool.clone(),
+                title: decl.title.clone(),
+                description,
+                input_schema: input,
+                output_schema: route.validation.response.as_ref().map(|r| r.schema.clone()),
+                annotations: decl.annotations.as_ref().and_then(mcp::annotations),
+                param_headers,
+                route: route.id,
+                own,
+                input_rule: Some(input_rule),
+                binding: Some(binding),
+            });
+        }
+        tools
+    }
+
+    /// A route tool's input schema: path and query parameters as top-level
+    /// arguments, and the body's fields next to them when that's
+    /// unambiguous, or else under `body`.
+    fn route_tool_schema(
+        &mut self,
+        route: &Route,
+        method: &str,
+        at: &str,
+    ) -> Option<(Value, RouteBinding)> {
+        let mut properties = serde_json::Map::new();
+        let mut required: Vec<Value> = Vec::new();
+        let param_specs = route.validation.params.as_ref().map(|p| &p.specs);
+        for name in &route.param_names {
+            let schema = param_specs
+                .and_then(|specs| specs.iter().find(|s| &s.name == name))
+                .map(|s| s.schema.clone())
+                .unwrap_or_else(|| serde_json::json!({"type": "string"}));
+            properties.insert(name.clone(), schema);
+            if Some(name) != route.catch_all.as_ref() {
+                required.push(Value::String(name.clone()));
+            }
+        }
+        let mut query = Vec::new();
+        for spec in route.validation.query.iter().flat_map(|q| &q.specs) {
+            if properties.contains_key(&spec.name) {
+                self.diags.error(
+                    at,
+                    format!("\"{}\" is both a path and a query parameter, so tool arguments can't tell them apart", spec.name),
+                );
+                return None;
+            }
+            properties.insert(spec.name.clone(), spec.schema.clone());
+            if spec.required {
+                required.push(Value::String(spec.name.clone()));
+            }
+            query.push((spec.name.clone(), spec.schema.get("default").cloned()));
+        }
+
+        let mut additional = Some(Value::Bool(false));
+        let body = match &route.validation.body {
+            None => {
+                if matches!(method, "POST" | "PUT" | "PATCH") {
+                    self.diags.push(
+                        Diagnostic::warning(
+                            at,
+                            format!(
+                                "{method} {} has no `body` schema, so its tool can't send a body",
+                                route.path
+                            ),
+                        )
+                        .hint("add `body` to the route to let tool calls send one"),
+                    );
+                }
+                BodyArgs::None
+            }
+            Some(rule) => {
+                const FLAT_KEYS: &[&str] = &[
+                    "type",
+                    "properties",
+                    "required",
+                    "additionalProperties",
+                    "title",
+                    "description",
+                    "$schema",
+                ];
+                let schema = &rule.schema;
+                let flat = rule.required
+                    && schema.get("type").and_then(Value::as_str) == Some("object")
+                    && schema
+                        .as_object()
+                        .is_some_and(|o| o.keys().all(|k| FLAT_KEYS.contains(&k.as_str())))
+                    && schema
+                        .get("properties")
+                        .and_then(Value::as_object)
+                        .is_some_and(|p| p.keys().all(|k| !properties.contains_key(k)));
+                if flat {
+                    if let Some(props) = schema.get("properties").and_then(Value::as_object) {
+                        for (k, v) in props {
+                            properties.insert(k.clone(), v.clone());
+                        }
+                    }
+                    if let Some(list) = schema.get("required").and_then(Value::as_array) {
+                        required.extend(list.iter().cloned());
+                    }
+                    // Extra arguments go to the body when the body allows them.
+                    additional = schema.get("additionalProperties").cloned();
+                    BodyArgs::Flat
+                } else if properties.contains_key("body") {
+                    self.diags.error(
+                        at,
+                        "a parameter named \"body\" leaves no argument for the request body",
+                    );
+                    return None;
+                } else {
+                    properties.insert("body".into(), schema.clone());
+                    if rule.required {
+                        required.push(Value::String("body".into()));
+                    }
+                    BodyArgs::Nested
+                }
+            }
+        };
+
+        let mut schema = serde_json::Map::new();
+        schema.insert("type".into(), Value::String("object".into()));
+        schema.insert("properties".into(), Value::Object(properties));
+        if !required.is_empty() {
+            schema.insert("required".into(), Value::Array(required));
+        }
+        if let Some(a) = additional {
+            schema.insert("additionalProperties".into(), a);
+        }
+        Some((
+            Value::Object(schema),
+            RouteBinding {
+                method: method.to_string(),
+                pattern: route.path.clone(),
+                params: route.param_names.clone(),
+                query,
+                body,
+            },
+        ))
     }
 
     fn route_files(&mut self, dir: &str, drafts: &mut Vec<Draft>) {
@@ -2201,6 +2610,7 @@ impl<'h> Compiler<'h> {
                 openapi_layer: None,
                 folder_layers: layers,
                 op: None,
+                mcp: None,
             });
         }
     }
@@ -2327,6 +2737,7 @@ impl<'h> Compiler<'h> {
                 openapi_layer: layer,
                 folder_layers: Vec::new(),
                 op: Some(info),
+                mcp: None,
             });
         }
         Some(doc)
@@ -2370,6 +2781,7 @@ impl<'h> Compiler<'h> {
             high_layers.push((loc.clone(), d.own.clone()));
         }
         let mut raw_validation = d.validation.clone();
+        let mut tool = d.mcp.clone().map(|m| (m, loc.clone()));
         let norm = normalize(&d.path);
         for e in exacts.iter_mut() {
             if e.norm != norm {
@@ -2386,6 +2798,19 @@ impl<'h> Compiler<'h> {
             high.merge_from(&e.layer);
             high_layers.push((e.source.to_string(), e.layer.clone()));
             raw_validation.overlay(&e.validation);
+            if let Some(m) = &e.mcp {
+                if let Some((_, first)) = &tool {
+                    self.diags.error(
+                        format!("{}.mcp", e.source.loc()),
+                        format!("this route is already offered as a tool at {first}"),
+                    );
+                } else {
+                    tool = Some((m.clone(), e.source.loc()));
+                }
+            }
+        }
+        if let Some((m, at)) = tool {
+            self.route_tools.push((id, m, at));
         }
         layers.extend(high_layers);
 

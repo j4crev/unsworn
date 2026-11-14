@@ -761,7 +761,7 @@ MCP support is described in [`mcp.md`](mcp.md). In config it adds:
 | `origin` policy, `sticky` proxying, SSE pass-through | routes | v1 |
 | `[mcp]` and `[[mcp.tool]]`, including `list_tools` and `list_ttl` ([reference](mcp.md#config-reference)) | top level | v2 |
 | `[mcp] proxy`, with handler-less `[[mcp.tool]]` entries for per-tool policies | top level | v2 |
-| `mcp = { tool = ... }` | `[[route]]` with a handler | v3 |
+| `mcp = { tool = ... }` ([routes as tools](mcp.md#level-3-routes-as-tools)) | `[[route]]` with a handler, or a policy-only `[[route]]` entry | v3 |
 | `mcp_tools` | `[openapi]` | v3 |
 
 ## Deployment targets
