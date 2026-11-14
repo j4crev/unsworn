@@ -191,16 +191,38 @@ pub struct RawApiKey {
     pub keys: StringOrList,
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawStore {
-    #[serde(default = "default_store")]
-    pub backend: String,
+    #[serde(default)]
+    pub backend: StoreBackend,
+    /// `redis://` or `rediss://` (TLS), for the `redis` backend.
     pub url: Option<String>,
+    /// Prepended to every key, so separate projects can share one Redis.
+    pub prefix: Option<String>,
+    /// What rate limits do when the store can't be reached.
+    #[serde(default)]
+    pub on_error: OnError,
 }
 
-fn default_store() -> String {
-    "memory".into()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreBackend {
+    /// In this process only. Fine for a single instance.
+    #[default]
+    Memory,
+    /// Shared by every instance that uses the same Redis (or Valkey, Dragonfly...).
+    Redis,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OnError {
+    /// Let requests through without counting them.
+    #[default]
+    Open,
+    /// Answer `503`.
+    Closed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]

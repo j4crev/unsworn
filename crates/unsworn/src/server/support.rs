@@ -17,6 +17,8 @@ use serde_json::{Value, json};
 use unsworn_core::auth::{JwtKeys, KeySet, Scheme};
 use unsworn_core::validate::FieldError;
 
+use crate::store::Store;
+
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type Body = UnsyncBoxBody<Bytes, BoxError>;
 pub type HttpClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Body>;
@@ -134,87 +136,6 @@ impl ClientIp {
     }
 }
 
-/// A cached response.
-#[derive(Clone)]
-pub struct CachedResponse {
-    pub status: u16,
-    pub headers: Vec<(String, HeaderValue)>,
-    pub body: Bytes,
-    pub stored: Instant,
-    pub ttl: Duration,
-}
-
-struct Bucket {
-    tokens: f64,
-    last: Instant,
-}
-
-/// In-memory rate limits and response cache.
-#[derive(Default)]
-pub struct MemoryStore {
-    buckets: Mutex<HashMap<String, Bucket>>,
-    cache: Mutex<HashMap<String, CachedResponse>>,
-}
-
-const MAX_CACHE_ENTRIES: usize = 10_000;
-pub const MAX_CACHED_BODY: usize = 1024 * 1024;
-
-impl MemoryStore {
-    /// Token bucket: `requests` per `per`. Returns `Err(retry_after)` when
-    /// the limit is hit, else the remaining requests.
-    pub fn rate_limit(&self, key: &str, requests: u32, per: Duration) -> Result<u32, Duration> {
-        let now = Instant::now();
-        let rate = requests as f64 / per.as_secs_f64();
-        let mut buckets = self.buckets.lock().unwrap();
-        let bucket = buckets.entry(key.to_string()).or_insert(Bucket {
-            tokens: requests as f64,
-            last: now,
-        });
-        let elapsed = now.duration_since(bucket.last).as_secs_f64();
-        bucket.tokens = (bucket.tokens + elapsed * rate).min(requests as f64);
-        bucket.last = now;
-        if bucket.tokens >= 1.0 {
-            bucket.tokens -= 1.0;
-            Ok(bucket.tokens as u32)
-        } else {
-            let wait = (1.0 - bucket.tokens) / rate;
-            Err(Duration::from_secs_f64(wait.max(0.001)))
-        }
-    }
-
-    pub fn cache_get(&self, key: &str) -> Option<CachedResponse> {
-        let cache = self.cache.lock().unwrap();
-        let entry = cache.get(key)?;
-        (entry.stored.elapsed() < entry.ttl).then(|| entry.clone())
-    }
-
-    pub fn cache_put(&self, key: String, value: CachedResponse) {
-        let mut cache = self.cache.lock().unwrap();
-        if cache.len() >= MAX_CACHE_ENTRIES {
-            cache.retain(|_, v| v.stored.elapsed() < v.ttl);
-            if cache.len() >= MAX_CACHE_ENTRIES
-                && let Some(k) = cache.keys().next().cloned()
-            {
-                cache.remove(&k);
-            }
-        }
-        cache.insert(key, value);
-    }
-
-    /// Drops expired entries. Called periodically.
-    pub fn sweep(&self) {
-        self.cache
-            .lock()
-            .unwrap()
-            .retain(|_, v| v.stored.elapsed() < v.ttl);
-        let idle = Duration::from_secs(3600);
-        self.buckets
-            .lock()
-            .unwrap()
-            .retain(|_, b| b.last.elapsed() < idle);
-    }
-}
-
 /// Request counts and durations, exposed in Prometheus format.
 #[derive(Default)]
 pub struct Metrics {
@@ -231,7 +152,7 @@ impl Metrics {
         entry.1 += elapsed.as_secs_f64();
     }
 
-    pub fn render(&self, runtimes: &[(String, bool, usize, usize)]) -> String {
+    pub fn render(&self, runtimes: &[(String, bool, usize, usize)], store: &Store) -> String {
         let mut out = String::new();
         out.push_str("# HELP unsworn_requests_total Requests handled.\n");
         out.push_str("# TYPE unsworn_requests_total counter\n");
@@ -266,6 +187,19 @@ impl Metrics {
                 "unsworn_runtime_crashes_recent{{runtime=\"{name}\"}} {crashes}\n"
             ));
         }
+        let backend = store.backend_name();
+        out.push_str("# HELP unsworn_store_up Whether the last store operation succeeded.\n");
+        out.push_str("# TYPE unsworn_store_up gauge\n");
+        out.push_str(&format!(
+            "unsworn_store_up{{backend=\"{backend}\"}} {}\n",
+            u8::from(store.is_up())
+        ));
+        out.push_str("# HELP unsworn_store_errors_total Failed store operations.\n");
+        out.push_str("# TYPE unsworn_store_errors_total counter\n");
+        out.push_str(&format!(
+            "unsworn_store_errors_total{{backend=\"{backend}\"}} {}\n",
+            store.error_count()
+        ));
         out
     }
 }
@@ -370,23 +304,6 @@ async fn fetch_text(client: &HttpClient, url: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rate_limit_bucket() {
-        let store = MemoryStore::default();
-        for _ in 0..3 {
-            assert!(store.rate_limit("k", 3, Duration::from_secs(60)).is_ok());
-        }
-        let wait = store
-            .rate_limit("k", 3, Duration::from_secs(60))
-            .unwrap_err();
-        assert!(wait > Duration::from_secs(10));
-        assert!(
-            store
-                .rate_limit("other", 3, Duration::from_secs(60))
-                .is_ok()
-        );
-    }
 
     #[test]
     fn client_ip_trust() {

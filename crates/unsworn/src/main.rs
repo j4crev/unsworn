@@ -8,6 +8,7 @@ mod commands;
 mod conformance;
 mod load;
 mod server;
+mod store;
 mod workers;
 
 use std::path::PathBuf;

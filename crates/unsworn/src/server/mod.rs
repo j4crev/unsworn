@@ -24,7 +24,9 @@ use unsworn_core::Project;
 
 use crate::load;
 use crate::workers::{PoolOptions, Pools, SocketDir};
-use support::{Body, ClientIp, HttpClient, KeyCache, MemoryStore, Metrics};
+use support::{Body, ClientIp, HttpClient, KeyCache, Metrics};
+
+use crate::store::Store;
 
 /// One loaded version of the project. Replaced on reload.
 pub struct Generation {
@@ -38,7 +40,9 @@ pub struct Generation {
 pub struct Shared {
     pub generation: ArcSwap<Generation>,
     pub client: HttpClient,
-    pub store: MemoryStore,
+    /// Rebuilt on reload only when `[store]` changes, so reloads keep
+    /// in-memory rate limits and cache entries.
+    pub store: ArcSwap<Store>,
     pub metrics: Metrics,
     pub keys: KeyCache,
     pub dev: bool,
@@ -145,11 +149,15 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         return Err("an eager runtime failed to start".into());
     }
     let server = generation.project.server.clone();
+    let store = Store::new(&generation.project.store)?;
+    if store.backend_name() != "memory" {
+        tracing::info!(store = store.backend_name(), "using a shared store");
+    }
 
     let shared = Arc::new(Shared {
         generation: ArcSwap::from_pointee(generation),
         client: support::build_client(),
-        store: MemoryStore::default(),
+        store: ArcSwap::from_pointee(store),
         metrics: Metrics::default(),
         keys: KeyCache::new(),
         dev: opts.dev,
@@ -167,7 +175,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
             let mut tick = tokio::time::interval(Duration::from_secs(30));
             loop {
                 tick.tick().await;
-                shared.store.sweep();
+                shared.store.load().sweep();
             }
         });
     }
@@ -326,6 +334,22 @@ async fn reload(shared: &Arc<Shared>, config: &str) {
         tracing::error!("reload failed; still serving the previous version");
         return;
     }
+    let store = if shared.store.load().config == generation.project.store {
+        None
+    } else {
+        match Store::new(&generation.project.store) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("reload failed: {e}");
+                generation.pools.shutdown(Duration::from_secs(1)).await;
+                return;
+            }
+        }
+    };
+    if let Some(store) = store {
+        tracing::info!(store = store.backend_name(), "the store changed");
+        shared.store.store(Arc::new(store));
+    }
     let old = shared.generation.swap(Arc::new(generation));
     tracing::info!("reloaded");
     if shared.dev {
@@ -410,7 +434,9 @@ async fn admin_server(listener: TcpListener, shared: Arc<Shared>) {
                 async move {
                     let resp: Response<Body> = if req.uri().path() == "/_unsworn/metrics" {
                         let runtimes = shared.generation.load().pools.health();
-                        let mut r = Response::new(support::full(shared.metrics.render(&runtimes)));
+                        let store = shared.store.load();
+                        let mut r =
+                            Response::new(support::full(shared.metrics.render(&runtimes, &store)));
                         r.headers_mut().insert(
                             http::header::CONTENT_TYPE,
                             http::HeaderValue::from_static("text/plain; version=0.0.4"),

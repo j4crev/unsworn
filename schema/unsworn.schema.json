@@ -27,6 +27,20 @@
       ],
       "description": "A duration like \"30s\", \"5m\", \"250ms\" or \"1h30m\", or a number of seconds."
     },
+    "OnError": {
+      "oneOf": [
+        {
+          "const": "open",
+          "description": "Let requests through without counting them.",
+          "type": "string"
+        },
+        {
+          "const": "closed",
+          "description": "Answer `503`.",
+          "type": "string"
+        }
+      ]
+    },
     "Protocol": {
       "oneOf": [
         {
@@ -1192,10 +1206,23 @@
       "additionalProperties": false,
       "properties": {
         "backend": {
-          "default": "memory",
-          "type": "string"
+          "$ref": "#/$defs/StoreBackend",
+          "default": "memory"
+        },
+        "on_error": {
+          "$ref": "#/$defs/OnError",
+          "default": "open",
+          "description": "What rate limits do when the store can't be reached."
+        },
+        "prefix": {
+          "description": "Prepended to every key, so separate projects can share one Redis.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "url": {
+          "description": "`redis://` or `rediss://` (TLS), for the `redis` backend.",
           "type": [
             "string",
             "null"
@@ -1252,6 +1279,20 @@
         }
       ],
       "description": "A size like \"1MB\" or \"512KB\" (1024-based), or a number of bytes."
+    },
+    "StoreBackend": {
+      "oneOf": [
+        {
+          "const": "memory",
+          "description": "In this process only. Fine for a single instance.",
+          "type": "string"
+        },
+        {
+          "const": "redis",
+          "description": "Shared by every instance that uses the same Redis (or Valkey, Dragonfly...).",
+          "type": "string"
+        }
+      ]
     },
     "StringOrList": {
       "anyOf": [
