@@ -755,7 +755,15 @@
           ]
         },
         "mcp_tools": {
-          "description": "Planned for v3."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawOpenApiTools"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Which operations are also MCP tools: `\"all\"`, or `{ tags = [...] }`."
         },
         "spec": {
           "type": [
@@ -777,6 +785,19 @@
         }
       },
       "type": "object"
+    },
+    "RawOpenApiTools": {
+      "anyOf": [
+        {
+          "description": "`\"all\"`: every operation with an `operationId`.",
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/RawToolTags",
+          "description": "`{ tags = [\"public\"] }`: operations with any of these tags."
+        }
+      ],
+      "description": "`mcp_tools` in `[openapi]`."
     },
     "RawOrigin": {
       "additionalProperties": false,
@@ -1694,6 +1715,21 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "RawToolTags": {
+      "additionalProperties": false,
+      "properties": {
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "tags"
+      ],
       "type": "object"
     },
     "ResponseValidation": {

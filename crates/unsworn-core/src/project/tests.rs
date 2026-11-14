@@ -1074,3 +1074,168 @@ fn route_tool_errors_and_warnings() {
         "{warnings:?}"
     );
 }
+
+const TOOLS_SPEC: &str = r#"
+openapi: 3.1.0
+info: { title: Test, version: "1" }
+paths:
+  /users/{id}:
+    get:
+      operationId: getUser
+      tags: [users]
+      summary: Get a user
+      description: Look up one user by id.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: List users
+    post:
+      tags: [users]
+      x-unsworn-handler: src/users.ts#create
+  /admin/stats:
+    get:
+      operationId: stats
+      tags: [admin]
+      summary: Usage stats
+  /health:
+    get:
+      operationId: health
+      tags: [users]
+"#;
+
+fn openapi_tools(mcp_tools: &str, extra: &str) -> Compiled {
+    let cfg = format!(
+        r#"{RUNTIMES}
+[mcp]
+
+[openapi]
+spec = "openapi.yaml"
+handler = "src/{{tag}}.ts#{{operationId}}"
+mcp_tools = {mcp_tools}
+
+[[route]]
+path = "/health"
+method = "GET"
+respond = {{ status = 200 }}
+{extra}"#
+    );
+    let host = MemHost::with(&[
+        ("unsworn.toml", &cfg),
+        ("openapi.yaml", TOOLS_SPEC),
+        ("src/users.ts", ""),
+        ("src/admin.ts", ""),
+    ]);
+    compile(&host, "unsworn.toml")
+}
+
+#[test]
+fn openapi_operations_as_tools() {
+    // An explicit `mcp` on a policy-only entry renames a bulk pick.
+    let compiled = openapi_tools(
+        r#"{ tags = ["users"] }"#,
+        "[[route]]\npath = \"/users\"\nmethod = \"GET\"\nmcp = { tool = \"list_all_users\", description = \"Every user\" }\n",
+    );
+    let messages: Vec<String> = compiled.diagnostics.iter().map(|d| d.to_string()).collect();
+    let p = compiled.project.unwrap_or_else(|| panic!("{messages:?}"));
+    let mcp = p.mcp.as_ref().unwrap();
+    let names: Vec<&str> = mcp.tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["getUser", "list_all_users"], "only the `users` tag");
+
+    let get = mcp.tool("getUser").unwrap();
+    assert_eq!(get.description.as_deref(), Some("Look up one user by id."));
+    assert_eq!(get.input_schema["properties"]["id"]["type"], "integer");
+    assert_eq!(
+        p.routes[get.route].handler().unwrap().raw,
+        "src/users.ts#getUser"
+    );
+
+    // Operations that can't be tools are skipped with a warning.
+    assert!(
+        messages.iter().any(|m| m.contains("no operationId")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("/health") && m.contains("isn't offered as an MCP tool")),
+        "{messages:?}"
+    );
+    assert!(compiled.diagnostics.iter().all(|d| !d.is_error()));
+
+    let all = openapi_tools(r#""all""#, "").project.unwrap();
+    let names: Vec<&str> = all
+        .mcp
+        .as_ref()
+        .unwrap()
+        .tools
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(names, ["getUser", "listUsers", "stats"]);
+    let stats = all.mcp.as_ref().unwrap().tool("stats").unwrap();
+    assert_eq!(
+        stats.description.as_deref(),
+        Some("Usage stats"),
+        "the summary when there's no description"
+    );
+}
+
+#[test]
+fn openapi_tool_errors() {
+    let errs = |compiled: Compiled| -> Vec<String> {
+        assert!(compiled.project.is_none(), "expected errors");
+        compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.to_string())
+            .collect()
+    };
+    let e = errs(openapi_tools(r#""some""#, ""));
+    assert!(
+        e.iter()
+            .any(|m| m.contains("\"some\" isn't a valid choice")),
+        "{e:?}"
+    );
+
+    let bad_name = TOOLS_SPEC.replace("operationId: stats", "operationId: usage stats");
+    let cfg = format!(
+        "{RUNTIMES}\n[mcp]\n[openapi]\nspec = \"openapi.yaml\"\nhandler = \"src/{{tag}}.ts#x\"\nmcp_tools = \"all\"\n"
+    );
+    let host = MemHost::with(&[
+        ("unsworn.toml", &cfg),
+        ("openapi.yaml", &bad_name),
+        ("src/users.ts", ""),
+        ("src/admin.ts", ""),
+    ]);
+    let e = errs(compile(&host, "unsworn.toml"));
+    assert!(
+        e.iter().any(|m| m.contains("can only use letters")),
+        "an invalid name stays an error: {e:?}"
+    );
+
+    for (mcp, want) in [
+        ("", "needs an [mcp] table"),
+        ("[mcp]\nproxy = \"http://x:1\"\n", "proxied MCP server"),
+    ] {
+        let cfg = format!(
+            "{RUNTIMES}\n{mcp}[openapi]\nspec = \"openapi.yaml\"\nhandler = \"src/{{tag}}.ts#{{operationId}}\"\nmcp_tools = \"all\"\n"
+        );
+        let host = MemHost::with(&[
+            ("unsworn.toml", &cfg),
+            ("openapi.yaml", TOOLS_SPEC),
+            ("src/users.ts", ""),
+            ("src/admin.ts", ""),
+        ]);
+        let e = errs(compile(&host, "unsworn.toml"));
+        assert!(e.iter().any(|m| m.contains(want)), "{e:?}");
+        assert_eq!(
+            e.iter().filter(|m| m.contains("mcp")).count(),
+            1,
+            "reported once: {e:?}"
+        );
+    }
+}

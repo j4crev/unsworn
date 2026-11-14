@@ -117,10 +117,26 @@ pub struct RawRoutesDir {
 pub struct RawOpenApi {
     pub spec: Option<String>,
     pub handler: Option<String>,
-    /// Planned for v3.
-    pub mcp_tools: Option<Value>,
+    /// Which operations are also MCP tools: `"all"`, or `{ tags = [...] }`.
+    pub mcp_tools: Option<RawOpenApiTools>,
     pub title: Option<String>,
     pub version: Option<String>,
+}
+
+/// `mcp_tools` in `[openapi]`.
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum RawOpenApiTools {
+    /// `"all"`: every operation with an `operationId`.
+    All(String),
+    /// `{ tags = ["public"] }`: operations with any of these tags.
+    Tags(RawToolTags),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawToolTags {
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize, JsonSchema)]
