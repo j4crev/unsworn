@@ -2,8 +2,8 @@
 
 > Level 1 and the shared building blocks are implemented in v1. Level 2
 > (tools as handlers, with SDK helpers, and per-tool policies for a proxied
-> MCP server) is implemented. Level 3 is in progress: routes can be tools
-> now, and OpenAPI operations in bulk come next.
+> MCP server) and Level 3 (routes and OpenAPI operations as tools) are
+> implemented.
 
 A remote [Model Context Protocol](https://modelcontextprotocol.io) (MCP)
 server lets AI agents call tools over HTTP. Running one in production needs
@@ -475,8 +475,7 @@ doesn't list get only the `[mcp]` policies.
 
 ## Level 3: routes as tools
 
-Available now for routes in config and route files. OpenAPI operations in
-bulk are planned. Any route with a handler can also be offered as an MCP
+Available now. Any route with a handler can also be offered as an MCP
 tool:
 
 ```toml
@@ -568,15 +567,35 @@ in advance. A tool call that gets one returns a tool error instead.
 
 ### OpenAPI operations as tools
 
-Planned. With an [OpenAPI source](config.md#3-openapi-spec), operations
-can become tools in bulk. Tool names come from `operationId` and
-descriptions from the operation's summary and description:
+With an [OpenAPI source](config.md#3-openapi-spec), operations can become
+tools in bulk:
 
 ```toml
 [openapi]
 spec      = "openapi.yaml"
 mcp_tools = { tags = ["public"] }      # or "all"
 ```
+
+- `"all"` picks every operation, and `{ tags = [...] }` the operations
+  with any of those tags.
+- The tool's name is the operation's `operationId`, and its description is
+  the operation's `description`, or its `summary` when it has none. An
+  `operationId` that isn't a valid tool name is an error.
+- Each picked operation is a route tool like any other: same arguments,
+  request shape and policies as above.
+- An operation that can't be a tool is skipped with a warning instead of
+  failing the config: one without an `operationId`, one served by a config
+  route without a handler, or one that breaks a rule under
+  [What can't be a tool](#what-cant-be-a-tool).
+- A `[[route]]` entry for the operation's path and method can set `mcp`
+  itself, to rename the tool or give it a better description:
+
+  ```toml
+  [[route]]
+  path   = "/users"
+  method = "GET"
+  mcp    = { tool = "list_users", description = "List users, newest first" }
+  ```
 
 ## Later
 

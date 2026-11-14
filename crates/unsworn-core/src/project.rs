@@ -716,9 +716,9 @@ struct Compiler<'h> {
     schemes: BTreeMap<String, Arc<Scheme>>,
     sets: BTreeMap<String, Layer>,
     files: Vec<String>,
-    /// Routes to offer as MCP tools: route id, declaration, and where it
-    /// was declared.
-    route_tools: Vec<(usize, RawRouteTool, String)>,
+    /// Routes to offer as MCP tools: route id, declaration, where it was
+    /// declared, and whether `[openapi] mcp_tools` picked it in bulk.
+    route_tools: Vec<(usize, RawRouteTool, String, bool)>,
 }
 
 /// An action-less `[[route]]` entry with an exact path.
@@ -777,8 +777,24 @@ struct Draft {
     openapi_layer: Option<Layer>,
     folder_layers: Vec<(String, Layer)>,
     op: Option<OpInfo>,
-    /// `mcp = {...}` on the route's own `[[route]]` entry.
-    mcp: Option<RawRouteTool>,
+    /// `mcp = {...}` on the route's own `[[route]]` entry, or an OpenAPI
+    /// operation picked by `[openapi] mcp_tools` (the flag).
+    mcp: Option<(RawRouteTool, bool)>,
+}
+
+/// The OpenAPI operations `[openapi] mcp_tools` offers as tools.
+enum ToolPick {
+    All,
+    Tags(Vec<String>),
+}
+
+impl ToolPick {
+    fn matches(&self, tags: &[String]) -> bool {
+        match self {
+            ToolPick::All => true,
+            ToolPick::Tags(want) => tags.iter().any(|t| want.contains(t)),
+        }
+    }
 }
 
 /// Line numbers of the `[mcp]` table and its `[[mcp.tool]]` entries.
@@ -912,15 +928,11 @@ impl<'h> Compiler<'h> {
         if let Some(oa) = &raw.openapi {
             openapi_meta.title = oa.title.clone();
             openapi_meta.version = oa.version.clone();
-            if oa.mcp_tools.is_some() {
-                self.diags.error(
-                    "[openapi].mcp_tools",
-                    "offering OpenAPI operations as MCP tools is planned for v3",
-                );
-            }
+            let pick = self.tool_pick(oa, raw.mcp.as_ref());
             if let Some(spec) = &oa.spec {
                 openapi_meta.spec_file = Some(spec.clone());
-                openapi_meta.spec = self.openapi(spec, oa.handler.as_deref(), &mut drafts);
+                openapi_meta.spec =
+                    self.openapi(spec, oa.handler.as_deref(), pick.as_ref(), &mut drafts);
             }
         }
 
@@ -1835,7 +1847,7 @@ impl<'h> Compiler<'h> {
                         openapi_layer: None,
                         folder_layers: Vec::new(),
                         op: None,
-                        mcp: r.mcp.clone(),
+                        mcp: r.mcp.clone().map(|m| (m, false)),
                     });
                 }
             }
@@ -2240,175 +2252,198 @@ impl<'h> Compiler<'h> {
                     .finalize(Duration::from_secs(30), 0)
                     .auth
             });
-        for (id, decl, at) in decls {
+        for (id, decl, at, bulk) in decls {
             let at = format!("{at}.mcp");
-            let Some(pending) = pending else {
-                self.diags.push(
-                    Diagnostic::error(&at, "offering a route as an MCP tool needs an [mcp] table")
-                        .hint("add [mcp], which sets the endpoint the tools are served on"),
-                );
-                continue;
-            };
-            if pending.endpoint.proxy.is_some() {
-                self.diags.push(
-                    Diagnostic::error(&at, "routes can't be tools of a proxied MCP server")
-                        .hint("remove `proxy` from [mcp] so Unsworn is the MCP server"),
-                );
-                continue;
-            }
-            let Some(route) = routes.iter().find(|r| r.id == id) else {
-                continue;
-            };
-            if let Err(e) = mcp::check_tool_name(&decl.tool) {
-                self.diags.error(format!("{at}.tool"), e);
-                continue;
-            }
-            if let Some(other) = names.insert(decl.tool.clone(), at.clone()) {
-                self.diags.error(
-                    format!("{at}.tool"),
-                    format!("tool \"{}\" is already defined at {other}", decl.tool),
-                );
-                continue;
-            }
-            if !matches!(route.action, Action::Handler(_)) {
-                self.diags.push(
-                    Diagnostic::error(
-                        &at,
-                        format!(
-                            "{} {} has no handler to run as a tool",
-                            route.method_label(),
-                            route.path
-                        ),
-                    )
-                    .hint("only routes with a `handler` can be MCP tools"),
-                );
-                continue;
-            }
-            let method = match (&decl.method, &route.methods) {
-                (Some(m), methods) => {
-                    let m = m.to_ascii_uppercase();
-                    if methods.as_ref().is_some_and(|list| !list.contains(&m)) {
-                        self.diags.error(
-                            format!("{at}.method"),
-                            format!("the route doesn't accept {m}"),
-                        );
-                        continue;
-                    }
-                    m
-                }
-                (None, Some(list)) if list.len() == 1 => list[0].clone(),
-                (None, _) => {
+            let tools_before = tools.len();
+            // For a bulk pick, the checks after the name's are downgraded.
+            let mut diags_before = None;
+            'tool: {
+                let Some(pending) = pending else {
                     self.diags.push(
-                        Diagnostic::error(&at, format!("{} {} accepts several methods", route.method_label(), route.path))
-                            .hint("set the one tool calls use, e.g. mcp = { tool = \"...\", method = \"GET\" }"),
+                        Diagnostic::error(
+                            &at,
+                            "offering a route as an MCP tool needs an [mcp] table",
+                        )
+                        .hint("add [mcp], which sets the endpoint the tools are served on"),
                     );
-                    continue;
-                }
-            };
-            let probe = route.path.replace("{*", "{");
-            let eff = merged_layer(route, prefixes, path_entries, &method, &probe)
-                .finalize(Duration::from_secs(30), 0);
-            if eff.stream_body {
-                self.diags.push(
-                    Diagnostic::error(&at, "a route with `stream_body` can't be an MCP tool")
-                        .hint("tool arguments arrive as one JSON object, not a stream"),
-                );
-                continue;
-            }
-            if let Some(h) = route
-                .validation
-                .headers
-                .as_ref()
-                .and_then(|h| h.specs.iter().find(|s| s.required))
-            {
-                self.diags.push(
-                    Diagnostic::error(
-                        &at,
-                        format!(
-                            "the route requires the header {}, which MCP clients don't send",
-                            h.name
-                        ),
-                    )
-                    .hint("make the header optional, or don't offer this route as a tool"),
-                );
-                continue;
-            }
-            // The tool call's credentials are the ones sent to /mcp.
-            if let (AuthReq::AnyOf(route_alts), Some(AuthReq::AnyOf(mcp_alts))) =
-                (&eff.auth, &endpoint_auth)
-                && !route_alts
-                    .iter()
-                    .any(|a| mcp_alts.iter().any(|m| m.scheme == a.scheme))
-            {
-                let names = |alts: &[crate::policy::AuthAlt]| {
-                    alts.iter()
-                        .map(|a| a.scheme.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    break 'tool;
                 };
-                self.diags.push(
-                    Diagnostic::error(
-                        &at,
-                        format!(
-                            "the route's auth ({}) shares no scheme with [mcp] auth ({}), so no tool call could pass it",
-                            names(route_alts),
-                            names(mcp_alts)
-                        ),
-                    )
-                    .hint("tool calls carry the credentials sent to the MCP endpoint; let the route also accept the [mcp] scheme"),
-                );
-                continue;
-            }
-
-            let Some((input, binding)) = self.route_tool_schema(route, &method, &at) else {
-                continue;
-            };
-            let input_rule = match crate::validate::BodyRule::new(input.clone(), true) {
-                Ok(r) => r,
-                Err(e) => {
-                    self.diags.error(&at, e);
-                    continue;
+                if pending.endpoint.proxy.is_some() {
+                    self.diags.push(
+                        Diagnostic::error(&at, "routes can't be tools of a proxied MCP server")
+                            .hint("remove `proxy` from [mcp] so Unsworn is the MCP server"),
+                    );
+                    break 'tool;
                 }
-            };
-            let param_headers = match mcp::param_headers(&input) {
-                Ok(h) => h,
-                Err(errors) => {
-                    for e in errors {
-                        self.diags.error(&at, e);
+                let Some(route) = routes.iter().find(|r| r.id == id) else {
+                    break 'tool;
+                };
+                if let Err(e) = mcp::check_tool_name(&decl.tool) {
+                    self.diags.error(format!("{at}.tool"), e);
+                    break 'tool;
+                }
+                if let Some(other) = names.insert(decl.tool.clone(), at.clone()) {
+                    self.diags.error(
+                        format!("{at}.tool"),
+                        format!("tool \"{}\" is already defined at {other}", decl.tool),
+                    );
+                    break 'tool;
+                }
+                diags_before = Some(self.diags.items.len());
+                if !matches!(route.action, Action::Handler(_)) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            &at,
+                            format!(
+                                "{} {} has no handler to run as a tool",
+                                route.method_label(),
+                                route.path
+                            ),
+                        )
+                        .hint("only routes with a `handler` can be MCP tools"),
+                    );
+                    break 'tool;
+                }
+                let method = match (&decl.method, &route.methods) {
+                    (Some(m), methods) => {
+                        let m = m.to_ascii_uppercase();
+                        if methods.as_ref().is_some_and(|list| !list.contains(&m)) {
+                            self.diags.error(
+                                format!("{at}.method"),
+                                format!("the route doesn't accept {m}"),
+                            );
+                            break 'tool;
+                        }
+                        m
                     }
-                    continue;
+                    (None, Some(list)) if list.len() == 1 => list[0].clone(),
+                    (None, _) => {
+                        self.diags.push(
+                            Diagnostic::error(&at, format!("{} {} accepts several methods", route.method_label(), route.path))
+                                .hint("set the one tool calls use, e.g. mcp = { tool = \"...\", method = \"GET\" }"),
+                        );
+                        break 'tool;
+                    }
+                };
+                let probe = route.path.replace("{*", "{");
+                let eff = merged_layer(route, prefixes, path_entries, &method, &probe)
+                    .finalize(Duration::from_secs(30), 0);
+                if eff.stream_body {
+                    self.diags.push(
+                        Diagnostic::error(&at, "a route with `stream_body` can't be an MCP tool")
+                            .hint("tool arguments arrive as one JSON object, not a stream"),
+                    );
+                    break 'tool;
                 }
-            };
-            let description = decl.description.clone().or_else(|| {
-                route
-                    .op
+                if let Some(h) = route
+                    .validation
+                    .headers
                     .as_ref()
-                    .and_then(|op| op.description.clone().or_else(|| op.summary.clone()))
-            });
-            if description.is_none() {
-                self.diags.push(
-                    Diagnostic::warning(&at, format!("tool \"{}\" has no description", decl.tool))
+                    .and_then(|h| h.specs.iter().find(|s| s.required))
+                {
+                    self.diags.push(
+                        Diagnostic::error(
+                            &at,
+                            format!(
+                                "the route requires the header {}, which MCP clients don't send",
+                                h.name
+                            ),
+                        )
+                        .hint("make the header optional, or don't offer this route as a tool"),
+                    );
+                    break 'tool;
+                }
+                // The tool call's credentials are the ones sent to /mcp.
+                if let (AuthReq::AnyOf(route_alts), Some(AuthReq::AnyOf(mcp_alts))) =
+                    (&eff.auth, &endpoint_auth)
+                    && !route_alts
+                        .iter()
+                        .any(|a| mcp_alts.iter().any(|m| m.scheme == a.scheme))
+                {
+                    let names = |alts: &[crate::policy::AuthAlt]| {
+                        alts.iter()
+                            .map(|a| a.scheme.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    self.diags.push(
+                        Diagnostic::error(
+                            &at,
+                            format!(
+                                "the route's auth ({}) shares no scheme with [mcp] auth ({}), so no tool call could pass it",
+                                names(route_alts),
+                                names(mcp_alts)
+                            ),
+                        )
+                        .hint("tool calls carry the credentials sent to the MCP endpoint; let the route also accept the [mcp] scheme"),
+                    );
+                    break 'tool;
+                }
+
+                let Some((input, binding)) = self.route_tool_schema(route, &method, &at) else {
+                    break 'tool;
+                };
+                let input_rule = match crate::validate::BodyRule::new(input.clone(), true) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.diags.error(&at, e);
+                        break 'tool;
+                    }
+                };
+                let param_headers = match mcp::param_headers(&input) {
+                    Ok(h) => h,
+                    Err(errors) => {
+                        for e in errors {
+                            self.diags.error(&at, e);
+                        }
+                        break 'tool;
+                    }
+                };
+                let description = decl.description.clone().or_else(|| {
+                    route
+                        .op
+                        .as_ref()
+                        .and_then(|op| op.description.clone().or_else(|| op.summary.clone()))
+                });
+                if description.is_none() {
+                    self.diags.push(
+                        Diagnostic::warning(
+                            &at,
+                            format!("tool \"{}\" has no description", decl.tool),
+                        )
                         .hint("models choose tools by their descriptions; set `description`"),
-                );
+                    );
+                }
+                let own = Layer {
+                    auth: matches!(eff.auth, AuthReq::AnyOf(_)).then(|| eff.auth.clone()),
+                    rate_limit: eff.rate_limit.clone().map(OrOff::On),
+                    ..Default::default()
+                };
+                tools.push(McpTool {
+                    name: decl.tool.clone(),
+                    title: decl.title.clone(),
+                    description,
+                    input_schema: input,
+                    output_schema: route.validation.response.as_ref().map(|r| r.schema.clone()),
+                    annotations: decl.annotations.as_ref().and_then(mcp::annotations),
+                    param_headers,
+                    route: route.id,
+                    own,
+                    input_rule: Some(input_rule),
+                    binding: Some(binding),
+                });
             }
-            let own = Layer {
-                auth: matches!(eff.auth, AuthReq::AnyOf(_)).then(|| eff.auth.clone()),
-                rate_limit: eff.rate_limit.clone().map(OrOff::On),
-                ..Default::default()
-            };
-            tools.push(McpTool {
-                name: decl.tool.clone(),
-                title: decl.title.clone(),
-                description,
-                input_schema: input,
-                output_schema: route.validation.response.as_ref().map(|r| r.schema.clone()),
-                annotations: decl.annotations.as_ref().and_then(mcp::annotations),
-                param_headers,
-                route: route.id,
-                own,
-                input_rule: Some(input_rule),
-                binding: Some(binding),
-            });
+            // An operation picked in bulk that can't be a tool is skipped,
+            // not an error.
+            if let Some(from) = diags_before.filter(|_| bulk && tools.len() == tools_before) {
+                for d in &mut self.diags.items[from..] {
+                    if d.is_error() {
+                        d.level = crate::diag::Level::Warning;
+                        d.message
+                            .push_str("; the operation isn't offered as an MCP tool");
+                    }
+                }
+            }
         }
         tools
     }
@@ -2615,10 +2650,52 @@ impl<'h> Compiler<'h> {
         }
     }
 
+    /// Which OpenAPI operations `[openapi] mcp_tools` offers as tools.
+    fn tool_pick(&mut self, oa: &config::RawOpenApi, mcp: Option<&RawMcp>) -> Option<ToolPick> {
+        let loc = "[openapi].mcp_tools";
+        let pick = match oa.mcp_tools.as_ref()? {
+            config::RawOpenApiTools::All(s) if s == "all" => ToolPick::All,
+            config::RawOpenApiTools::All(s) => {
+                self.diags.push(
+                    Diagnostic::error(loc, format!("\"{s}\" isn't a valid choice"))
+                        .hint("use \"all\", or { tags = [\"...\"] }"),
+                );
+                return None;
+            }
+            config::RawOpenApiTools::Tags(t) => ToolPick::Tags(t.tags.clone()),
+        };
+        match mcp {
+            None => {
+                self.diags.push(
+                    Diagnostic::error(loc, "offering operations as MCP tools needs an [mcp] table")
+                        .hint("add [mcp], which sets the endpoint the tools are served on"),
+                );
+                return None;
+            }
+            Some(m) if m.proxy.is_some() => {
+                self.diags.push(
+                    Diagnostic::error(loc, "operations can't be tools of a proxied MCP server")
+                        .hint("remove `proxy` from [mcp] so Unsworn is the MCP server"),
+                );
+                return None;
+            }
+            Some(_) => {}
+        }
+        if oa.spec.is_none() {
+            self.diags.push(Diagnostic::warning(
+                loc,
+                "there's no `spec`, so no operations to offer",
+            ));
+            return None;
+        }
+        Some(pick)
+    }
+
     fn openapi(
         &mut self,
         spec: &str,
         template: Option<&str>,
+        pick: Option<&ToolPick>,
         drafts: &mut Vec<Draft>,
     ) -> Option<Value> {
         self.files.push(spec.to_string());
@@ -2643,6 +2720,7 @@ impl<'h> Compiler<'h> {
                 return Some(doc);
             }
         };
+        let mut picked = 0;
         for op in ops {
             let source = Source::OpenApi {
                 file: spec.to_string(),
@@ -2690,6 +2768,28 @@ impl<'h> Compiler<'h> {
                 description: op.description.clone(),
                 tags: op.tags.clone(),
             };
+            let tool = match pick {
+                Some(p) if p.matches(&op.tags) => {
+                    picked += 1;
+                    match &op.operation_id {
+                        Some(id) => Some(RawRouteTool {
+                            tool: id.clone(),
+                            ..Default::default()
+                        }),
+                        None => {
+                            self.diags.push(
+                                Diagnostic::warning(
+                                    source.to_string(),
+                                    "the operation has no operationId, so it isn't offered as an MCP tool",
+                                )
+                                .hint("add an operationId; it becomes the tool's name"),
+                            );
+                            None
+                        }
+                    }
+                }
+                _ => None,
+            };
             // A config route with an action can serve this operation.
             let norm = normalize(&op.path);
             if let Some(existing) = drafts.iter_mut().find(|d| {
@@ -2702,6 +2802,10 @@ impl<'h> Compiler<'h> {
                 existing.validation = v;
                 existing.openapi_layer = layer;
                 existing.op = Some(info);
+                // An `mcp` on the config route itself wins.
+                if existing.mcp.is_none() {
+                    existing.mcp = tool.map(|t| (t, true));
+                }
                 continue;
             }
             let handler = match (&op.handler, template) {
@@ -2737,8 +2841,14 @@ impl<'h> Compiler<'h> {
                 openapi_layer: layer,
                 folder_layers: Vec::new(),
                 op: Some(info),
-                mcp: None,
+                mcp: tool.map(|t| (t, true)),
             });
+        }
+        if pick.is_some() && picked == 0 {
+            self.diags.push(Diagnostic::warning(
+                "[openapi].mcp_tools",
+                "no operations match, so none are offered as MCP tools",
+            ));
         }
         Some(doc)
     }
@@ -2781,7 +2891,7 @@ impl<'h> Compiler<'h> {
             high_layers.push((loc.clone(), d.own.clone()));
         }
         let mut raw_validation = d.validation.clone();
-        let mut tool = d.mcp.clone().map(|m| (m, loc.clone()));
+        let mut tool = d.mcp.clone().map(|(m, bulk)| (m, loc.clone(), bulk));
         let norm = normalize(&d.path);
         for e in exacts.iter_mut() {
             if e.norm != norm {
@@ -2799,18 +2909,18 @@ impl<'h> Compiler<'h> {
             high_layers.push((e.source.to_string(), e.layer.clone()));
             raw_validation.overlay(&e.validation);
             if let Some(m) = &e.mcp {
-                if let Some((_, first)) = &tool {
-                    self.diags.error(
+                match &tool {
+                    // An explicit `mcp` replaces a bulk pick.
+                    Some((_, first, false)) => self.diags.error(
                         format!("{}.mcp", e.source.loc()),
                         format!("this route is already offered as a tool at {first}"),
-                    );
-                } else {
-                    tool = Some((m.clone(), e.source.loc()));
+                    ),
+                    _ => tool = Some((m.clone(), e.source.loc(), false)),
                 }
             }
         }
-        if let Some((m, at)) = tool {
-            self.route_tools.push((id, m, at));
+        if let Some((m, at, bulk)) = tool {
+            self.route_tools.push((id, m, at, bulk));
         }
         layers.extend(high_layers);
 
