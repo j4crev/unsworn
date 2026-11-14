@@ -104,7 +104,7 @@ file extensions. Unsworn has no built-in knowledge of any language.
 extensions = [".go"]
 build      = "go build -o .unsworn/go-worker ./routes"
 command    = ".unsworn/go-worker"
-protocol   = "binary"
+protocol   = "framed"
 workers    = 2
 ```
 
@@ -145,7 +145,7 @@ workers    = 2
 | Tier | Transport | Encoding | SDK required | Purpose |
 |---|---|---|---|---|
 | 1 | stdin/stdout | JSON lines, optional raw body bytes | No | Universal: any language, including future ones |
-| 2 | Unix socket | Length-prefixed binary frames | Yes | Speed: multiplexing, zero-copy bodies, streaming |
+| 2 | Unix socket | Length-prefixed frames: JSON message plus raw body bytes | Yes | Speed: multiplexing, zero-copy bodies, streaming |
 
 Both tiers carry the **same message model**, so the router has one dispatch
 pipeline with two codecs. Plain HTTP services are covered by the built-in

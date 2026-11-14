@@ -17,7 +17,7 @@ def get_user(req, ctx):
 [runtimes.python]
 extensions = [".py"]
 command = "python3 -u -m unsworn.worker"
-protocol = "binary"
+protocol = "framed"
 
 [[route]]
 path = "/users/{id}"

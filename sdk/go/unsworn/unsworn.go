@@ -20,7 +20,7 @@
 //	extensions = [".go"]
 //	build      = "go build -o .unsworn/go-worker ."
 //	command    = ".unsworn/go-worker"
-//	protocol   = "binary"
+//	protocol   = "framed"
 //
 // A route's handler reference, such as "users.go#GetUser", finds the
 // function named GetUser that is defined in users.go. See [Register].

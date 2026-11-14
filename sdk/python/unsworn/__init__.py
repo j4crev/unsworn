@@ -13,7 +13,7 @@ Run handlers with the worker, from ``unsworn.toml``::
     [runtimes.python]
     extensions = [".py"]
     command = "python3 -u -m unsworn.worker"
-    protocol = "binary"
+    protocol = "framed"
 """
 
 from __future__ import annotations

@@ -23,7 +23,7 @@
 //! extensions = [".rs"]
 //! build      = "cargo build --release --bin handlers"
 //! command    = "target/release/handlers"
-//! protocol   = "binary"
+//! protocol   = "framed"
 //! ```
 //!
 //! The reference `src/users.rs#get_user` finds the function registered as

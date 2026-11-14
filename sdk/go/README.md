@@ -39,7 +39,7 @@ Unsworn builds and runs it:
 extensions = [".go"]
 build      = "go build -o .unsworn/go-worker ."
 command    = ".unsworn/go-worker"
-protocol   = "binary"
+protocol   = "framed"
 
 [[route]]
 path    = "/users/{id}"
@@ -139,7 +139,7 @@ routes/
 extensions = [".go"]
 build      = "go build -o .unsworn/go-worker ./routes"
 command    = ".unsworn/go-worker"
-protocol   = "binary"
+protocol   = "framed"
 ```
 
 `main.go` has no HTTP method in its name, so Unsworn doesn't treat it as a
@@ -165,5 +165,5 @@ startup instead of failing the first request.
 
 The worker reads `UNSWORN_TRANSPORT` and speaks either tier. Tier 1 (stdio)
 points `os.Stdout` at stderr, so `fmt.Println` output ends up in Unsworn's
-logs. Tier 2 (`protocol = "binary"`) is recommended for Go.
+logs. Tier 2 (`protocol = "framed"`) is recommended for Go.
 

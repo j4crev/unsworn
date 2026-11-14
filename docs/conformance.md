@@ -7,7 +7,7 @@ handlers, which you implement in one file in the runtime's language.
 
 ```
 $ unsworn conformance --runtime ts --handlers sdk/js/conformance/handlers.ts
-conformance: [runtimes.ts] (Binary)
+conformance: [runtimes.ts] (Framed)
   ✓ worker starts and sends `ready`
   ✓ verify reports missing handlers
   ✓ params, query, headers, context and JSON body arrive with their types

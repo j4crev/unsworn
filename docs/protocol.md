@@ -8,7 +8,7 @@ Unsworn talks to handler workers over one **message model** with two
 | Tier | Transport | Encoding | SDK |
 |---|---|---|---|
 | 1 | worker stdin/stdout | JSON lines, optional raw body bytes | Not required |
-| 2 | Unix socket | Length-prefixed binary frames | Required |
+| 2 | Unix socket | Length-prefixed frames: JSON message plus raw body bytes | Required |
 
 Everything in "Message model" applies to both tiers.
 

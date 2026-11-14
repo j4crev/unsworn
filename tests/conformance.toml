@@ -1,19 +1,19 @@
 # Runtimes for `unsworn conformance`, run from the repository root:
-#   unsworn conformance -c tests/conformance.toml --runtime bun-binary --handlers sdk/js/conformance/handlers.ts
+#   unsworn conformance -c tests/conformance.toml --runtime bun-framed --handlers sdk/js/conformance/handlers.ts
 
 [runtimes.bun-jsonl]
 extensions = [".ts"]
 command = "bun run sdk/js/src/worker.ts"
 
-[runtimes.bun-binary]
+[runtimes.bun-framed]
 extensions = [".mts"]
 command = "bun run sdk/js/src/worker.ts"
-protocol = "binary"
+protocol = "framed"
 
-[runtimes.node-binary]
+[runtimes.node-framed]
 extensions = [".cts"]
 command = "node sdk/js/src/worker.ts"
-protocol = "binary"
+protocol = "framed"
 
 [runtimes.deno-jsonl]
 extensions = [".js"]
@@ -24,32 +24,32 @@ extensions = [".py"]
 command = "python3 -u -m unsworn.worker"
 env = { PYTHONPATH = "sdk/python" }
 
-[runtimes.python-binary]
+[runtimes.python-framed]
 extensions = [".pyw"]
 command = "python3 -u -m unsworn.worker"
-protocol = "binary"
+protocol = "framed"
 env = { PYTHONPATH = "sdk/python" }
 
 [runtimes.raw-python]
 extensions = [".raw"]
 command = "python3 -u examples/raw-python/worker.py"
 
-[runtimes.go-binary]
+[runtimes.go-framed]
 extensions = [".go"]
 build = "cd sdk/go && go build -o ../../target/conformance/go-worker ./conformance"
 command = "target/conformance/go-worker"
-protocol = "binary"
+protocol = "framed"
 
 [runtimes.go-jsonl]
 extensions = [".golang"]
 build = "cd sdk/go && go build -o ../../target/conformance/go-worker ./conformance"
 command = "target/conformance/go-worker"
 
-[runtimes.rust-binary]
+[runtimes.rust-framed]
 extensions = [".rs"]
 build = "cargo build --quiet -p unsworn-sdk --example conformance"
 command = "target/debug/examples/conformance"
-protocol = "binary"
+protocol = "framed"
 startup_timeout = "300s"
 
 [runtimes.rust-jsonl]

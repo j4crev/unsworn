@@ -640,7 +640,7 @@ fn js_sdk_on_bun() {
 [runtimes.ts]
 extensions = [".ts"]
 command = "bun run {}/sdk/js/src/worker.ts"
-protocol = "binary"
+protocol = "framed"
 workers = 1
 
 [[route]]

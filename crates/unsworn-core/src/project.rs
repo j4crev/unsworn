@@ -889,6 +889,18 @@ impl<'h> Compiler<'h> {
                 self.diags
                     .error(format!("{loc}.command"), "command is empty");
             }
+            let protocol = if r.protocol == Protocol::Binary {
+                self.diags.push(
+                    Diagnostic::warning(
+                        format!("{loc}.protocol"),
+                        "\"binary\" is the old name for \"framed\"",
+                    )
+                    .hint("set protocol = \"framed\""),
+                );
+                Protocol::Framed
+            } else {
+                r.protocol
+            };
             let mut env = BTreeMap::new();
             for (k, v) in &r.env {
                 env.insert(k.clone(), self.subst(v, &format!("{loc}.env.{k}")));
@@ -900,7 +912,7 @@ impl<'h> Compiler<'h> {
                     extensions: r.extensions.clone(),
                     command: r.command.clone(),
                     build: r.build.clone(),
-                    protocol: r.protocol,
+                    protocol,
                     workers: r.workers,
                     eager: r.eager,
                     env,
