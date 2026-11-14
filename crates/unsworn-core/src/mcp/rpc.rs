@@ -6,7 +6,10 @@
 
 use serde_json::{Map, Value, json};
 
-use super::{McpTool, PROTOCOL_VERSION, ParamHeader, ParamKind, SUPPORTED_VERSIONS, ServerInfo};
+use super::{
+    McpEndpoint, McpTool, PROTOCOL_VERSION, ParamHeader, ParamKind, SUPPORTED_VERSIONS, ServerInfo,
+};
+use crate::config::ListTools;
 use crate::validate::FieldError;
 
 pub const PARSE_ERROR: i64 = -32700;
@@ -38,6 +41,22 @@ impl RpcError {
             message: message.into(),
             data: None,
         }
+    }
+
+    /// A method this server doesn't implement: `404` with `-32601`.
+    pub fn method_not_found(method: &str) -> Self {
+        RpcError {
+            status: 404,
+            ..RpcError::new(METHOD_NOT_FOUND, format!("Method not found: {method}"))
+        }
+    }
+
+    /// Bad `params`, such as an unknown tool name.
+    pub fn invalid_params(message: impl Into<String>) -> Self {
+        RpcError::new(
+            INVALID_PARAMS,
+            format!("Invalid params: {}", message.into()),
+        )
     }
 
     fn mismatch(message: impl Into<String>) -> Self {
@@ -445,6 +464,114 @@ pub fn tool_error(text: impl Into<String>) -> Map<String, Value> {
     out
 }
 
+/// The `server/discover` result.
+pub fn discover(mcp: &McpEndpoint) -> Map<String, Value> {
+    let mut out = Map::new();
+    out.insert("supportedVersions".into(), json!(SUPPORTED_VERSIONS));
+    // No `listChanged`: change notifications aren't supported yet.
+    out.insert("capabilities".into(), json!({ "tools": {} }));
+    if let Some(i) = &mcp.instructions {
+        out.insert("instructions".into(), json!(i));
+    }
+    out.insert("ttlMs".into(), json!(mcp.list_ttl.as_millis() as u64));
+    out.insert("cacheScope".into(), json!("public"));
+    out
+}
+
+/// Whether `tools/list` depends on the caller: only when it's filtered and
+/// some tool needs scopes of its own.
+pub fn list_varies_by_caller(mcp: &McpEndpoint) -> bool {
+    mcp.list_tools == ListTools::Permitted && mcp.tools.iter().any(|t| t.own.auth.is_some())
+}
+
+/// The `tools/list` result, with the tools `visible` lets through, in name
+/// order.
+pub fn list_tools(mcp: &McpEndpoint, visible: impl Fn(&McpTool) -> bool) -> Map<String, Value> {
+    let tools: Vec<Value> = mcp
+        .tools
+        .iter()
+        .filter(|t| visible(t))
+        .map(McpTool::definition)
+        .collect();
+    let scope = if list_varies_by_caller(mcp) {
+        "private"
+    } else {
+        "public"
+    };
+    let mut out = Map::new();
+    out.insert("tools".into(), Value::Array(tools));
+    out.insert("ttlMs".into(), json!(mcp.list_ttl.as_millis() as u64));
+    out.insert("cacheScope".into(), json!(scope));
+    out
+}
+
+/// What a tool's handler replied, for [`call_result`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Reply<'a> {
+    pub status: u16,
+    pub json: Option<&'a Value>,
+    pub text: Option<&'a str>,
+    pub mcp_content: Option<&'a Value>,
+    /// The handler sent raw bytes or a stream, which MCP results can't carry.
+    pub other_body: bool,
+}
+
+/// Turns a handler's reply into a tool result.
+///
+/// - `json` becomes `structuredContent`, plus a text copy in `content`, as
+///   MCP recommends.
+/// - `text` becomes one text block.
+/// - `mcp_content` is used as `content` as it is.
+/// - A status outside 2xx becomes a tool error with the handler's message.
+pub fn call_result(reply: Reply<'_>) -> Map<String, Value> {
+    if !(200..300).contains(&reply.status) {
+        let message = reply
+            .json
+            .and_then(|j| {
+                ["error", "message", "detail"]
+                    .iter()
+                    .find_map(|k| j.get(*k).and_then(Value::as_str))
+            })
+            .map(String::from)
+            .or_else(|| reply.json.map(Value::to_string))
+            .or_else(|| reply.text.map(|t| t.trim().to_string()))
+            .filter(|m| !m.is_empty());
+        return tool_error(match message {
+            Some(m) => m,
+            None => format!("The tool failed (status {}).", reply.status),
+        });
+    }
+    let content = match (reply.mcp_content, reply.text, reply.json) {
+        (Some(c), _, _) => {
+            let valid = c.as_array().is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .all(|b| b.get("type").is_some_and(Value::is_string))
+            });
+            if !valid {
+                return tool_error(
+                    "The tool returned invalid MCP content: `mcp_content` must be a list of content blocks, each with a `type`.",
+                );
+            }
+            c.clone()
+        }
+        (None, Some(t), _) => json!([{ "type": "text", "text": t }]),
+        (None, None, Some(j)) => json!([{ "type": "text", "text": j.to_string() }]),
+        (None, None, None) if reply.other_body => {
+            return tool_error(
+                "The tool returned a raw or streamed body, which MCP results can't carry. Return `json`, `text` or `mcp_content`.",
+            );
+        }
+        (None, None, None) => json!([]),
+    };
+    let mut out = Map::new();
+    out.insert("content".into(), content);
+    if let Some(j) = reply.json {
+        out.insert("structuredContent".into(), j.clone());
+    }
+    out
+}
+
 /// The text of a tool error for arguments that don't match the input schema.
 pub fn invalid_arguments(errors: &[FieldError]) -> String {
     let lines: Vec<String> = errors
@@ -683,6 +810,116 @@ mod tests {
                 .get("id")
                 .is_none()
         );
+    }
+
+    fn endpoint(tools: Vec<McpTool>, list_tools: ListTools) -> McpEndpoint {
+        McpEndpoint {
+            path: "/mcp".into(),
+            route: 0,
+            server: ServerInfo {
+                name: "acme".into(),
+                version: "1".into(),
+                title: None,
+            },
+            instructions: Some("Be nice.".into()),
+            list_tools,
+            list_ttl: std::time::Duration::from_secs(60),
+            proxy: None,
+            tools,
+        }
+    }
+
+    #[test]
+    fn discover_and_list() {
+        let mut secret = tool(Vec::new());
+        secret.name = "secret".into();
+        secret.own.auth = Some(crate::policy::AuthReq::Public);
+        let open = tool(Vec::new());
+        let mcp = endpoint(vec![secret, open], ListTools::Permitted);
+
+        let d = discover(&mcp);
+        assert_eq!(d["supportedVersions"], json!([PROTOCOL_VERSION]));
+        assert_eq!(d["capabilities"], json!({"tools": {}}));
+        assert_eq!(d["instructions"], "Be nice.");
+        assert_eq!(d["ttlMs"], 60_000);
+
+        let all = list_tools(&mcp, |_| true);
+        assert_eq!(all["tools"].as_array().unwrap().len(), 2);
+        assert_eq!(all["cacheScope"], "private", "filtered by scopes");
+        let some = list_tools(&mcp, |t| t.own.auth.is_none());
+        assert_eq!(some["tools"][0]["name"], "t");
+
+        let everyone = endpoint(mcp.tools.clone(), ListTools::All);
+        assert_eq!(list_tools(&everyone, |_| true)["cacheScope"], "public");
+    }
+
+    #[test]
+    fn maps_handler_replies() {
+        let ok = |r: Reply| call_result(Reply { status: 200, ..r });
+        let j = json!({"temp": 21});
+        let r = ok(Reply {
+            json: Some(&j),
+            ..Default::default()
+        });
+        assert_eq!(r["structuredContent"], j);
+        assert_eq!(r["content"][0]["text"], r#"{"temp":21}"#);
+        assert!(r.get("isError").is_none());
+
+        let r = ok(Reply {
+            text: Some("hi"),
+            ..Default::default()
+        });
+        assert_eq!(r["content"], json!([{"type": "text", "text": "hi"}]));
+        assert!(r.get("structuredContent").is_none());
+
+        let blocks = json!([{"type": "image", "data": "AAAA", "mimeType": "image/png"}]);
+        let r = ok(Reply {
+            mcp_content: Some(&blocks),
+            json: Some(&j),
+            ..Default::default()
+        });
+        assert_eq!(r["content"], blocks);
+        assert_eq!(
+            r["structuredContent"], j,
+            "json still gives structured content"
+        );
+
+        let bad = json!([{"data": "x"}]);
+        assert_eq!(
+            ok(Reply {
+                mcp_content: Some(&bad),
+                ..Default::default()
+            })["isError"],
+            true
+        );
+        assert_eq!(
+            ok(Reply {
+                other_body: true,
+                ..Default::default()
+            })["isError"],
+            true
+        );
+        assert_eq!(ok(Reply::default())["content"], json!([]));
+
+        let e = json!({"error": "city not found"});
+        let r = call_result(Reply {
+            status: 404,
+            json: Some(&e),
+            ..Default::default()
+        });
+        assert_eq!(r["isError"], true);
+        assert_eq!(r["content"][0]["text"], "city not found");
+        let r = call_result(Reply {
+            status: 500,
+            ..Default::default()
+        });
+        assert_eq!(r["content"][0]["text"], "The tool failed (status 500).");
+        let r = call_result(Reply {
+            status: 400,
+            text: Some("bad date\n"),
+            ..Default::default()
+        });
+        assert_eq!(r["content"][0]["text"], "bad date");
     }
 
     #[test]
