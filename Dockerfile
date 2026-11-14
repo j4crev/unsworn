@@ -9,14 +9,13 @@
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --release --locked -p unsworn \
-    && strip target/release/unsworn
+RUN cargo build --profile dist --locked -p unsworn
 
 FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /src/target/release/unsworn /usr/local/bin/unsworn
+COPY --from=build /src/target/dist/unsworn /usr/local/bin/unsworn
 WORKDIR /app
 ENV UNSWORN_LOG=info
 EXPOSE 8080

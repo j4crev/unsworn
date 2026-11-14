@@ -73,3 +73,22 @@ fn js_sdk_deno() {
         run("deno-jsonl", "sdk/js/conformance/handlers.ts");
     }
 }
+
+#[test]
+fn go_sdk() {
+    // `go` takes `version`, not `--version`.
+    let has_go = Command::new("go")
+        .arg("version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if has_go {
+        run("go-binary", "sdk/go/conformance/handlers.go");
+        run("go-jsonl", "sdk/go/conformance/handlers.go");
+    }
+}
+
+#[test]
+fn rust_sdk() {
+    run("rust-binary", "sdk/rust/examples/conformance.rs");
+    run("rust-jsonl", "sdk/rust/examples/conformance.rs");
+}

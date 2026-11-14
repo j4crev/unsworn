@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "sdk/rust"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,3 +16,10 @@ type_complexity = "allow"
 large_enum_variant = "allow"
 too_many_arguments = "allow"
 result_large_err = "allow"
+
+# Release builds (`--profile dist`): slower to compile, about a third smaller.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true

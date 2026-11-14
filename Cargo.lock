@@ -2396,6 +2396,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "unsworn-sdk"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "unsworn-proto",
+]
+
+[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

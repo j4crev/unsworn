@@ -4,7 +4,7 @@
 //
 //   [runtimes.ts]
 //   extensions = [".ts", ".js"]
-//   command = "bun run node_modules/@unsworn/js/src/worker.ts"
+//   command = "bun run node_modules/@unswornjs/js/src/worker.ts"
 //   protocol = "binary"
 //
 // Works on Bun, Node (22.18+, which runs TypeScript directly) and Deno.

@@ -102,7 +102,7 @@ file extensions. Unsworn has no built-in knowledge of any language.
 ```toml
 [runtimes.go]
 extensions = [".go"]
-build      = "go build -o .unsworn/go-worker ./routes/..."
+build      = "go build -o .unsworn/go-worker ./routes"
 command    = ".unsworn/go-worker"
 protocol   = "binary"
 workers    = 2
@@ -145,7 +145,7 @@ workers    = 2
 | Tier | Transport | Encoding | SDK required | Purpose |
 |---|---|---|---|---|
 | 1 | stdin/stdout | JSON lines, optional raw body bytes | No | Universal: any language, including future ones |
-| 2 | Unix socket (named pipe on Windows) | Length-prefixed binary frames | Yes | Speed: multiplexing, zero-copy bodies, streaming |
+| 2 | Unix socket | Length-prefixed binary frames | Yes | Speed: multiplexing, zero-copy bodies, streaming |
 
 Both tiers carry the **same message model**, so the router has one dispatch
 pipeline with two codecs. Plain HTTP services are covered by the built-in
@@ -194,10 +194,12 @@ per-target capability table.
 | Path | Role |
 |---|---|
 | `crates/unsworn-core` | Pure core: config, route sources, matching, policies, validation, auth checks. No I/O, no tokio. |
-| `crates/unsworn-proto` | The message model and both encodings, shared with a future Rust SDK. |
+| `crates/unsworn-proto` | The message model and both encodings, shared by the server and the Rust SDK. |
 | `crates/unsworn` | The binary: HTTP ingress (hyper), worker pools, proxying, static files, compression, CLI. |
 | `sdk/js` | JS/TS SDK for Bun, Node and Deno. |
 | `sdk/python` | Python SDK (asyncio). |
+| `sdk/go` | Go SDK, including an `http.Handler` adapter. |
+| `sdk/rust` | Rust SDK (`unsworn-sdk`, Tokio). |
 | `unsworn-wasm` | Planned (v2): core bindings for edge and serverless hosts. |
 
 ## CLI
@@ -228,6 +230,5 @@ per-target capability table.
 
 ## Open questions
 
-- Windows support for Tier 2: named pipes, or TCP on localhost?
 - Request body streaming to workers, for large uploads.
 - A shared store (Redis first) for rate limits and caches across instances.

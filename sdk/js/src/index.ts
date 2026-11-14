@@ -1,6 +1,6 @@
 // Types for writing Unsworn handlers in JavaScript or TypeScript.
 //
-//   import type { Handler } from "@unsworn/js";
+//   import type { Handler } from "@unswornjs/js";
 //
 //   export const getUser: Handler<{ params: { id: number } }> = async (req, ctx) => {
 //     return { json: await db.users.find(req.params.id) };

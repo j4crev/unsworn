@@ -14,7 +14,7 @@ suits that endpoint. The same handlers can also be offered to AI agents as
 MCP tools.
 
 > **Status:** v1 in progress. The server, worker pools, both protocol tiers,
-> the CLI and the JS/TS and Python SDKs work and are tested; there's no
+> the CLI and the JS/TS, Python, Go and Rust SDKs work and are tested; there's no
 > tagged release yet. See [what's in v1](#whats-in-v1).
 
 ## Why Unsworn
@@ -129,7 +129,7 @@ rate_limit = { requests = 100, per = "1m", key = "auth.sub" }
 ```toml
 [runtimes.ts]
 extensions = [".ts"]
-command    = "bun run node_modules/@unsworn/js/src/worker.ts"
+command    = "bun run node_modules/@unswornjs/js/src/worker.ts"
 protocol   = "binary"
 
 [[route]]
@@ -143,7 +143,7 @@ handler = "src/users.ts#getUser"
 
 ```ts
 // src/users.ts
-import type { Handler } from "@unsworn/js";
+import type { Handler } from "@unswornjs/js";
 
 export const getUser = (async (req, ctx) => {
   // req.params.id is already validated as an integer >= 1,
@@ -214,7 +214,8 @@ Details: [architecture](docs/architecture.md), [config](docs/config.md),
 
 ## Getting started
 
-There's no release yet, so build from source (Rust 1.88 or newer):
+Unsworn runs on Linux (x86_64 and arm64). There's no release yet, so build from
+source (Rust 1.88 or newer):
 
 ```sh
 cargo install --git https://github.com/j4crev/unsworn unsworn
@@ -238,8 +239,8 @@ unsworn dev         # serves it, reloads on changes, verifies handler names
 | `unsworn conformance` | Test a runtime's workers against the protocol |
 | `unsworn schema` | Print the config's JSON Schema (also at [`schema/unsworn.schema.json`](schema/unsworn.schema.json)) |
 
-Handler SDKs live in [`sdk/js`](sdk/js) (Bun, Node, Deno) and
-[`sdk/python`](sdk/python). [`examples/`](examples) has a project that
+Handler SDKs live in [`sdk/js`](sdk/js) (Bun, Node, Deno),
+[`sdk/python`](sdk/python), [`sdk/go`](sdk/go) and [`sdk/rust`](sdk/rust). [`examples/`](examples) has a project that
 uses both, behind a catch-all.
 
 ## What's in v1
@@ -254,7 +255,7 @@ uses both, behind a catch-all.
 | Respond, redirect, static files, reverse proxy (WebSockets, SSE, sticky upstreams), handlers | Done |
 | Worker pools: Tier 1 and Tier 2, build steps, verify, cancel, restarts | Done |
 | HTTP/1.1 and HTTP/2, TLS, compression, graceful shutdown, reloads | Done |
-| JS/TS and Python SDKs, conformance suite | Done |
+| JS/TS, Python, Go and Rust SDKs, conformance suite | Done |
 | Install script, Docker image, release workflow | Written; runs on the first tagged release |
 | Shared stores (Redis), automatic TLS certificates, HTTP/3, OpenTelemetry | Later |
 | Typed request models for handlers (`unsworn gen`) | Later |

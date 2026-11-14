@@ -1,4 +1,4 @@
-# @unsworn/js
+# @unswornjs/js
 
 Write [Unsworn](https://github.com/j4crev/unsworn) handlers in JavaScript or
 TypeScript. One worker runs on Bun, Node (22.18+, which runs TypeScript
@@ -6,7 +6,7 @@ directly) and Deno.
 
 ```ts
 // src/users.ts
-import type { Handler } from "@unsworn/js";
+import type { Handler } from "@unswornjs/js";
 
 export const getUser: Handler<{ params: { id: number } }> = async (req, ctx) => {
   // req.params.id is already validated and converted by Unsworn,
@@ -19,7 +19,7 @@ export const getUser: Handler<{ params: { id: number } }> = async (req, ctx) => 
 # unsworn.toml
 [runtimes.ts]
 extensions = [".ts", ".js"]
-command = "bun run node_modules/@unsworn/js/src/worker.ts"
+command = "bun run node_modules/@unswornjs/js/src/worker.ts"
 protocol = "binary"
 
 [[route]]

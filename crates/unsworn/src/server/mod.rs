@@ -277,18 +277,11 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
 
 async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
-    #[cfg(unix)]
-    {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("signal handler");
-        tokio::select! {
-            _ = ctrl_c => {}
-            _ = term.recv() => {}
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = ctrl_c.await;
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("signal handler");
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = term.recv() => {}
     }
 }
 
@@ -331,7 +324,6 @@ async fn reload(shared: &Arc<Shared>, config: &str) {
 }
 
 fn spawn_reload_on_hup(shared: Arc<Shared>, config: String) {
-    #[cfg(unix)]
     tokio::spawn(async move {
         let Ok(mut hup) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
         else {
@@ -342,8 +334,6 @@ fn spawn_reload_on_hup(shared: Arc<Shared>, config: String) {
             reload(&shared, &config).await;
         }
     });
-    #[cfg(not(unix))]
-    let _ = (shared, config);
 }
 
 /// Dev mode: reload when project files change.

@@ -39,7 +39,7 @@ tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.7.1", features = ["fs"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
-unsworn-core = { path = "../unsworn-core" }
+unsworn-core = { version = "0.1.0", path = "../unsworn-core" }
 unsworn-proto = { version = "0.1.0", path = "../unsworn-proto" }
 
 [lints]

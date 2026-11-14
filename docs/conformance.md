@@ -21,6 +21,8 @@ Implementations in this repository:
 |---|---|
 | JS/TS SDK (Bun, Node, Deno) | [`sdk/js/conformance/handlers.ts`](../sdk/js/conformance/handlers.ts) |
 | Python SDK | [`sdk/python/conformance/handlers.py`](../sdk/python/conformance/handlers.py) |
+| Go SDK | [`sdk/go/conformance/handlers.go`](../sdk/go/conformance/handlers.go) |
+| Rust SDK | [`sdk/rust/examples/conformance.rs`](../sdk/rust/examples/conformance.rs) |
 | Python, no SDK (Tier 1 by hand) | [`examples/raw-python/worker.py`](../examples/raw-python/worker.py) |
 
 ## The handlers

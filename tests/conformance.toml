@@ -33,3 +33,27 @@ env = { PYTHONPATH = "sdk/python" }
 [runtimes.raw-python]
 extensions = [".raw"]
 command = "python3 -u examples/raw-python/worker.py"
+
+[runtimes.go-binary]
+extensions = [".go"]
+build = "cd sdk/go && go build -o ../../target/conformance/go-worker ./conformance"
+command = "target/conformance/go-worker"
+protocol = "binary"
+
+[runtimes.go-jsonl]
+extensions = [".golang"]
+build = "cd sdk/go && go build -o ../../target/conformance/go-worker ./conformance"
+command = "target/conformance/go-worker"
+
+[runtimes.rust-binary]
+extensions = [".rs"]
+build = "cargo build --quiet -p unsworn-sdk --example conformance"
+command = "target/debug/examples/conformance"
+protocol = "binary"
+startup_timeout = "300s"
+
+[runtimes.rust-jsonl]
+extensions = [".rust"]
+build = "cargo build --quiet -p unsworn-sdk --example conformance"
+command = "target/debug/examples/conformance"
+startup_timeout = "300s"

@@ -88,7 +88,7 @@ key  = "certs/privkey.pem"
 ```toml
 [runtimes.ts]
 extensions      = [".ts", ".js"]
-command         = "bun run node_modules/@unsworn/js/src/worker.ts"
+command         = "bun run node_modules/@unswornjs/js/src/worker.ts"
 protocol        = "binary"        # "jsonl" (Tier 1, the default) | "binary" (Tier 2)
 workers         = 4               # default: the number of CPU cores, up to 4
 eager           = false           # start workers at boot instead of on first request
@@ -97,7 +97,7 @@ env             = { NODE_ENV = "production" }
 
 [runtimes.go]
 extensions = [".go"]
-build      = "go build -o .unsworn/go-worker ./routes/..."
+build      = "go build -o .unsworn/go-worker ./routes"
 command    = ".unsworn/go-worker"
 protocol   = "binary"
 workers    = 2
@@ -214,7 +214,10 @@ The whole reference is passed to the worker unchanged (see
 
 - the TS SDK loads the file and calls that export, or the default export
   when there's no `#name`
-- the Go SDK looks the name up in its handler registry
+- the Go SDK looks the name up among the functions it was given, and checks
+  that it's defined in that file
+- the Rust SDK looks the name up among the functions passed to
+  `handlers![...]`
 - a hand-written Tier 1 worker can simply `switch` on the string
 
 Because Unsworn never needs to understand modules, exports or packages in any
@@ -459,6 +462,9 @@ a single flat folder and any mix of the two:
   Tier 1 languages with no module system to export from. The file's handler
   reference has no `#name`.
 - **The extension picks the runtime,** using `[runtimes.*].extensions`.
+- **Go** packages are directories and can't have brackets in their import
+  paths, so Go route files use the flat layout in one folder. See the
+  [Go SDK](../sdk/go/README.md#route-files).
 - **Two files for the same method and path** (such as `get.ts` and `get.go`,
   or a nested and a flat file for the same route) is an error from
   `unsworn check`.
@@ -561,7 +567,8 @@ day one.
 
 The handler receives the original path. Language SDKs can make this
 convenient by accepting a framework's app directly, for example a TS default
-export with a `fetch` method or a Go `http.Handler`. An app that already runs
+export with a `fetch` method, or a Go `http.Handler` through
+`unsworn.HTTPHandler`. An app that already runs
 as its own HTTP server can use the `proxy` action instead.
 
 ### Policies for routes from any source

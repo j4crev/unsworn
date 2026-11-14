@@ -19,10 +19,6 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -35,20 +31,20 @@ jobs:
       - name: Build
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --locked -p unsworn --target ${{ matrix.target }}
+            cross build --profile dist --locked -p unsworn --target ${{ matrix.target }}
           else
-            cargo build --release --locked -p unsworn --target ${{ matrix.target }}
+            cargo build --profile dist --locked -p unsworn --target ${{ matrix.target }}
           fi
       - name: Package
         run: |
-          cd target/${{ matrix.target }}/release
+          cd target/${{ matrix.target }}/dist
           tar -czf unsworn-${{ matrix.target }}.tar.gz unsworn
-          shasum -a 256 unsworn-${{ matrix.target }}.tar.gz > unsworn-${{ matrix.target }}.tar.gz.sha256
+          sha256sum unsworn-${{ matrix.target }}.tar.gz > unsworn-${{ matrix.target }}.tar.gz.sha256
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            target/${{ matrix.target }}/release/unsworn-${{ matrix.target }}.tar.gz
-            target/${{ matrix.target }}/release/unsworn-${{ matrix.target }}.tar.gz.sha256
+            target/${{ matrix.target }}/dist/unsworn-${{ matrix.target }}.tar.gz
+            target/${{ matrix.target }}/dist/unsworn-${{ matrix.target }}.tar.gz.sha256
 
   image:
     runs-on: ubuntu-latest

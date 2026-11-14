@@ -1,6 +1,9 @@
 //! The `unsworn` binary: HTTP ingress, worker supervision and the CLI,
 //! wrapped around `unsworn-core`. See `docs/architecture.md`.
 
+#[cfg(not(target_os = "linux"))]
+compile_error!("the unsworn server runs on Linux only");
+
 mod commands;
 mod conformance;
 mod load;
