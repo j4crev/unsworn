@@ -169,8 +169,17 @@ Unsworn supports remote MCP servers at three levels, described in
   host. A tool call becomes a normal `request` to a worker.
 - **v3:** routes offered as tools, using each route's existing contract.
 
-By default the MCP endpoint runs without sessions, so it needs no shared
-state and works on edge and serverless targets too.
+Unsworn implements MCP 2026-07-28, which is stateless: no sessions and no
+handshake, with every request carrying its own protocol version. The
+endpoint needs no shared state, so it works on edge and serverless targets
+too.
+
+In the core, `[mcp]` compiles to a `POST`-only route for the endpoint and
+one hidden route per tool. Tool routes are never matched by path. They
+carry the tool's handler, its input and output schemas, and its policies
+merged as `[defaults]`, prefix entries for the endpoint path, `[mcp]`, then
+the tool's own. That lets tools reuse the route machinery: per-route rate
+limit buckets, validation, `before` handlers and `unsworn routes --policies`.
 
 ## Deployment targets
 

@@ -39,9 +39,10 @@ code matter most. Unsworn supports remote MCP servers in three steps:
 - **v1: In front of the MCP server you already have.** OAuth token checks
   with the metadata MCP clients expect, origin checks, rate limits and audit
   logs, with no auth code in the server.
-- **v2: Tools as plain functions.** Unsworn speaks MCP itself. Each tool is
-  a handler in any language, with no MCP SDK, its arguments validated before
-  it runs, and its own scopes and rate limits.
+- **v2: Tools as plain functions.** Unsworn speaks MCP itself (protocol
+  version 2026-07-28, which needs no sessions). Each tool is a handler in
+  any language, with no MCP SDK, its arguments validated before it runs,
+  and its own scopes and rate limits.
 - **v3: Your API, also as tools.** Mark a route as a tool, and one handler
   with one set of rules serves both your REST clients and AI agents.
 
