@@ -45,3 +45,20 @@ dict with `auth` (verified claims) and anything `before` handlers added.
 
 Sync handlers run in a thread pool, so they don't block other requests.
 `print()` output goes to stderr, which Unsworn collects into its logs.
+
+## Logging
+
+The worker sends records from Python's `logging` module to Unsworn, tagged
+with the request being handled. `extra` values are kept as fields:
+
+```python
+import logging
+
+log = logging.getLogger(__name__)
+
+def charge(req, ctx):
+    log.info("charged card", extra={"amount": 1200})
+```
+
+The worker sets the root logger's level from Unsworn's, so there's nothing to
+configure.

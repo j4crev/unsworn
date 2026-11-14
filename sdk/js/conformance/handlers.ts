@@ -1,6 +1,6 @@
 // Conformance handlers for the JS/TS SDK. See docs/conformance.md.
 
-import { type Before, type Handler, next } from "../src/index.ts";
+import { type Before, type Handler, log, next } from "../src/index.ts";
 
 export const echo: Handler = (req, ctx) => ({
   json: {
@@ -48,3 +48,10 @@ export const noisy: Handler = () => {
   console.log("this goes to stderr, not the protocol stream");
   return { text: "ok" };
 };
+
+export const log_: Handler = async () => {
+  await Promise.resolve(); // the request stays attached across awaits
+  log.info("conformance log", { n: 1 });
+  return { status: 200 };
+};
+export { log_ as log };

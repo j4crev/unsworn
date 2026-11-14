@@ -67,13 +67,13 @@ pub async fn serve(handlers: Handlers) -> io::Result<()> {
 }
 
 #[derive(Clone)]
-struct Out {
+pub(crate) struct Out {
     tx: mpsc::UnboundedSender<Vec<u8>>,
     framed: bool,
 }
 
 impl Out {
-    fn send(&self, frame: Frame) {
+    pub(crate) fn send(&self, frame: Frame) {
         let mut buf = Vec::new();
         let encoded = if self.framed {
             framed::encode(&frame, &mut buf)
@@ -128,6 +128,7 @@ where
         verify: true,
         sdk: Some(format!("unsworn-rust/{}", crate::VERSION)),
     })));
+    crate::logging::install(&out);
 
     let handlers = Arc::new(handlers);
     let in_flight: InFlight = Arc::default();
@@ -184,6 +185,7 @@ where
             _ => {}
         }
     }
+    crate::logging::uninstall();
     drop(out);
     let _ = writer.await;
     Ok(())
@@ -223,7 +225,8 @@ fn start(
     // Holding the lock while spawning means the task can't finish and
     // remove itself before it's been inserted.
     let mut map = in_flight.lock().unwrap();
-    let task = tokio::spawn(async move {
+    let request_id = id.clone();
+    let task = tokio::spawn(crate::logging::REQUEST_ID.scope(request_id, async move {
         let id = task_id;
         let result = match handlers.resolve(&req.handler) {
             Ok(handler) => AssertUnwindSafe(handler(req)).catch_unwind().await,
@@ -245,7 +248,7 @@ fn start(
             }
         }
         registry.lock().unwrap().remove(&id);
-    });
+    }));
     map.insert(id, (task.abort_handle(), cancel));
 }
 

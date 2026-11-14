@@ -101,6 +101,19 @@ anything before handlers added), `JSON`, `Text`, `Body`, `Handler` and
 
 Each request runs in its own goroutine.
 
+## Logging
+
+The worker makes `slog`'s default logger send records to Unsworn, unless the
+program has already set its own. Pass the request's context to tag a record
+with the request:
+
+```go
+slog.InfoContext(req.Context(), "charged card", "amount", 1200)
+```
+
+`log.Printf` output goes through `slog` too, at the info level. To build your
+own logger, use `slog.New(unsworn.LogHandler())`.
+
 ## Wrapping an existing app
 
 `unsworn.HTTPHandler` turns any `http.Handler` (`http.ServeMux`, chi, gin,

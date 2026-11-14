@@ -6,7 +6,7 @@ use unsworn_sdk::{Error, Reply, Request, Result, handlers, json};
 
 fn main() {
     unsworn_sdk::run(handlers![
-        echo, text, binary, status, stream, fail, slow, crash, allow, deny, noisy
+        echo, text, binary, status, stream, fail, slow, crash, allow, deny, noisy, log
     ]);
 }
 
@@ -65,4 +65,9 @@ async fn deny(_: Request) -> Result {
 async fn noisy(_: Request) -> Result {
     println!("this goes to stderr, not the protocol stream");
     Ok(Reply::text("ok"))
+}
+
+async fn log(_: Request) -> Result {
+    tracing::info!(n = 1, "conformance log");
+    Ok(Reply::status(200))
 }

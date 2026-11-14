@@ -41,6 +41,7 @@ pub async fn check(
                 dev: true,
                 build: true,
                 socket_dir: sockets.path().to_path_buf(),
+                log_tap: None,
             },
         );
         for (runtime, missing, err) in pools.start_all().await {

@@ -693,7 +693,10 @@ fn run_befores<'a>(
                 ));
             };
             let request = for_handler(template, before, Phase::Before, &context);
-            match pool.call(request, raw_body.clone(), deadline).await {
+            match pool
+                .call(request, raw_body.clone(), deadline, ctx.request_id.clone())
+                .await
+            {
                 Ok(Reply::Continue(more)) => {
                     for (k, v) in more {
                         if k != "auth" {
@@ -817,7 +820,9 @@ fn run_action<'a>(
                     return problem(StatusCode::INTERNAL_SERVER_ERROR, "runtime not found");
                 };
                 let request = for_handler(&template, h, Phase::Handle, &context);
-                let result = pool.call(request, raw_body, deadline).await;
+                let result = pool
+                    .call(request, raw_body, deadline, ctx.request_id.clone())
+                    .await;
                 match result {
                     Ok(Reply::Response { response, body }) => {
                         let mode = ctx.generation.project.server.response_validation;

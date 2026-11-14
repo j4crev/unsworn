@@ -1,6 +1,7 @@
 """Conformance handlers for the Python SDK. See docs/conformance.md."""
 
 import asyncio
+import logging
 import os
 
 from unsworn import body, json, next
@@ -60,3 +61,8 @@ def deny(req, ctx):
 def noisy(req, ctx):
     print("this goes to stderr, not the protocol stream")
     return text_reply("ok")
+
+
+def log(req, ctx):
+    logging.getLogger().info("conformance log", extra={"n": 1})
+    return {"status": 200}

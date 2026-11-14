@@ -37,6 +37,7 @@ pub enum Message {
     Error(ErrorMessage),
     Verify(Verify),
     Verified(Verified),
+    Log(Log),
     /// A message type this version doesn't know. Receivers ignore it.
     #[serde(other)]
     Unknown,
@@ -55,6 +56,7 @@ impl Message {
             Message::Error(m) => m.id.as_deref(),
             Message::Verify(m) => Some(&m.id),
             Message::Verified(m) => Some(&m.id),
+            Message::Log(m) => m.id.as_deref(),
             Message::Ready(_) | Message::Unknown => None,
         }
     }
@@ -247,6 +249,55 @@ pub struct Verified {
 pub struct MissingHandler {
     pub handler: String,
     pub reason: String,
+}
+
+/// A log record from a worker. With `id`, it belongs to that request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Log {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub level: LogLevel,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub fields: Map<String, Value>,
+}
+
+/// A log level. Parsing is lenient: case doesn't matter, common aliases
+/// such as `warning` and `fatal` are accepted, and anything unknown is
+/// `info`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogLevel {
+    Error,
+    Warn,
+    #[default]
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    /// Parses a level name, or returns `None` if it isn't one.
+    pub fn parse(s: &str) -> Option<LogLevel> {
+        Some(match s.to_ascii_lowercase().as_str() {
+            "error" | "err" | "fatal" | "critical" | "crit" | "panic" | "emerg" | "alert" => {
+                LogLevel::Error
+            }
+            "warn" | "warning" => LogLevel::Warn,
+            "info" | "information" | "notice" => LogLevel::Info,
+            "debug" => LogLevel::Debug,
+            "trace" => LogLevel::Trace,
+            _ => return None,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for LogLevel {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(LogLevel::parse(&s).unwrap_or_default())
+    }
 }
 
 fn is_false(b: &bool) -> bool {
@@ -584,7 +635,7 @@ mod tests {
 
     #[test]
     fn unknown_message_types_are_tolerated() {
-        let msg: Message = serde_json::from_str(r#"{"type":"log","level":"info"}"#).unwrap();
+        let msg: Message = serde_json::from_str(r#"{"type":"telemetry","level":"info"}"#).unwrap();
         assert_eq!(msg, Message::Unknown);
     }
 
@@ -667,5 +718,28 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn log_levels_parse_leniently() {
+        let log: Message =
+            serde_json::from_str(r#"{"type":"log","level":"WARNING","message":"hi","id":"r-1"}"#)
+                .unwrap();
+        let Message::Log(log) = log else {
+            panic!("expected a log message")
+        };
+        assert_eq!(log.level, LogLevel::Warn);
+        assert_eq!(log.id.as_deref(), Some("r-1"));
+        let log: Message =
+            serde_json::from_str(r#"{"type":"log","level":"loud","message":"hi"}"#).unwrap();
+        assert!(matches!(
+            log,
+            Message::Log(Log {
+                level: LogLevel::Info,
+                ..
+            })
+        ));
+        assert_eq!(LogLevel::parse("fatal"), Some(LogLevel::Error));
+        assert_eq!(LogLevel::parse("verbose"), None);
     }
 }

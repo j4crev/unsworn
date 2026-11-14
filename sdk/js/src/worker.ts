@@ -9,6 +9,7 @@
 //
 // Works on Bun, Node (22.18+, which runs TypeScript directly) and Deno.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { connect } from "node:net";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -27,6 +28,8 @@ const root = process.env.UNSWORN_ROOT ?? process.cwd();
 const transport = process.env.UNSWORN_TRANSPORT ?? "stdio";
 const maxInFlight = Number(process.env.UNSWORN_MAX_IN_FLIGHT ?? 64);
 const dev = process.env.UNSWORN_DEV === "1";
+// Set by Unsworn versions that accept `log` messages. Without it, logs go to stderr.
+const logLevel = process.env.UNSWORN_LOG_LEVEL;
 
 type Write = (bytes: Uint8Array) => void;
 
@@ -36,6 +39,49 @@ let write: Write;
 function send(message: Outgoing, body?: Uint8Array) {
   write(codec.encode(message, body));
 }
+
+// ---------------------------------------------------------------------------
+// Logging
+
+type Level = "error" | "warn" | "info" | "debug" | "trace";
+const LEVELS: Level[] = ["error", "warn", "info", "debug", "trace"];
+const maxLevel = logLevel === undefined ? LEVELS.length : LEVELS.indexOf(logLevel as Level);
+const currentId = new AsyncLocalStorage<string>();
+
+function plain(value: unknown): unknown {
+  if (value instanceof Error) return value.stack ?? value.message;
+  if (typeof value === "bigint") return value.toString();
+  return value;
+}
+
+function sendLog(id: string | undefined, level: Level, message: string, fields?: Record<string, unknown>) {
+  if (LEVELS.indexOf(level) > maxLevel) return;
+  if (logLevel === undefined) {
+    console.error(`[${level}] ${message}`, ...(fields ? [fields] : []));
+    return;
+  }
+  const out: Outgoing = { type: "log", level, message: String(message) };
+  if (id) out.id = id;
+  if (fields && Object.keys(fields).length) {
+    try {
+      out.fields = JSON.parse(JSON.stringify(fields, (_k, v) => plain(v)));
+    } catch {
+      out.fields = { fields: String(fields) };
+    }
+  }
+  send(out);
+}
+
+function logger(id: () => string | undefined) {
+  const at =
+    (level: Level) =>
+    (message: string, fields?: Record<string, unknown>) =>
+      sendLog(id(), level, message, fields);
+  return { error: at("error"), warn: at("warn"), info: at("info"), debug: at("debug"), trace: at("trace") };
+}
+
+// The `log` export in index.ts finds this, so it works from any module.
+(globalThis as Record<symbol, unknown>)[Symbol.for("unsworn.log")] = logger(() => currentId.getStore());
 
 // ---------------------------------------------------------------------------
 // Handler loading
@@ -213,8 +259,9 @@ async function handle(msg: RequestMessage, body: Uint8Array | undefined) {
       signal: controller.signal,
       handler: msg.handler,
       phase: msg.phase ?? "handle",
+      log: logger(() => msg.id),
     };
-    const result = await fn(req, msg.context ?? {});
+    const result = await currentId.run(msg.id, () => fn(req, msg.context ?? {}));
     await reply(msg.id, result, controller.signal);
   } catch (err) {
     if (!controller.signal.aborted) {

@@ -74,5 +74,8 @@ while True:
     elif name == "noisy":
         print("not a protocol message", flush=True)
         reply(rid, text="ok")
+    elif name == "log":
+        send({"type": "log", "id": rid, "level": "info", "message": "conformance log", "fields": {"n": 1}})
+        reply(rid, 200)
     else:
         send({"type": "error", "id": rid, "message": f"unknown handler {name}"})
