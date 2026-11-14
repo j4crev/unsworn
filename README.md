@@ -13,10 +13,6 @@ needs real logic goes to a **handler**, a plain function in whatever language
 suits that endpoint. The same handlers can also be offered to AI agents as
 MCP tools.
 
-> **Status:** v1 in progress. The server, worker pools, both protocol tiers,
-> the CLI and the JS/TS, Python, Go and Rust SDKs work and are tested; there's no
-> tagged release yet. See [what's in v1](#whats-in-v1).
-
 ## Why Unsworn
 
 ### Your API's rules live outside your code
@@ -34,17 +30,20 @@ any of that.
 
 AI agents reach your systems through MCP servers. Every caller of an MCP
 server is a model acting for someone, so that's where rules outside your
-code matter most. Unsworn supports remote MCP servers in three steps:
+code matter most. Unsworn supports remote MCP servers at three levels:
 
-- **v1: In front of the MCP server you already have.** OAuth token checks
-  with the metadata MCP clients expect, origin checks, rate limits and audit
-  logs, with no auth code in the server.
-- **v2: Tools as plain functions.** Unsworn speaks MCP itself (protocol
+- **In front of the MCP server you already have.** OAuth token checks with
+  the metadata MCP clients expect, origin checks, rate limits and audit
+  logs, with no auth code in the server. Per-tool scopes and rate limits
+  work for it too.
+- **Tools as plain functions.** Unsworn speaks MCP itself (protocol
   version 2026-07-28, which needs no sessions). Each tool is a handler in
   any language, with no MCP SDK, its arguments validated before it runs,
-  and its own scopes and rate limits.
-- **v3: Your API, also as tools.** Mark a route as a tool, and one handler
-  with one set of rules serves both your REST clients and AI agents.
+  and its own scopes and rate limits. Callers only see the tools their
+  token allows.
+- **Your API, also as tools.** Mark a route, or operations in your OpenAPI
+  spec, as tools. One handler with one set of rules serves both your REST
+  clients and AI agents.
 
 ```toml
 [[mcp.tool]]
@@ -54,6 +53,12 @@ input       = "schemas/invoice.json"
 handler     = "src/billing.ts#createInvoice"
 auth        = { scheme = "oauth", scopes = ["billing:write"] }
 rate_limit  = { requests = 10, per = "1m", key = "auth.sub" }
+
+[[route]]
+path    = "/users/{id}"
+method  = "GET"
+handler = "src/users.ts#getUser"
+mcp     = { tool = "get_user", description = "Look up a user by id" }
 ```
 
 See [`docs/mcp.md`](docs/mcp.md).
@@ -182,7 +187,7 @@ All of this is configured in `unsworn.toml`, with no code:
 
 | Area | Features |
 |---|---|
-| AI agents (MCP) | OAuth protected-resource metadata, origin checks and streaming pass-through for MCP servers (v1); MCP tools as handlers and per-tool policies (v2); routes as tools (v3) |
+| AI agents (MCP) | OAuth protected-resource metadata, origin checks and streaming pass-through for existing MCP servers, with per-tool policies; MCP tools as handlers, with tool lists filtered by scope; routes and OpenAPI operations as tools |
 | Responses | static JSON or text, redirects, static files with SPA fallback, health checks |
 | Forwarding | reverse proxy, load balancing, catch-all to an existing app |
 | Security | JWT/JWKS, API keys, CORS, IP allow and deny lists, body size limits |
@@ -216,15 +221,24 @@ Details: [architecture](docs/architecture.md), [config](docs/config.md),
 
 ## Getting started
 
-Unsworn runs on Linux (x86_64 and arm64). There's no release yet, so build from
-source (Rust 1.88 or newer):
+Unsworn runs on Linux (x86_64 and arm64). Install the latest release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/j4crev/unsworn/main/install.sh | sh
+```
+
+For containers, extend the `ghcr.io/j4crev/unsworn` base image with the
+runtimes your handlers need. With Rust 1.88 or newer, `cargo install unsworn`
+works too.
+
+The latest release is [v0.1.0](https://github.com/j4crev/unsworn/releases/tag/v0.1.0).
+Newer features described here are on `main` until the next release,
+including MCP tools as handlers, routes as tools, the Redis store and
+streamed request bodies. To use them now, build from `main`:
 
 ```sh
 cargo install --git https://github.com/j4crev/unsworn unsworn
 ```
-
-Once releases exist: `curl -fsSL https://raw.githubusercontent.com/j4crev/unsworn/main/install.sh | sh`,
-or the `ghcr.io/j4crev/unsworn` base image for containers.
 
 ```sh
 unsworn init        # writes a starter unsworn.toml
@@ -236,16 +250,28 @@ unsworn dev         # serves it, reloads on changes, verifies handler names
 | `unsworn serve` | Run the router (`--listen`, `--log-format json`, `--no-build` for prebuilt workers); `SIGHUP` reloads |
 | `unsworn dev` | Serve with file watching, every runtime started up front, and detailed errors |
 | `unsworn check` | Validate config, routes and handler files; `--deep` asks workers whether every handler exists; `--target <t>` checks a deployment target |
-| `unsworn routes` | Print the route table and each route's source; `--policies` shows merged policies |
+| `unsworn routes` | Print the route table and each route's source, including MCP tools; `--policies` shows merged policies and each tool's arguments |
 | `unsworn openapi` | Print the OpenAPI document for what Unsworn serves |
 | `unsworn conformance` | Test a runtime's workers against the protocol |
 | `unsworn schema` | Print the config's JSON Schema (also at [`schema/unsworn.schema.json`](schema/unsworn.schema.json)) |
 
-Handler SDKs live in [`sdk/js`](sdk/js) (Bun, Node, Deno),
-[`sdk/python`](sdk/python), [`sdk/go`](sdk/go) and [`sdk/rust`](sdk/rust). [`examples/`](examples) has a project that
-uses both, behind a catch-all.
+Handler SDKs:
 
-## What's in v1
+| Language | Package | Source |
+|---|---|---|
+| JavaScript and TypeScript (Bun, Node, Deno) | `@unswornjs/sdk` on npm | [`sdk/js`](sdk/js) |
+| Python | `unsworn` on PyPI | [`sdk/python`](sdk/python) |
+| Go | `github.com/j4crev/unsworn/sdk/go` | [`sdk/go`](sdk/go) |
+| Rust | `unsworn-sdk` on crates.io | [`sdk/rust`](sdk/rust) |
+
+[`examples/polyglot`](examples/polyglot) is a TypeScript and Python API in
+front of an existing app, and [`examples/raw-python`](examples/raw-python)
+is a worker written without an SDK.
+
+## Status
+
+v1 (servers and containers) is available. What's in it, and what comes
+later:
 
 | Area | Status |
 |---|---|
@@ -258,7 +284,8 @@ uses both, behind a catch-all.
 | Worker pools: Tier 1 and Tier 2, build steps, verify, cancel, restarts | Done |
 | HTTP/1.1 and HTTP/2, TLS, compression, graceful shutdown, reloads | Done |
 | JS/TS, Python, Go and Rust SDKs, conformance suite | Done |
-| Install script, Docker image, release workflow | Written; runs on the first tagged release |
+| MCP: in front of existing servers, tools as handlers, routes and OpenAPI operations as tools | Done |
+| Install script, Docker image, release workflow | Done (first release: v0.1.0) |
 | Automatic TLS certificates, HTTP/3, OpenTelemetry | Later |
 | Typed request models for handlers (`unsworn gen`) | Later |
 
@@ -281,11 +308,11 @@ Unsworn is designed to run on three kinds of platforms. The router core does no
 I/O and compiles to WebAssembly, so each target hosts the same core in a
 different way. See [`docs/architecture.md`](docs/architecture.md).
 
-| Platform type | Examples | How Unsworn runs | Planned |
+| Platform type | Examples | How Unsworn runs | Version |
 |---|---|---|---|
-| **Servers and containers** | Any VPS or bare metal, Docker, Kubernetes, Fly.io, Railway, Render, Google Cloud Run, AWS ECS/Fargate, Cloudflare Containers | The `unsworn` binary plus worker processes, from an official base image | v1 |
-| **Edge isolates** | Cloudflare Workers and similar V8-isolate platforms | Core compiled to WASM inside the isolate; JS/TS and WASM handlers bundled in and called directly | v2 |
-| **Serverless functions** | Vercel Functions, AWS Lambda, Netlify Functions | `unsworn build --target <platform>` turns declarative routes into the platform's own routing config and each handler into a native function with a thin shim | v3 |
+| **Servers and containers** | Any VPS or bare metal, Docker, Kubernetes, Fly.io, Railway, Render, Google Cloud Run, AWS ECS/Fargate, Cloudflare Containers | The `unsworn` binary plus worker processes, from an official base image | v1 (available) |
+| **Edge isolates** | Cloudflare Workers and similar V8-isolate platforms | Core compiled to WASM inside the isolate; JS/TS and WASM handlers bundled in and called directly | v2 (planned) |
+| **Serverless functions** | Vercel Functions, AWS Lambda, Netlify Functions | `unsworn build --target <platform>` turns declarative routes into the platform's own routing config and each handler into a native function with a thin shim | v3 (planned) |
 
 Some features need shared state on stateless platforms, such as rate limits
 and caches. `unsworn check --target <platform>` reports what a config needs on
@@ -293,11 +320,16 @@ that target before you deploy.
 
 ## Roadmap
 
-| Version | Runs on | MCP |
+| Version | Runs on | Status |
 |---|---|---|
-| v1 | Servers and containers | In front of existing MCP servers |
-| v2 | Adds edge isolates | Tools as handlers, and per-tool policies for proxied MCP servers |
-| v3 | Adds serverless functions | Routes and OpenAPI operations as tools |
+| v1 | Servers and containers | Available |
+| v2 | Adds edge isolates | Planned |
+| v3 | Adds serverless functions | Planned |
+
+MCP support was first planned across these versions too. All of it is now
+built for servers and containers. The MCP endpoint needs no shared state,
+so it's designed to come to edge isolates and serverless functions along
+with them.
 
 ## License
 

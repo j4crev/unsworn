@@ -161,13 +161,14 @@ without an SDK works only on hosts that can run processes.
 Unsworn supports remote MCP servers at three levels, described in
 [`mcp.md`](mcp.md):
 
-- **v1:** in front of an existing MCP server. This needs no MCP code in
-  Unsworn, only general features: OAuth protected-resource metadata, `Origin`
-  checks, SSE pass-through and sticky proxying.
-- **v2:** MCP tools as handlers. The MCP JSON-RPC handling lives in
+- **In front of an existing MCP server.** This needs only general
+  features: OAuth protected-resource metadata, `Origin` checks, SSE
+  pass-through and sticky proxying. Per-tool policies read each request's
+  tool name first.
+- **MCP tools as handlers.** The MCP JSON-RPC handling lives in
   `unsworn-core`, like every other request decision, so it works on every
   host. A tool call becomes a normal `request` to a worker.
-- **v3:** routes offered as tools, using each route's existing contract.
+- **Routes offered as tools,** using each route's existing contract.
 
 Unsworn implements MCP 2026-07-28, which is stateless: no sessions and no
 handshake, with every request carrying its own protocol version. The

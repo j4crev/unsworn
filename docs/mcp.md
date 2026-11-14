@@ -1,9 +1,8 @@
 # MCP servers with Unsworn
 
-> Level 1 and the shared building blocks are implemented in v1. Level 2
-> (tools as handlers, with SDK helpers, and per-tool policies for a proxied
-> MCP server) and Level 3 (routes and OpenAPI operations as tools) are
-> implemented.
+> All three levels are implemented for servers and containers. Level 1 and
+> the shared building blocks shipped in v0.1.0; levels 2 and 3 are on
+> `main` until the next release.
 
 A remote [Model Context Protocol](https://modelcontextprotocol.io) (MCP)
 server lets AI agents call tools over HTTP. Running one in production needs
@@ -11,11 +10,11 @@ most of what Unsworn already does: token checks, rate limits, input
 validation, streaming responses and logs. Unsworn supports MCP at three
 levels:
 
-| Level | What you get | Planned |
-|---|---|---|
-| [1. In front of an MCP server](#level-1-in-front-of-an-existing-mcp-server) | OAuth checks, rate limits, origin checks and logs for an MCP server built with any MCP SDK. Per-tool policies for it follow in v2 | v1 |
-| [2. MCP tools as handlers](#level-2-mcp-tools-as-handlers) | Unsworn speaks MCP itself. Each tool is a plain function in any language, with its own policies | v2 |
-| [3. Routes as tools](#level-3-routes-as-tools) | Any REST route, or OpenAPI operation, can also be an MCP tool, from the same handler | v3 |
+| Level | What you get |
+|---|---|
+| [1. In front of an MCP server](#level-1-in-front-of-an-existing-mcp-server) | OAuth checks, rate limits, origin checks and logs for an MCP server built with any MCP SDK, plus per-tool policies |
+| [2. MCP tools as handlers](#level-2-mcp-tools-as-handlers) | Unsworn speaks MCP itself. Each tool is a plain function in any language, with its own policies |
+| [3. Routes as tools](#level-3-routes-as-tools) | Any REST route, or OpenAPI operation, can also be an MCP tool, from the same handler |
 
 Unsworn only covers **remote** MCP servers (the Streamable HTTP transport).
 Local servers that a client starts and talks to over stdio don't benefit.
@@ -132,7 +131,7 @@ Servers on 2026-07-28 or later have no sessions and don't need this.
 
 ## Level 1: in front of an existing MCP server
 
-Available in **v1**. An MCP server built with any MCP SDK runs as it is, and
+An MCP server built with any MCP SDK runs as it is, and
 Unsworn sits in front of it:
 
 ```toml
@@ -151,9 +150,9 @@ At this level, Unsworn sees every MCP request as `POST /mcp`. It can't tell
 tools apart, so policies apply to the whole server. This works with MCP
 servers of any protocol version.
 
-### Per-tool policies for a proxied server (v2)
+### Per-tool policies for a proxied server
 
-Available now. Once Unsworn understands MCP (level 2), it can also apply per-tool policies
+Once Unsworn understands MCP (level 2), it can also apply per-tool policies
 to a server it only proxies. Use `[mcp]` with `proxy` instead of a `[[route]]`,
 and add `[[mcp.tool]]` entries **without a handler**. Like action-less
 `[[route]]` entries, they only add policies:
@@ -192,7 +191,7 @@ rate_limit = { requests = 10, per = "1m", key = "auth.sub" }
 
 ## Level 2: MCP tools as handlers
 
-Available now, for v2. Unsworn implements the MCP protocol itself, and each tool
+Unsworn implements the MCP protocol itself, and each tool
 is a handler:
 
 ```toml
@@ -475,7 +474,7 @@ doesn't list get only the `[mcp]` policies.
 
 ## Level 3: routes as tools
 
-Available now. Any route with a handler can also be offered as an MCP
+Any route with a handler can also be offered as an MCP
 tool:
 
 ```toml
