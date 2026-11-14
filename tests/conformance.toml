@@ -1,0 +1,59 @@
+# Runtimes for `unsworn conformance`, run from the repository root:
+#   unsworn conformance -c tests/conformance.toml --runtime bun-binary --handlers sdk/js/conformance/handlers.ts
+
+[runtimes.bun-jsonl]
+extensions = [".ts"]
+command = "bun run sdk/js/src/worker.ts"
+
+[runtimes.bun-binary]
+extensions = [".mts"]
+command = "bun run sdk/js/src/worker.ts"
+protocol = "binary"
+
+[runtimes.node-binary]
+extensions = [".cts"]
+command = "node sdk/js/src/worker.ts"
+protocol = "binary"
+
+[runtimes.deno-jsonl]
+extensions = [".js"]
+command = "deno run --allow-all sdk/js/src/worker.ts"
+
+[runtimes.python-jsonl]
+extensions = [".py"]
+command = "python3 -u -m unsworn.worker"
+env = { PYTHONPATH = "sdk/python" }
+
+[runtimes.python-binary]
+extensions = [".pyw"]
+command = "python3 -u -m unsworn.worker"
+protocol = "binary"
+env = { PYTHONPATH = "sdk/python" }
+
+[runtimes.raw-python]
+extensions = [".raw"]
+command = "python3 -u examples/raw-python/worker.py"
+
+[runtimes.go-binary]
+extensions = [".go"]
+build = "cd sdk/go && go build -o ../../target/conformance/go-worker ./conformance"
+command = "target/conformance/go-worker"
+protocol = "binary"
+
+[runtimes.go-jsonl]
+extensions = [".golang"]
+build = "cd sdk/go && go build -o ../../target/conformance/go-worker ./conformance"
+command = "target/conformance/go-worker"
+
+[runtimes.rust-binary]
+extensions = [".rs"]
+build = "cargo build --quiet -p unsworn-sdk --example conformance"
+command = "target/debug/examples/conformance"
+protocol = "binary"
+startup_timeout = "300s"
+
+[runtimes.rust-jsonl]
+extensions = [".rust"]
+build = "cargo build --quiet -p unsworn-sdk --example conformance"
+command = "target/debug/examples/conformance"
+startup_timeout = "300s"

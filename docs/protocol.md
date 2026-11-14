@@ -1,6 +1,6 @@
 # Unsworn handler protocol
 
-> Draft, 2026-11-13. Protocol version **1**. Message fields are proposals.
+> Protocol version **1**, implemented in `crates/unsworn-proto` and both SDKs.
 
 Unsworn talks to handler workers over one **message model** with two
 **encodings**:
@@ -84,6 +84,8 @@ string chosen by Unsworn that is unique per worker connection.
   - `text`: a UTF-8 text body
   - `body_len`: the number of raw body bytes that follow (see each tier)
 - `deadline_ms`: time left before Unsworn times the request out.
+- `raw_query`: the query string as sent, without the `?`. Useful for handlers
+  that wrap an existing app with its own query parsing.
 
 ### `response` (worker → Unsworn)
 
@@ -227,27 +229,38 @@ This worker never receives `body_len` messages if its routes don't accept
 raw bodies. Handling them needs reading `N` bytes from stdin's underlying
 binary buffer, which is the kind of detail an SDK takes care of.
 
-## Tier 2: binary frames over a Unix socket
+## Tier 2: length-prefixed frames over a Unix socket
 
-> Outline only. The payload encoding is an open question.
-
-- The worker connects to the socket in `UNSWORN_TRANSPORT`. One connection per
-  worker; requests are multiplexed by `id`.
-- Every frame has a fixed header followed by a payload:
+- Unsworn creates a Unix socket and passes its path in `UNSWORN_TRANSPORT`
+  as `unix:<path>`. The worker connects to it, then sends `ready`. One
+  connection per worker; requests are multiplexed by `id`.
+- stdin is closed. stdout and stderr are both collected into Unsworn's logs,
+  so stray output can't break the protocol.
+- Every message is one frame:
 
   ```
-  ┌──────────┬────────┬───────────┬──────────────┬─────────┐
-  │ len: u32 │ type:u8│ flags: u8 │ id: u64      │ payload │
-  └──────────┴────────┴───────────┴──────────────┴─────────┘
+  ┌────────────────┬───────────────┬──────────────┬─────────────────┐
+  │ frame_len: u32 │ json_len: u32 │ JSON message │ raw body bytes  │
+  └────────────────┴───────────────┴──────────────┴─────────────────┘
   ```
 
-  `len` is the payload length. `id` is numeric in Tier 2; the JSON form uses
-  its decimal string.
-- Payloads carry the same fields as the message model. Bodies are raw bytes
-  in their own frames, so they are never copied into an encoded structure.
-- Candidate payload encodings: Protocol Buffers, FlatBuffers, Cap'n Proto, or
-  a small custom encoding. The choice depends on SDK effort across languages
-  versus decode speed, and will be decided with a prototype.
+  Both lengths are big-endian. `frame_len` counts everything after itself
+  (`4 + json_len + body length`), and the message's `body_len` equals the
+  number of raw body bytes.
+- The JSON message is exactly the Tier 1 message. Only the framing differs,
+  so a Tier 1 implementation becomes Tier 2 by swapping a few dozen lines.
+
+Compared with Tier 1, Tier 2 needs no newline scanning, can't be corrupted by
+stray output, and keeps the worker's stdout free for logs. The JSON payload
+was chosen over Protocol Buffers or FlatBuffers so that an SDK needs nothing
+beyond a JSON parser. A future protocol version could negotiate a binary
+payload encoding in `ready` if benchmarks show JSON parsing matters.
+
+## Shutting down
+
+To stop a worker, Unsworn closes its input (stdin on Tier 1, the socket on
+Tier 2) after in-flight requests finish. The worker should exit when its
+input closes. Workers that don't exit within two seconds are killed.
 
 ## Versioning
 
@@ -281,7 +294,6 @@ the target language before running it.
 
 ## Open questions
 
-- Tier 2 payload encoding (see above).
 - Request body streaming to workers (`request` with `"stream": true` followed
   by `chunk` messages), in v1 or later?
 - Should workers be able to send log records through the protocol, with

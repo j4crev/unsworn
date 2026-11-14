@@ -1,6 +1,6 @@
 # Unsworn configuration
 
-> Draft, 2026-11-13. Field names and defaults are proposals.
+> Describes v1. Features marked v2 or v3 are planned, not implemented.
 
 An Unsworn project is a config file plus handlers. Routes can come from any
 mix of these [route sources](#route-sources):
@@ -32,7 +32,7 @@ src/
   errors with a path and a fix, for example:
 
   ```
-  ✗ route[3].handler: no runtime handles ".rb"
+  ✗ unsworn.toml:12 [[route]].handler: no runtime handles ".rb"
     → add [runtimes.<name>] with extensions = [".rb"], or change the handler
   ```
 
@@ -65,30 +65,39 @@ into a second programming language.
 
 ```toml
 [server]
-listen        = "0.0.0.0:8080"
-max_body      = "1MB"
-timeout       = "30s"
-trailing_slash = "redirect"       # "redirect" | "strict" | "ignore"
+listen              = "0.0.0.0:8080"
+max_body            = "1MB"          # default for every route (1024-based units)
+timeout             = "30s"          # default for every route
+trailing_slash      = "redirect"     # "redirect" | "strict" | "ignore"
+compression         = true           # br, zstd or gzip, from Accept-Encoding
+trusted_proxies     = ["10.0.0.0/8"] # trust X-Forwarded-For from these ("all" trusts any)
+admin_listen        = "127.0.0.1:9090"  # optional: /_unsworn/metrics (Prometheus)
+response_validation = "log"          # "off" | "log" | "enforce", for `response` schemas
+shutdown_timeout    = "10s"          # how long to wait for open requests on shutdown
 
 [server.tls]
 cert = "certs/fullchain.pem"
 key  = "certs/privkey.pem"
 ```
 
+`unsworn serve --listen <addr>` overrides `listen`. Every server also answers
+`/_unsworn/health` with the state of each runtime.
+
 ### `[runtimes.<name>]`
 
 ```toml
 [runtimes.ts]
-extensions    = [".ts", ".js"]
-command       = "bun run node_modules/@unsworn/bun/worker.ts"
-protocol      = "binary"          # "jsonl" (Tier 1) | "binary" (Tier 2)
-workers       = 4
-eager         = false             # start workers at boot instead of first request
-env           = { NODE_ENV = "production" }
+extensions      = [".ts", ".js"]
+command         = "bun run node_modules/@unswornjs/js/src/worker.ts"
+protocol        = "binary"        # "jsonl" (Tier 1, the default) | "binary" (Tier 2)
+workers         = 4               # default: the number of CPU cores, up to 4
+eager           = false           # start workers at boot instead of on first request
+startup_timeout = "30s"           # time allowed for `build` and `ready`
+env             = { NODE_ENV = "production" }
 
 [runtimes.go]
 extensions = [".go"]
-build      = "go build -o .unsworn/go-worker ./routes/..."
+build      = "go build -o .unsworn/go-worker ./routes"
 command    = ".unsworn/go-worker"
 protocol   = "binary"
 workers    = 2
@@ -100,23 +109,44 @@ protocol   = "jsonl"              # no SDK needed
 ```
 
 Runtime names are arbitrary. Unsworn knows nothing about any specific language.
+Commands run through `sh -c` in the project root. `build` runs once, before
+the runtime's first workers start.
 
 ### `[auth.<name>]`
 
 ```toml
 [auth.jwt]
-type     = "jwt"
-jwks_url = "https://auth.example.com/.well-known/jwks.json"
-audience = "api"
-issuer   = "https://auth.example.com/"
+type       = "jwt"
+jwks_url   = "https://auth.example.com/.well-known/jwks.json"   # or `secret`, or `public_key` (a PEM file)
+audience   = "api"                # a string or a list; checked when set
+issuer     = "https://auth.example.com/"
+algorithms = ["RS256"]            # default: HS256 for `secret`, else RS256/PS256/ES256/EdDSA
+header     = "Authorization"      # default; other headers carry the bare token
+leeway     = "30s"                # clock skew allowed for exp/nbf
 
 [auth.service]
 type   = "api_key"
-header = "X-API-Key"
-keys   = "{env.SERVICE_KEYS}"     # comma-separated
+header = "X-API-Key"              # default when neither header nor query is set
+query  = "api_key"                # optional: also accept ?api_key=
+keys   = "{env.SERVICE_KEYS}"     # a list, or a comma-separated string
 ```
 
-Verified claims are available to handlers as `ctx.auth`.
+JWKS documents are fetched on first use, refreshed every 10 minutes, and
+refetched (at most once a minute) when a token names an unknown key id.
+
+Verified claims are available to handlers as `ctx.auth`, plus `scheme`, the
+name of the scheme that matched. Routes refer to schemes by name:
+
+```toml
+auth = "jwt"                                      # one scheme
+auth = ["jwt", "service"]                         # either one
+auth = { scheme = "jwt", scopes = ["users:read"] }  # with required scopes
+auth = "none"                                     # public
+```
+
+Scopes are read from the token's `scope` (space-separated) or `scp` claim.
+A missing or invalid credential gets `401`; a valid one without the scopes
+gets `403`.
 
 A `jwt` scheme can also describe the OAuth resource it protects, with
 `[auth.<name>].protected_resource`. Unsworn then serves the OAuth
@@ -128,12 +158,20 @@ protected-resource metadata and answers missing tokens with the
 
 ```toml
 [store]
-backend = "memory"                # "memory" | "redis" | platform stores (per target)
-url     = "{env.REDIS_URL}"
+backend = "memory"
 ```
 
-`memory` is fine on a single node. Stateless targets need a shared backend
-for `rate_limit` and `cache`; `unsworn check --target <t>` reports this.
+v1 supports only `memory`, which is fine on a single node. Shared backends
+(Redis and platform stores) come with the edge and serverless targets, which
+need them for `rate_limit` and `cache`; `unsworn check --target <t>` reports
+this.
+
+### `{env.NAME}`
+
+Values in these places can include `{env.NAME}`, replaced with the
+environment variable `NAME` when the config loads: auth scheme secrets, JWKS
+URLs, issuers, audiences and API keys, proxy upstreams, `[store].url`, and
+runtime `env` values. A missing variable is an error.
 
 ## Routes
 
@@ -176,7 +214,10 @@ The whole reference is passed to the worker unchanged (see
 
 - the TS SDK loads the file and calls that export, or the default export
   when there's no `#name`
-- the Go SDK looks the name up in its handler registry
+- the Go SDK looks the name up among the functions it was given, and checks
+  that it's defined in that file
+- the Rust SDK looks the name up among the functions passed to
+  `handlers![...]`
 - a hand-written Tier 1 worker can simply `switch` on the string
 
 Because Unsworn never needs to understand modules, exports or packages in any
@@ -199,7 +240,7 @@ the language. Workers that support it answer a
 such as `#getUsr` is reported before any request reaches it:
 
 ```
-✗ route[2].handler: src/users.ts has no export "getUsr"
+✗ src/users.ts#getUsr: src/users.ts has no export "getUsr"
 ```
 
 | Command | When handler names are verified |
@@ -233,7 +274,8 @@ auth       = "jwt"                       # or ["jwt", "service"] = either one; "
                                          # or { scheme = "jwt", scopes = ["billing:write"] }
 cors       = { origins = ["https://app.example.com"], credentials = true }
 origin     = { allow = ["https://app.example.com"] }   # reject other Origin headers with 403
-rate_limit = { requests = 100, per = "1m", key = "auth.sub" }   # or "ip"
+ip         = { allow = ["10.0.0.0/8"], deny = ["10.0.0.5"] }  # IPs or CIDRs; deny wins
+rate_limit = { requests = 100, per = "1m", key = "auth.sub" }   # or "ip", "header.<name>"
 cache      = { ttl = "30s", vary = ["Authorization"] }
 timeout    = "5s"
 max_body   = "10MB"
@@ -244,6 +286,20 @@ use        = ["public_cached"]        # named policy sets, applied in order
 
 Any inherited policy except `auth` can be switched off for a route with
 `"off"`, for example `cache = "off"`. For `auth`, use `"none"`.
+
+Most keys replace what broader layers set. `before` is different: lists from
+every layer are joined, broadest first, so a folder's `_before` handler and a
+route's own `before` both run. `before = "off"` clears the inherited ones.
+
+`headers` on a route has two meanings: `{ set = {...}, remove = [...] }` is
+the response-headers policy shown here, and any other table validates request
+headers (see [Validation](#validation)).
+
+Rate limits use a token bucket per route and key, so `requests` can arrive in
+a burst and then refill evenly over `per`. A request over the limit gets
+`429` with `Retry-After`. The client IP is the connection's address, or the
+`X-Forwarded-For` address when the connection comes from one of
+`[server].trusted_proxies`.
 
 ### Applying policies to many routes
 
@@ -313,8 +369,8 @@ follows these rules wherever it is set, including in `[defaults]`:
 - **Only `GET` and `HEAD` responses are cached,** and only with status
   `200`, `203`, `204`, `301`, `404` or `410`.
 - **Responses to authenticated requests aren't cached** unless `vary`
-  includes `Authorization`, or the `key` setting puts the user in the cache
-  key (`key = "auth.sub"`). `unsworn check` warns about routes where `cache`
+  includes `Authorization` or the header an API-key scheme reads, or the
+  `key` setting puts the user in the cache key (`key = "auth.sub"`). `unsworn check` warns about routes where `cache`
   and `auth` are both set but neither is true, so the gap is visible.
 - **Handlers can always opt out** by returning `Cache-Control: no-store` or
   `private`, and a response with `Set-Cookie` is never cached.
@@ -406,6 +462,9 @@ a single flat folder and any mix of the two:
   Tier 1 languages with no module system to export from. The file's handler
   reference has no `#name`.
 - **The extension picks the runtime,** using `[runtimes.*].extensions`.
+- **Go** packages are directories and can't have brackets in their import
+  paths, so Go route files use the flat layout in one folder. See the
+  [Go SDK](../sdk/go/README.md#route-files).
 - **Two files for the same method and path** (such as `get.ts` and `get.go`,
   or a nested and a flat file for the same route) is an error from
   `unsworn check`.
@@ -508,7 +567,8 @@ day one.
 
 The handler receives the original path. Language SDKs can make this
 convenient by accepting a framework's app directly, for example a TS default
-export with a `fetch` method or a Go `http.Handler`. An app that already runs
+export with a `fetch` method, or a Go `http.Handler` through
+`unsworn.HTTPHandler`. An app that already runs
 as its own HTTP server can use the `proxy` action instead.
 
 ### Policies for routes from any source
@@ -527,8 +587,10 @@ cache  = { ttl = "30s" }
 There are two kinds of policy entries:
 
 - **Exact entries** have a path with no `{*rest}`, like the one above. They
-  must match exactly one route from some source, or `unsworn check` reports
-  it, which catches typos in paths.
+  apply to every route with that path (and method, if given). An entry that
+  matches no route is an error from `unsworn check`, which catches typos in
+  paths, unless the path is served by a catch-all route: then it applies to
+  requests for that exact path inside the catch-all.
 - **Prefix entries** have a path ending in `{*rest}`. They apply to every
   request under that prefix, whichever route serves it. This is how you add
   policies to paths inside a catch-all app:
@@ -583,8 +645,8 @@ MCP support is described in [`mcp.md`](mcp.md). In config it adds:
 
 ```
 $ unsworn check --target vercel
-✗ route[4].rate_limit: needs a shared store on this target
-  → set [store] backend = "upstash", or remove rate_limit
+✗ unsworn.toml:20 [[route]].rate_limit: needs a shared store on this target
+  → set [store] backend to a shared store, or remove rate_limit
 ✓ 12 routes OK
 ```
 
