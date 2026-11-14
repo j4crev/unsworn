@@ -2,7 +2,8 @@
 
 > Level 1 and the shared building blocks are implemented in v1. Level 2
 > (tools as handlers, with SDK helpers, and per-tool policies for a proxied
-> MCP server) is implemented. Level 3 is planned.
+> MCP server) is implemented. Level 3 is in progress: routes can be tools
+> now, and OpenAPI operations in bulk come next.
 
 A remote [Model Context Protocol](https://modelcontextprotocol.io) (MCP)
 server lets AI agents call tools over HTTP. Running one in production needs
@@ -474,36 +475,102 @@ doesn't list get only the `[mcp]` policies.
 
 ## Level 3: routes as tools
 
-Planned for **v3**. Any route with a handler can also be offered as an MCP
+Available now for routes in config and route files. OpenAPI operations in
+bulk are planned. Any route with a handler can also be offered as an MCP
 tool:
 
 ```toml
 [mcp]
 path = "/mcp"
-auth = { scheme = "oauth" }
+auth = { scheme = "oauth", scopes = ["tools:read"] }
 
 [[route]]
 path    = "/users/{id}"
 method  = "GET"
 params  = { id = { type = "integer", min = 1 } }
+query   = { verbose = { type = "boolean" } }
 auth    = "oauth"
 handler = "src/users.ts#getUser"
 mcp     = { tool = "get_user", description = "Look up a user by id" }
 ```
 
-- **The tool's input schema is built from the route's contract:** path
-  params, query params and the body schema become one arguments object.
-- **The handler doesn't change.** Unsworn maps the tool's arguments back to
-  `params`, `query` and `json`, so the handler receives the same request
-  either way and can't tell whether a person or an agent called it.
-- **The route's policies apply to the tool too.** One auth rule, one rate
-  limit and one validation schema cover both ways in.
-- Routes that stream responses or take raw binary bodies can't be tools, and
-  `unsworn check` says so.
+`mcp` takes `tool` (the name, required), `description`, `title`,
+`annotations` (as for [`[[mcp.tool]]`](#config-reference)), and `method`
+for a route that accepts several. Without `description`, an OpenAPI
+operation's description or summary is used.
 
-With an [OpenAPI source](config.md#3-openapi-spec), operations can become
-tools in bulk. Tool names come from `operationId` and descriptions from the
-operation's summary and description:
+A route from a route file or the OpenAPI spec becomes a tool through a
+policy-only `[[route]]` entry, which leaves the route itself unchanged:
+
+```toml
+[[route]]
+path   = "/health"
+method = "GET"
+mcp    = { tool = "health", description = "Check the service's health" }
+```
+
+### Arguments
+
+The tool's input schema is built from the route's contract:
+
+- Path and query parameters become top-level arguments, with the types and
+  rules declared for them. Path parameters are required; a `default` on a
+  query parameter applies as it does for REST requests.
+- A JSON body's fields sit next to them, when the body schema is a plain
+  object with `properties` and no field shares a parameter's name. Otherwise
+  the whole body is one `body` argument.
+- A route without a `body` schema gets a tool with no body. `unsworn check`
+  warns about that for `POST`, `PUT` and `PATCH` routes.
+
+`unsworn routes --policies` shows each tool's arguments and where they go,
+such as `mcp tool get_user: id (path), verbose (query)`.
+
+### What the handler sees
+
+**The handler doesn't change.** Unsworn maps the arguments back to the
+request a REST client would send: the route's method, the path with the
+parameters filled in (`/users/42`), `route` set to the pattern, and
+`params`, `query`, `raw_query` and `json` as usual. The request also has
+`context.mcp`, so a handler can tell it's a tool call when it needs to, but
+it doesn't have to. Replies map to tool results as for
+[tools as handlers](#how-results-are-mapped).
+
+### Policies
+
+- A call first gets the `[mcp]` checks for every request (see
+  [Policies](#policies)).
+- Then the **route's own policies, as a REST request to it sees them:** its
+  `auth`, its `rate_limit` and its `before` handlers, after `[mcp]`'s
+  `before` handlers. Its `timeout` applies, or `[mcp]`'s if the route sets
+  none.
+- **REST requests and tool calls share the route's rate limit.** One limit
+  covers both ways in.
+- Policies that describe HTTP requests (`origin`, `ip`, `cors`, `headers`,
+  `max_body`, `cache`) don't apply to tool calls; the MCP endpoint has its
+  own.
+- A tool call carries the credentials sent to the MCP endpoint, so the
+  route's `auth` must accept at least one scheme the `[mcp]` auth uses.
+  `unsworn check` reports a route whose auth no tool call could pass.
+
+### What can't be a tool
+
+`unsworn check` reports:
+
+- routes without a handler (`respond`, `redirect`, `static`, `proxy`)
+- routes that accept several methods, unless `mcp.method` picks one
+- routes with `stream_body`, since tool arguments arrive as one JSON object
+- routes that require a request header, which MCP clients don't send
+- routes when `[mcp]` has `proxy`, since Unsworn must be the MCP server
+- tool names already used by another tool
+
+A handler that streams its response or returns raw bytes can't be detected
+in advance. A tool call that gets one returns a tool error instead.
+
+### OpenAPI operations as tools
+
+Planned. With an [OpenAPI source](config.md#3-openapi-spec), operations
+can become tools in bulk. Tool names come from `operationId` and
+descriptions from the operation's summary and description:
 
 ```toml
 [openapi]

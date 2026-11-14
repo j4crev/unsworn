@@ -300,7 +300,7 @@ impl ToolCall<'_> {
                 }
             }
         }
-        if let Some(rule) = &route.validation.body
+        if let Some(rule) = &tool.input_rule
             && let Err(errors) = rule.check(&self.args, "arguments")
         {
             return Err(self.error(rpc::invalid_arguments(&errors)));
@@ -310,14 +310,32 @@ impl ToolCall<'_> {
             mcp["client"] = client.clone();
         }
         context.insert("mcp".into(), mcp);
-        let template = ProtoRequest {
-            route: route.path.clone(),
-            method: "POST".into(),
-            path: parts.uri.path().to_string(),
-            raw_query: parts.uri.query().map(String::from),
-            headers: header_map(&self.trusted),
-            json: Some(self.args.clone()),
-            ..Default::default()
+        let template = match &tool.binding {
+            // A route offered as a tool: its handler gets the same request a
+            // REST client would send.
+            Some(b) => {
+                let bound = b.bind(&self.args);
+                ProtoRequest {
+                    route: route.path.clone(),
+                    method: b.method.clone(),
+                    path: bound.path,
+                    params: bound.params,
+                    query: bound.query,
+                    raw_query: bound.raw_query,
+                    headers: header_map(&self.trusted),
+                    json: bound.json,
+                    ..Default::default()
+                }
+            }
+            None => ProtoRequest {
+                route: route.path.clone(),
+                method: "POST".into(),
+                path: parts.uri.path().to_string(),
+                raw_query: parts.uri.query().map(String::from),
+                headers: header_map(&self.trusted),
+                json: Some(self.args.clone()),
+                ..Default::default()
+            },
         };
         if !eff.before.is_empty() {
             let deadline = Instant::now() + eff.timeout;

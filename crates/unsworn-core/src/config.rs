@@ -520,8 +520,24 @@ pub struct RawRoute {
     #[serde(rename = "use")]
     pub use_sets: Option<Vec<String>>,
 
-    /// Planned for v3.
-    pub mcp: Option<Value>,
+    /// Offer the route as an MCP tool too.
+    pub mcp: Option<RawRouteTool>,
+}
+
+/// `mcp = { tool = "get_user", description = "..." }` on a `[[route]]`:
+/// the route is also an MCP tool, with arguments built from its contract.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawRouteTool {
+    /// The tool name.
+    pub tool: String,
+    pub title: Option<String>,
+    /// What the tool does. Defaults to the OpenAPI operation's summary or
+    /// description.
+    pub description: Option<String>,
+    pub annotations: Option<RawToolAnnotations>,
+    /// The method tool calls use, for a route that accepts several.
+    pub method: Option<String>,
 }
 
 /// What `tools/list` shows a caller.

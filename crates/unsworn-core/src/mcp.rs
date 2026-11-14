@@ -13,6 +13,7 @@ use serde_json::{Map, Value, json};
 use crate::config::ListTools;
 use crate::policy::Layer;
 use crate::project::Proxy;
+use crate::validate::BodyRule;
 
 pub mod rpc;
 
@@ -86,11 +87,173 @@ pub struct McpTool {
     /// Arguments that clients copy into `Mcp-Param-*` headers.
     pub param_headers: Vec<ParamHeader>,
     /// The tool's route, in [`crate::Project::routes`]. It carries the
-    /// handler (or the proxy), validation and merged policies.
+    /// handler (or the proxy), validation and merged policies. For a route
+    /// offered as a tool, it's that route itself, so REST requests and tool
+    /// calls share its policies, including rate limit counts.
     pub route: usize,
-    /// The policies the tool sets itself. A call checks these on top of the
-    /// ones already checked for the whole endpoint.
+    /// The policies a call checks on top of the ones already checked for
+    /// the whole endpoint: the tool's own for `[[mcp.tool]]`, or the
+    /// route's `auth` and `rate_limit` for a route offered as a tool.
     pub own: Layer,
+    /// Validates the arguments. `None` leaves them unchecked, for a proxied
+    /// tool without `input`.
+    pub input_rule: Option<BodyRule>,
+    /// Set for a route offered as a tool: how its arguments map back to a
+    /// request.
+    pub binding: Option<RouteBinding>,
+}
+
+/// How a route tool's arguments become the request the route's handler
+/// receives: the same shape as a REST request to the route.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouteBinding {
+    pub method: String,
+    /// The route pattern, such as `/users/{id}`.
+    pub pattern: String,
+    /// Path parameter names, in pattern order.
+    pub params: Vec<String>,
+    /// Declared query parameters, with their defaults.
+    pub query: Vec<(String, Option<Value>)>,
+    pub body: BodyArgs,
+}
+
+/// Where a route tool's body goes in its arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyArgs {
+    /// The route takes no body.
+    None,
+    /// The body's fields are top-level arguments, next to the parameters.
+    Flat,
+    /// The body is the `body` argument.
+    Nested,
+}
+
+/// A REST-shaped request built from a route tool's arguments.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundRequest {
+    /// The path with the parameters filled in, such as `/users/42`.
+    pub path: String,
+    pub params: Map<String, Value>,
+    pub query: Map<String, Value>,
+    /// The query string a client would have sent, without the `?`.
+    pub raw_query: Option<String>,
+    pub json: Option<Value>,
+}
+
+impl RouteBinding {
+    /// Where an argument goes: `path`, `query` or `body`.
+    pub fn location(&self, arg: &str) -> &'static str {
+        if self.params.iter().any(|p| p == arg) {
+            "path"
+        } else if self.query.iter().any(|(q, _)| q == arg) {
+            "query"
+        } else {
+            "body"
+        }
+    }
+
+    /// Splits validated arguments into path parameters, query parameters
+    /// and a body. Query defaults apply as they would for a REST request.
+    pub fn bind(&self, args: &Value) -> BoundRequest {
+        let empty = Map::new();
+        let args = args.as_object().unwrap_or(&empty);
+        let mut params = Map::new();
+        for name in &self.params {
+            if let Some(v) = args.get(name).filter(|v| !v.is_null()) {
+                params.insert(name.clone(), v.clone());
+            }
+        }
+        let mut path = String::new();
+        for segment in self.pattern.split('/').filter(|s| !s.is_empty()) {
+            path.push('/');
+            let name = segment.strip_prefix('{').and_then(|s| s.strip_suffix('}'));
+            match name {
+                Some(name) if name.starts_with('*') => {
+                    let value = params.get(&name[1..]).map(text).unwrap_or_default();
+                    let parts: Vec<String> = value.split('/').map(percent_encode).collect();
+                    path.push_str(&parts.join("/"));
+                }
+                Some(name) => {
+                    let value = params.get(name).map(text).unwrap_or_default();
+                    path.push_str(&percent_encode(&value));
+                }
+                None => path.push_str(segment),
+            }
+        }
+        if path.is_empty() {
+            path.push('/');
+        }
+
+        let mut query = Map::new();
+        let mut pairs = Vec::new();
+        for (name, default) in &self.query {
+            match args.get(name).filter(|v| !v.is_null()) {
+                Some(v) => {
+                    query.insert(name.clone(), v.clone());
+                    match v {
+                        Value::Array(items) => {
+                            for item in items {
+                                pairs.push(format!(
+                                    "{}={}",
+                                    percent_encode(name),
+                                    percent_encode(&text(item))
+                                ));
+                            }
+                        }
+                        v => pairs.push(format!(
+                            "{}={}",
+                            percent_encode(name),
+                            percent_encode(&text(v))
+                        )),
+                    }
+                }
+                None => {
+                    if let Some(d) = default {
+                        query.insert(name.clone(), d.clone());
+                    }
+                }
+            }
+        }
+
+        let json = match self.body {
+            BodyArgs::None => None,
+            BodyArgs::Nested => args.get("body").cloned().filter(|v| !v.is_null()),
+            BodyArgs::Flat => Some(Value::Object(
+                args.iter()
+                    .filter(|(k, _)| self.location(k) == "body")
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            )),
+        };
+        BoundRequest {
+            path,
+            params,
+            query,
+            raw_query: (!pairs.is_empty()).then(|| pairs.join("&")),
+            json,
+        }
+    }
+}
+
+/// A parameter value as it would appear in a URL.
+fn text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Percent-encodes everything but unreserved characters (RFC 3986).
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 impl McpTool {
@@ -373,6 +536,65 @@ mod tests {
     }
 
     #[test]
+    fn binds_route_tool_arguments() {
+        let b = RouteBinding {
+            method: "POST".into(),
+            pattern: "/orgs/{org}/files/{*path}".into(),
+            params: vec!["org".into(), "path".into()],
+            query: vec![
+                ("limit".into(), Some(json!(20))),
+                ("tag".into(), None),
+                ("q".into(), None),
+            ],
+            body: BodyArgs::Flat,
+        };
+        let r = b.bind(&json!({
+            "org": "a b", "path": "docs/read me.md", "tag": ["x", "y&z"], "q": null,
+            "name": "Ada", "age": 36
+        }));
+        assert_eq!(r.path, "/orgs/a%20b/files/docs/read%20me.md");
+        assert_eq!(
+            r.params,
+            json!({"org": "a b", "path": "docs/read me.md"})
+                .as_object()
+                .unwrap()
+                .clone()
+        );
+        assert_eq!(
+            r.query,
+            json!({"limit": 20, "tag": ["x", "y&z"]})
+                .as_object()
+                .unwrap()
+                .clone()
+        );
+        assert_eq!(
+            r.raw_query.as_deref(),
+            Some("tag=x&tag=y%26z"),
+            "defaults aren't in the query string"
+        );
+        assert_eq!(r.json, Some(json!({"name": "Ada", "age": 36})));
+        assert_eq!(
+            (b.location("org"), b.location("limit"), b.location("name")),
+            ("path", "query", "body")
+        );
+
+        let nested = RouteBinding {
+            body: BodyArgs::Nested,
+            pattern: "/".into(),
+            params: vec![],
+            query: vec![],
+            method: "PUT".into(),
+        };
+        let r = nested.bind(&json!({"body": [1, 2]}));
+        assert_eq!((r.path.as_str(), r.json), ("/", Some(json!([1, 2]))));
+        let none = RouteBinding {
+            body: BodyArgs::None,
+            ..nested
+        };
+        assert_eq!(none.bind(&json!({})).json, None);
+    }
+
+    #[test]
     fn definition_and_annotations() {
         let raw = crate::config::RawToolAnnotations {
             read_only: Some(true),
@@ -388,6 +610,8 @@ mod tests {
             param_headers: Vec::new(),
             route: 0,
             own: Layer::default(),
+            input_rule: None,
+            binding: None,
         };
         assert_eq!(
             tool.definition(),
