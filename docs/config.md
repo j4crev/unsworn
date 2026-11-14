@@ -121,16 +121,35 @@ failing the first request.
 
 ### `[auth.<name>]`
 
+Each scheme has a name you choose (`users`, `customers` and so on) and a
+`type`. A scheme checks credentials against exactly one source, and `url`
+means something different for each type.
+
+#### `type = "jwt"`
+
 ```toml
-[auth.jwt]
+[auth.users]
 type       = "jwt"
-jwks_url   = "https://auth.example.com/.well-known/jwks.json"   # or `secret`, or `public_key` (a PEM file)
+url        = "https://auth.example.com/.well-known/jwks.json"   # or `secret`, or `public_key` (a PEM file)
 audience   = "api"                # a string or a list; checked when set
 issuer     = "https://auth.example.com/"
 algorithms = ["RS256"]            # default: HS256 for `secret`, else RS256/PS256/ES256/EdDSA
 header     = "Authorization"      # default; other headers carry the bare token
 leeway     = "30s"                # clock skew allowed for exp/nbf
+```
 
+Set exactly one of `url`, `secret` or `public_key`. `url` is a JWKS
+document holding the public keys. Unsworn verifies tokens itself, so there's
+no network call per request: JWKS documents are fetched on first use,
+refreshed every 10 minutes, and refetched (at most once a minute) when a
+token names an unknown key id. `jwks_url`, the old name for `url`, still
+works, with a warning.
+
+#### `type = "api_key"`
+
+For a handful of keys, list them:
+
+```toml
 [auth.service]
 type   = "api_key"
 header = "X-API-Key"              # default when neither header nor query is set
@@ -138,8 +157,83 @@ query  = "api_key"                # optional: also accept ?api_key=
 keys   = "{env.SERVICE_KEYS}"     # a list, or a comma-separated string
 ```
 
-JWKS documents are fetched on first use, refreshed every 10 minutes, and
-refetched (at most once a minute) when a token names an unknown key id.
+Matching keys get the claims `{ "type": "api_key", "key": <index> }`.
+
+When keys live somewhere else, such as a database, a key-management service
+or an API gateway, point `url` at an endpoint that verifies them instead:
+
+```toml
+[auth.customers]
+type    = "api_key"
+header  = "X-API-Key"
+url     = "https://auth.example.com/verify-key"
+timeout = "500ms"                 # default: 2s
+cache   = "30s"                   # default: ask on every request
+headers = { Authorization = "Bearer {env.AUTH_SERVICE_TOKEN}", "X-Service" = "unsworn" }
+```
+
+Set exactly one of `keys` or `url`. `header` and `query` say where the
+**client's** key is; `headers` are sent **to the verifier**, typically its
+own credentials, and only apply with `url`.
+
+For each request that carries a key, Unsworn calls the verifier:
+
+```http
+POST /verify-key
+Content-Type: application/json
+Authorization: Bearer <AUTH_SERVICE_TOKEN>
+
+{"key": "the-client-supplied-key"}
+```
+
+It answers `200` with JSON. A valid key:
+
+```json
+{"active": true, "claims": {"sub": "customer_123", "key_id": "key_456", "scope": "reports:read"}}
+```
+
+An invalid one:
+
+```json
+{"active": false}
+```
+
+`claims` is optional, and becomes `ctx.auth` as is, so it works with
+`scopes`, `rate_limit = { key = "auth.sub" }` and handlers like JWT claims
+do. An invalid key gets `401`. If the verifier can't be reached, takes
+longer than `timeout`, or answers anything else (another status, or JSON
+without a boolean `active`), the request gets `503` and the error is
+logged, so an outage or a wrong URL doesn't look like a bad key. A request
+with no key never reaches the verifier.
+
+Without `cache`, every request with a key waits for the verifier. With it,
+Unsworn remembers each answer, valid or invalid, in [`[store]`](#store), so
+instances sharing a Redis share answers too. The trade-off is revocation:
+a key the verifier stops accepting keeps working until its cached answer
+expires, so pick the longest delay you can accept. Answers whose claims
+include `exp` are cached no longer than that. Outages aren't cached. The
+store holds SHA-256 hashes of keys, never the keys themselves. With the
+`memory` store, verdicts share the response cache's limit of 10,000 entries
+per instance; with many active keys, use `redis`.
+
+Requests to the verifier carry the key, so use `https://` unless the
+verifier runs on the same host or private network. A verifier with a
+different API needs a small adapter that speaks this contract.
+
+In YAML, write `headers` as an indented mapping:
+
+```yaml
+auth:
+  customers:
+    type: api_key
+    header: X-API-Key
+    url: https://auth.example.com/verify-key
+    headers:
+      Authorization: "Bearer {env.AUTH_SERVICE_TOKEN}"
+      X-Service: unsworn
+```
+
+#### Using schemes
 
 Verified claims are available to handlers as `ctx.auth`, plus `scheme`, the
 name of the scheme that matched. Routes refer to schemes by name:
@@ -153,7 +247,7 @@ auth = "none"                                     # public
 
 Scopes are read from the token's `scope` (space-separated) or `scp` claim.
 A missing or invalid credential gets `401`; a valid one without the scopes
-gets `403`.
+gets `403`; one whose verifier is unavailable gets `503`.
 
 A `jwt` scheme can also describe the OAuth resource it protects, with
 `[auth.<name>].protected_resource`. Unsworn then serves the OAuth
@@ -191,7 +285,7 @@ Valkey, Dragonfly or a managed Redis) to share them.
 
 Values in these places can include `{env.NAME}`, replaced with the
 environment variable `NAME` when the config loads: auth scheme secrets, JWKS
-URLs, issuers, audiences and API keys, proxy upstreams, `[store].url`, and
+and verifier URLs, verifier `headers`, issuers, audiences and API keys, proxy upstreams, `[store].url`, and
 runtime `env` values. A missing variable is an error.
 
 ## Routes

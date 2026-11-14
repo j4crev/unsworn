@@ -1056,3 +1056,151 @@ url = "redis://127.0.0.1:1""#;
     assert_eq!(b.get("/limited").status, 429);
     assert_eq!(a.get("/_unsworn/health").json()["store"]["reachable"], true);
 }
+
+/// A stand-in API-key verifier: answers by key, and records each request's
+/// `Authorization` header.
+fn mock_verifier() -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let log = log.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let (mut len, mut auth) = (0, String::new());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    let (name, value) = line.split_once(':').unwrap_or_default();
+                    match name.to_ascii_lowercase().as_str() {
+                        "content-length" => len = value.trim().parse().unwrap_or(0),
+                        "authorization" => auth = value.trim().to_string(),
+                        _ => {}
+                    }
+                }
+                let mut body = vec![0; len];
+                reader.read_exact(&mut body).unwrap();
+                log.lock().unwrap().push(auth);
+                let key = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["key"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let (status, reply) = match key.as_str() {
+                    "good" => (
+                        "200 OK",
+                        r#"{"active":true,"claims":{"sub":"cust_1","scope":"reports:read"}}"#,
+                    ),
+                    "boom" => ("500 Internal Server Error", "{}"),
+                    "slow" => {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        ("200 OK", r#"{"active":true}"#)
+                    }
+                    _ => ("200 OK", r#"{"active":false}"#),
+                };
+                let mut stream = stream;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+            });
+        }
+    });
+    (addr, seen)
+}
+
+#[test]
+fn remote_api_key_verification() {
+    let (verifier, seen) = mock_verifier();
+    let cfg = format!(
+        r#"
+[auth.customers]
+type    = "api_key"
+header  = "X-API-Key"
+url     = "http://{verifier}/verify-key"
+timeout = "300ms"
+headers = {{ Authorization = "Bearer service-token" }}
+
+[auth.down]
+type = "api_key"
+url  = "http://127.0.0.1:{}/verify-key"
+
+[auth.cached]
+type   = "api_key"
+header = "X-Cached-Key"
+url    = "http://{verifier}/verify-key"
+cache  = "1m"
+
+[[route]]
+path = "/reports"
+auth = {{ scheme = "customers", scopes = ["reports:read"] }}
+rate_limit = {{ requests = 2, per = "1m", key = "auth.sub" }}
+respond = {{ status = 200, text = "ok" }}
+
+[[route]]
+path = "/admin"
+auth = {{ scheme = "customers", scopes = ["admin"] }}
+respond = {{ status = 200 }}
+
+[[route]]
+path = "/down"
+auth = "down"
+respond = {{ status = 200 }}
+
+[[route]]
+path = "/cached"
+auth = "cached"
+respond = {{ status = 200 }}
+"#,
+        common::free_port()
+    );
+    let p = Project::new(&[("unsworn.toml", &cfg)]);
+    let s = p.serve();
+    let with_key = |path: &str, key: &str| s.request("GET", path, &[("x-api-key", key)], b"");
+
+    assert_eq!(s.get("/reports").status, 401, "no key");
+    assert!(seen.lock().unwrap().is_empty(), "no key, no verifier call");
+
+    let r = with_key("/reports", "good");
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(seen.lock().unwrap()[0], "Bearer service-token");
+
+    assert_eq!(with_key("/reports", "bad").status, 401);
+    assert_eq!(
+        with_key("/admin", "good").status,
+        403,
+        "claims carry scopes"
+    );
+    // Rate limits key on the verifier's claims: the third `cust_1` request is
+    // over the limit.
+    assert_eq!(with_key("/reports", "good").status, 200);
+    assert_eq!(with_key("/reports", "good").status, 429);
+
+    for (path, key) in [("/reports", "boom"), ("/reports", "slow"), ("/down", "any")] {
+        let r = with_key(path, key);
+        assert_eq!(r.status, 503, "{path} {key}: {}", r.text());
+        assert!(r.header("www-authenticate").is_none());
+    }
+    assert!(s.logs().contains("can't verify API key"), "{}", s.logs());
+
+    // With `cache`, each key reaches the verifier once, valid or not; an
+    // outage isn't cached.
+    let cached = |key: &str| s.request("GET", "/cached", &[("x-cached-key", key)], b"");
+    let calls = || seen.lock().unwrap().len();
+    let before = calls();
+    for (key, status) in [("good", 200), ("good", 200), ("bad", 401), ("bad", 401)] {
+        assert_eq!(cached(key).status, status, "{key}");
+    }
+    assert_eq!(calls() - before, 2, "one call per key");
+    assert_eq!(cached("boom").status, 503);
+    assert_eq!(cached("boom").status, 503);
+    assert_eq!(calls() - before, 4, "outages are asked about again");
+}

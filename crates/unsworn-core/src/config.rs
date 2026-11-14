@@ -162,6 +162,10 @@ pub enum RawAuthScheme {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawJwt {
+    /// A JWKS document with the verification keys.
+    pub url: Option<String>,
+    /// Deprecated: the old name for `url`.
+    #[schemars(extend("deprecated" = true))]
     pub jwks_url: Option<String>,
     pub secret: Option<String>,
     pub public_key: Option<String>,
@@ -186,9 +190,21 @@ pub struct RawProtectedResource {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawApiKey {
+    /// The request header that carries the key.
     pub header: Option<String>,
+    /// The query parameter that carries the key.
     pub query: Option<String>,
-    pub keys: StringOrList,
+    /// The valid keys: a list, or a comma-separated string.
+    pub keys: Option<StringOrList>,
+    /// An endpoint that verifies keys, instead of `keys`.
+    pub url: Option<String>,
+    /// Headers sent to `url`, such as its own credentials.
+    pub headers: Option<BTreeMap<String, String>>,
+    /// How long to wait for `url` before answering `503`. Default: 2s.
+    pub timeout: Option<ConfigDuration>,
+    /// How long to remember the verifier's answer for a key, in `[store]`.
+    /// Default: not cached.
+    pub cache: Option<ConfigDuration>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]

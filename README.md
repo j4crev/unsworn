@@ -107,8 +107,8 @@ above. Benchmarks will be published before any speed claims are made.
 listen = "0.0.0.0:8080"
 
 [auth.jwt]
-type     = "jwt"
-jwks_url = "https://auth.example.com/.well-known/jwks.json"
+type = "jwt"
+url  = "https://auth.example.com/.well-known/jwks.json"
 
 [[route]]
 path    = "/health"

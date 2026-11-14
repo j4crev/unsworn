@@ -365,7 +365,7 @@ fn env_substitution_and_protected_resource() {
     let cfg = r#"
 [auth.oauth]
 type = "jwt"
-jwks_url = "{env.JWKS}"
+url = "{env.JWKS}"
 audience = "https://api.example.com/mcp"
 
 [auth.oauth.protected_resource]
@@ -483,4 +483,151 @@ fn store_config_is_checked() {
     assert_eq!(p.store.backend, crate::config::StoreBackend::Redis);
     assert_eq!(p.store.on_error, crate::config::OnError::Closed);
     assert_eq!(p.store.prefix, "");
+}
+
+#[test]
+fn auth_url_sources() {
+    // `url` means a JWKS for `jwt`, and a verifier for `api_key`.
+    let cfg = r#"
+[auth.users]
+type = "jwt"
+url = "https://auth.example.com/.well-known/jwks.json"
+
+[auth.customers]
+type = "api_key"
+header = "X-Customer-Key"
+url = "{env.VERIFY_URL}"
+timeout = "500ms"
+cache = "30s"
+headers = { Authorization = "Bearer {env.AUTH_TOKEN}", "X-Service" = "unsworn" }
+"#;
+    let mut host = MemHost::with(&[("unsworn.toml", cfg)]);
+    host.env.insert(
+        "VERIFY_URL".into(),
+        "https://auth.example.com/verify-key".into(),
+    );
+    host.env.insert("AUTH_TOKEN".into(), "t0k".into());
+    let compiled = compile(&host, "unsworn.toml");
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "{:?}",
+        compiled.diagnostics
+    );
+    let p = compiled.project.unwrap();
+    let Scheme::Jwt(jwt) = p.schemes["users"].as_ref() else {
+        panic!("users isn't a jwt scheme")
+    };
+    assert!(
+        matches!(&jwt.keys, JwtKeys::Jwks(u) if u == "https://auth.example.com/.well-known/jwks.json")
+    );
+    let Scheme::ApiKey(key) = p.schemes["customers"].as_ref() else {
+        panic!("customers isn't an api_key scheme")
+    };
+    assert_eq!(key.header.as_deref(), Some("x-customer-key"));
+    let v = key.verifier().unwrap();
+    assert_eq!(v.url, "https://auth.example.com/verify-key");
+    assert_eq!(v.timeout, Duration::from_millis(500));
+    assert_eq!(v.cache, Some(Duration::from_secs(30)));
+    assert_eq!(
+        v.headers,
+        vec![
+            ("authorization".to_string(), "Bearer t0k".to_string()),
+            ("x-service".to_string(), "unsworn".to_string()),
+        ]
+    );
+
+    // The same config in YAML, with the documented indented mapping.
+    let yaml = r#"
+auth:
+  customers:
+    type: api_key
+    url: https://auth.example.com/verify-key
+    headers:
+      Authorization: Bearer t0k
+"#;
+    let host = MemHost::with(&[("unsworn.yaml", yaml)]);
+    let compiled = compile(&host, "unsworn.yaml");
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "{:?}",
+        compiled.diagnostics
+    );
+    let p = compiled.project.unwrap();
+    let Scheme::ApiKey(key) = p.schemes["customers"].as_ref() else {
+        panic!("customers isn't an api_key scheme")
+    };
+    assert_eq!(key.header.as_deref(), Some("x-api-key"));
+    assert_eq!(key.verifier().unwrap().timeout, Duration::from_secs(2));
+    assert_eq!(key.verifier().unwrap().cache, None);
+}
+
+#[test]
+fn auth_url_errors() {
+    let cases = [
+        (
+            "type = \"api_key\"\nkeys = \"k\"\nurl = \"https://a.example/v\"",
+            "set exactly one of `keys` or `url`",
+        ),
+        ("type = \"api_key\"", "set exactly one of `keys` or `url`"),
+        (
+            "type = \"api_key\"\nkeys = \"k\"\nheaders = { A = \"b\" }",
+            "`headers` only applies with `url`",
+        ),
+        (
+            "type = \"api_key\"\nkeys = \"k\"\ntimeout = \"1s\"",
+            "`timeout` only applies with `url`",
+        ),
+        (
+            "type = \"api_key\"\nkeys = \"k\"\ncache = \"1m\"",
+            "`cache` only applies with `url`",
+        ),
+        (
+            "type = \"api_key\"\nurl = \"https://a.example/v\"\ncache = \"0s\"",
+            "cache must be longer than 0",
+        ),
+        (
+            "type = \"api_key\"\nurl = \"auth.example.com/verify\"",
+            "isn't an http:// or https:// URL",
+        ),
+        (
+            "type = \"api_key\"\nurl = \"https://a.example/v\"\nheaders = { \"Bad Name\" = \"x\" }",
+            "not a valid header name",
+        ),
+        (
+            "type = \"jwt\"\nurl = \"https://a.example/jwks\"\nsecret = \"s\"",
+            "set exactly one of `url`, `secret` or `public_key`",
+        ),
+        (
+            "type = \"jwt\"\nurl = \"https://a.example/jwks\"\njwks_url = \"https://a.example/jwks\"",
+            "set `url` or `jwks_url`, not both",
+        ),
+    ];
+    for (body, want) in cases {
+        let cfg = format!("[auth.a]\n{body}\n");
+        let errs = errors(&[("unsworn.toml", &cfg)]);
+        assert!(errs.iter().any(|e| e.contains(want)), "{body}: {errs:?}");
+    }
+}
+
+#[test]
+fn jwks_url_is_an_alias_for_url() {
+    let cfg = r#"
+[auth.users]
+type = "jwt"
+jwks_url = "https://auth.example.com/jwks"
+"#;
+    let host = MemHost::with(&[("unsworn.toml", cfg)]);
+    let compiled = compile(&host, "unsworn.toml");
+    assert_eq!(compiled.diagnostics.len(), 1);
+    assert!(!compiled.diagnostics[0].is_error());
+    assert!(
+        compiled.diagnostics[0]
+            .message
+            .contains("old name for `url`")
+    );
+    let p = compiled.project.unwrap();
+    let Scheme::Jwt(jwt) = p.schemes["users"].as_ref() else {
+        panic!("users isn't a jwt scheme")
+    };
+    assert!(matches!(&jwt.keys, JwtKeys::Jwks(u) if u == "https://auth.example.com/jwks"));
 }

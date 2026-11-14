@@ -1,6 +1,6 @@
 //! Handling one request, from matching to response.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -14,7 +14,9 @@ use hyper::body::{Frame, Incoming};
 use serde_json::{Map, Value, json};
 use tokio_stream::wrappers::ReceiverStream;
 use unsworn_core::MatchResult;
-use unsworn_core::auth::{AuthFailure, CredentialSource, authenticate, www_authenticate};
+use unsworn_core::auth::{
+    AuthFailure, CredentialSource, Scheme, Verdict, authenticate, www_authenticate,
+};
 use unsworn_core::config::{ResponseValidation, TrailingSlash};
 use unsworn_core::policy::{AuthReq, Effective, HandlerRef, KeySource};
 use unsworn_core::project::{Action, RespondBody, Route};
@@ -22,7 +24,7 @@ use unsworn_core::rules;
 use unsworn_proto::{Phase, Request as ProtoRequest};
 
 use super::proxy;
-use super::support::{Body, empty, full, json_response, problem, problem_with};
+use super::support::{Body, check_key, empty, full, json_response, problem, problem_with};
 use super::{Generation, Shared};
 use crate::store::{CachedResponse, MAX_CACHED_BODY, RateLimit};
 use crate::workers::{BodyError, CallBody, CallError, Reply, ReplyBody};
@@ -498,22 +500,41 @@ fn authenticate_request<'a>(
                 schemes.push(s.clone());
             }
         }
-        for scheme in schemes {
+        for scheme in &schemes {
             ctx.shared
                 .keys
-                .ensure(ctx.shared.client.clone(), scheme, kid.clone())
+                .ensure(ctx.shared.client.clone(), scheme.clone(), kid.clone())
                 .await;
         }
         let creds = Creds {
             headers: req.headers(),
             query: query_pairs,
         };
+        // Remote API keys are checked up front, and only when the request
+        // carries one, so `authenticate` stays synchronous.
+        let mut verdicts = HashMap::new();
+        let store = ctx.shared.store.load_full();
+        for scheme in &schemes {
+            let Scheme::ApiKey(k) = scheme.as_ref() else {
+                continue;
+            };
+            let (Some(verifier), Some(key)) = (k.verifier(), k.credential(&creds)) else {
+                continue;
+            };
+            let verdict = check_key(&ctx.shared.client, &store, verifier, key, now_secs()).await;
+            if let Verdict::Unavailable(reason) = &verdict {
+                tracing::error!(scheme = %k.name, "can't verify API key: {reason}");
+            }
+            verdicts.insert(k.name.clone(), verdict);
+        }
         let keys = KeyLookup(&ctx.shared.keys);
         let lookup = |n: &str| keys.get(n);
+        let verdict = |n: &str| verdicts.get(n).cloned();
         let outcome = authenticate(
             &eff.auth,
             &ctx.generation.project.schemes,
             &lookup,
+            &verdict,
             &creds,
             now_secs(),
         );
@@ -1094,6 +1115,10 @@ fn auth_failure(ctx: &Ctx, failure: &AuthFailure) -> Response<Body> {
         AuthFailure::InsufficientScope { scopes, .. } => (
             StatusCode::FORBIDDEN,
             format!("this requires the scopes: {}", scopes.join(" ")),
+        ),
+        AuthFailure::Unavailable { .. } => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "credentials can't be verified right now".to_string(),
         ),
     };
     let mut resp = problem(status, detail);

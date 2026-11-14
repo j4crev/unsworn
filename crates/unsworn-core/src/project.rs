@@ -9,7 +9,9 @@ use jsonwebtoken::Algorithm;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::auth::{ApiKeyScheme, JwtKeys, JwtScheme, ProtectedResource, Scheme};
+use crate::auth::{
+    ApiKeyScheme, ApiKeys, JwtKeys, JwtScheme, KeyVerifier, ProtectedResource, Scheme,
+};
 use crate::config::{
     self, Format, OrOff, Protocol, RawAuth, RawAuthItem, RawAuthScheme, RawConfig, RawPolicies,
     RawProxy, RawRoute, ResponseValidation, SchemaRef, TrailingSlash,
@@ -866,6 +868,25 @@ impl<'h> Compiler<'h> {
         out
     }
 
+    /// Reports a URL Unsworn fetches that isn't `http://` or `https://`.
+    fn check_url(&mut self, url: &str, loc: &str) {
+        // An unset variable has already been reported.
+        if url.is_empty() {
+            return;
+        }
+        let ok = ["http://", "https://"].iter().any(|scheme| {
+            url.get(..scheme.len())
+                .is_some_and(|s| s.eq_ignore_ascii_case(scheme))
+                && url.len() > scheme.len()
+        });
+        if !ok {
+            self.diags.push(
+                Diagnostic::error(loc, format!("\"{url}\" isn't an http:// or https:// URL"))
+                    .hint("use a full URL, such as https://auth.example.com/verify-key"),
+            );
+        }
+    }
+
     fn server(&mut self, raw: &RawConfig) -> Server {
         let s = &raw.server;
         if s.listen.parse::<std::net::SocketAddr>().is_err() {
@@ -964,23 +985,39 @@ impl<'h> Compiler<'h> {
             }
             let scheme = match scheme {
                 RawAuthScheme::Jwt(j) => {
-                    let sources = [
-                        j.jwks_url.is_some(),
-                        j.secret.is_some(),
-                        j.public_key.is_some(),
-                    ]
-                    .iter()
-                    .filter(|b| **b)
-                    .count();
+                    if j.jwks_url.is_some() {
+                        let diag = if j.url.is_some() {
+                            Diagnostic::error(
+                                format!("{loc}.jwks_url"),
+                                "set `url` or `jwks_url`, not both",
+                            )
+                        } else {
+                            Diagnostic::warning(
+                                format!("{loc}.jwks_url"),
+                                "`jwks_url` is the old name for `url`",
+                            )
+                        };
+                        self.diags.push(diag.hint("rename jwks_url to url"));
+                        if j.url.is_some() {
+                            continue;
+                        }
+                    }
+                    let url = j.url.as_ref().or(j.jwks_url.as_ref());
+                    let sources = [url.is_some(), j.secret.is_some(), j.public_key.is_some()]
+                        .iter()
+                        .filter(|b| **b)
+                        .count();
                     if sources != 1 {
                         self.diags.push(Diagnostic::error(
                             &loc,
-                            "set exactly one of `jwks_url`, `secret` or `public_key`",
+                            "set exactly one of `url`, `secret` or `public_key`",
                         ));
                         continue;
                     }
-                    let keys = if let Some(url) = &j.jwks_url {
-                        JwtKeys::Jwks(self.subst(url, &loc))
+                    let keys = if let Some(url) = url {
+                        let url = self.subst(url, &format!("{loc}.url"));
+                        self.check_url(&url, &format!("{loc}.url"));
+                        JwtKeys::Jwks(url)
                     } else if let Some(secret) = &j.secret {
                         JwtKeys::Secret(self.subst(secret, &loc))
                     } else {
@@ -1062,21 +1099,79 @@ impl<'h> Compiler<'h> {
                     })
                 }
                 RawAuthScheme::ApiKey(k) => {
-                    let mut keys = Vec::new();
-                    for key in k.keys.to_vec() {
-                        let value = self.subst(&key, &format!("{loc}.keys"));
-                        keys.extend(
-                            value
-                                .split(',')
-                                .map(str::trim)
-                                .filter(|s| !s.is_empty())
-                                .map(String::from),
-                        );
-                    }
-                    if keys.is_empty() {
-                        self.diags
-                            .error(format!("{loc}.keys"), "no keys configured");
-                    }
+                    let keys = match (&k.keys, &k.url) {
+                        (Some(_), Some(_)) | (None, None) => {
+                            self.diags.push(Diagnostic::error(
+                                &loc,
+                                "set exactly one of `keys` or `url`",
+                            ));
+                            continue;
+                        }
+                        (Some(list), None) => {
+                            let url_only = [
+                                ("headers", k.headers.is_some()),
+                                ("timeout", k.timeout.is_some()),
+                                ("cache", k.cache.is_some()),
+                            ];
+                            for (field, _) in url_only.iter().filter(|(_, set)| *set) {
+                                self.diags.error(
+                                    format!("{loc}.{field}"),
+                                    format!("`{field}` only applies with `url`"),
+                                );
+                            }
+                            let mut keys = Vec::new();
+                            for key in list.to_vec() {
+                                let value = self.subst(&key, &format!("{loc}.keys"));
+                                keys.extend(
+                                    value
+                                        .split(',')
+                                        .map(str::trim)
+                                        .filter(|s| !s.is_empty())
+                                        .map(String::from),
+                                );
+                            }
+                            if keys.is_empty() {
+                                self.diags
+                                    .error(format!("{loc}.keys"), "no keys configured");
+                            }
+                            ApiKeys::Static(keys)
+                        }
+                        (None, Some(url)) => {
+                            let url = self.subst(url, &format!("{loc}.url"));
+                            self.check_url(&url, &format!("{loc}.url"));
+                            let mut headers = Vec::new();
+                            for (name, value) in k.headers.iter().flatten() {
+                                let at = format!("{loc}.headers.{name}");
+                                let value = self.subst(value, &at);
+                                if !valid_header_name(name) {
+                                    self.diags.error(&at, "not a valid header name");
+                                } else if value.chars().any(|c| c.is_control() && c != '\t') {
+                                    self.diags
+                                        .error(&at, "header values can't contain line breaks");
+                                } else {
+                                    headers.push((name.to_ascii_lowercase(), value));
+                                }
+                            }
+                            ApiKeys::Remote(KeyVerifier {
+                                url,
+                                headers,
+                                timeout: k.timeout.map_or(Duration::from_secs(2), |d| d.0),
+                                cache: match k.cache.map(|d| d.0) {
+                                    Some(d) if d.is_zero() => {
+                                        self.diags.push(
+                                            Diagnostic::error(
+                                                format!("{loc}.cache"),
+                                                "cache must be longer than 0",
+                                            )
+                                            .hint("remove `cache` to ask the verifier every time"),
+                                        );
+                                        None
+                                    }
+                                    d => d,
+                                },
+                            })
+                        }
+                    };
                     let header = match (&k.header, &k.query) {
                         (None, None) => Some("x-api-key".into()),
                         (h, _) => h.as_ref().map(|h| h.to_ascii_lowercase()),
@@ -2144,6 +2239,14 @@ fn credential_headers(schemes: &BTreeMap<String, Arc<Scheme>>, auth: &AuthReq) -
             Scheme::ApiKey(k) => k.header.clone(),
         })
         .collect()
+}
+
+/// An HTTP header name: one or more RFC 9110 token characters.
+fn valid_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
 }
 
 fn valid_ip_or_cidr(s: &str) -> bool {

@@ -144,6 +144,8 @@
               ]
             },
             "jwks_url": {
+              "deprecated": true,
+              "description": "Deprecated: the old name for `url`.",
               "type": [
                 "string",
                 "null"
@@ -184,6 +186,13 @@
             "type": {
               "const": "jwt",
               "type": "string"
+            },
+            "url": {
+              "description": "A JWKS document with the verification keys.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -194,29 +203,77 @@
         {
           "additionalProperties": false,
           "properties": {
+            "cache": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Duration"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How long to remember the verifier's answer for a key, in `[store]`.\nDefault: not cached."
+            },
             "header": {
+              "description": "The request header that carries the key.",
               "type": [
                 "string",
+                "null"
+              ]
+            },
+            "headers": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Headers sent to `url`, such as its own credentials.",
+              "type": [
+                "object",
                 "null"
               ]
             },
             "keys": {
-              "$ref": "#/$defs/StringOrList"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StringOrList"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The valid keys: a list, or a comma-separated string."
             },
             "query": {
+              "description": "The query parameter that carries the key.",
               "type": [
                 "string",
                 "null"
               ]
             },
+            "timeout": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Duration"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How long to wait for `url` before answering `503`. Default: 2s."
+            },
             "type": {
               "const": "api_key",
               "type": "string"
+            },
+            "url": {
+              "description": "An endpoint that verifies keys, instead of `keys`.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
-            "type",
-            "keys"
+            "type"
           ],
           "type": "object"
         }
