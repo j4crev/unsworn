@@ -1,10 +1,13 @@
 //! Credential verification: JWT and API keys.
 //!
-//! Pure: keys and the current time are passed in. The host fetches JWKS
-//! documents and caches the resulting [`KeySet`]s.
+//! Pure: keys, remote verdicts and the current time are passed in. The host
+//! fetches JWKS documents and caches the resulting [`KeySet`]s, and asks
+//! remote API-key verifiers about keys, turning their answers into
+//! [`Verdict`]s with [`Verdict::from_response`].
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
@@ -95,7 +98,115 @@ pub struct ApiKeyScheme {
     pub name: String,
     pub header: Option<String>,
     pub query: Option<String>,
-    pub keys: Vec<String>,
+    pub keys: ApiKeys,
+}
+
+/// Where an API key scheme's valid keys come from.
+#[derive(Debug, Clone)]
+pub enum ApiKeys {
+    /// Listed in the config.
+    Static(Vec<String>),
+    /// Checked per request by an external service.
+    Remote(KeyVerifier),
+}
+
+/// An external API-key verification endpoint.
+///
+/// Unsworn sends `POST <url>` with `{"key": "..."}` and expects `200` with
+/// `{"active": true, "claims": {...}}` or `{"active": false}`.
+#[derive(Debug, Clone)]
+pub struct KeyVerifier {
+    pub url: String,
+    /// Extra headers on the verification request, such as the service's own
+    /// credentials. Names are lowercase.
+    pub headers: Vec<(String, String)>,
+    pub timeout: Duration,
+    /// How long answers are remembered; `None` asks on every request.
+    pub cache: Option<Duration>,
+}
+
+impl ApiKeyScheme {
+    /// The key the request carries, from the header or the query string.
+    pub fn credential<'a>(&self, source: &'a dyn CredentialSource) -> Option<&'a str> {
+        self.header
+            .as_deref()
+            .and_then(|h| source.header(h))
+            .or_else(|| self.query.as_deref().and_then(|q| source.query(q)))
+            .map(str::trim)
+    }
+
+    pub fn verifier(&self) -> Option<&KeyVerifier> {
+        match &self.keys {
+            ApiKeys::Remote(v) => Some(v),
+            ApiKeys::Static(_) => None,
+        }
+    }
+}
+
+/// A remote verifier's answer about one key.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Verdict {
+    /// The key is valid; these claims become `ctx.auth`.
+    Active(Map<String, Value>),
+    /// The key isn't valid: `401`.
+    Inactive,
+    /// The verifier couldn't answer (down, timed out, or broke the
+    /// contract): `503`.
+    Unavailable(String),
+}
+
+impl Verdict {
+    /// The JSON body of a verification request.
+    pub fn request_body(key: &str) -> Vec<u8> {
+        serde_json::to_vec(&json!({ "key": key })).unwrap_or_default()
+    }
+
+    /// The verdict as the verifier's JSON, for caching. `None` for
+    /// [`Verdict::Unavailable`], which is never cached.
+    pub fn to_json(&self) -> Option<Vec<u8>> {
+        let doc = match self {
+            Verdict::Active(claims) => json!({ "active": true, "claims": claims }),
+            Verdict::Inactive => json!({ "active": false }),
+            Verdict::Unavailable(_) => return None,
+        };
+        serde_json::to_vec(&doc).ok()
+    }
+
+    /// How long to cache this verdict, given the scheme's `cache` and the
+    /// current time: no longer than an `exp` claim allows, and not at all
+    /// once it has passed.
+    pub fn cache_ttl(&self, max: Duration, now: u64) -> Option<Duration> {
+        match self {
+            Verdict::Active(claims) => match claims.get("exp").and_then(Value::as_u64) {
+                Some(exp) if exp <= now => None,
+                Some(exp) => Some(max.min(Duration::from_secs(exp - now))),
+                None => Some(max),
+            },
+            Verdict::Inactive => Some(max),
+            Verdict::Unavailable(_) => None,
+        }
+    }
+
+    /// Reads a verifier's response. Anything but `200` with a JSON object
+    /// holding a boolean `active` is a broken verifier, not a bad key, so
+    /// misconfigured URLs show up as `503`s rather than as `401`s.
+    pub fn from_response(status: u16, body: &[u8]) -> Verdict {
+        if status != 200 {
+            return Verdict::Unavailable(format!("verifier returned {status}"));
+        }
+        let Ok(Value::Object(mut doc)) = serde_json::from_slice::<Value>(body) else {
+            return Verdict::Unavailable("verifier didn't return a JSON object".into());
+        };
+        match doc.get("active") {
+            Some(Value::Bool(true)) => match doc.remove("claims") {
+                None | Some(Value::Null) => Verdict::Active(Map::new()),
+                Some(Value::Object(claims)) => Verdict::Active(claims),
+                Some(_) => Verdict::Unavailable("verifier's `claims` isn't an object".into()),
+            },
+            Some(Value::Bool(false)) => Verdict::Inactive,
+            _ => Verdict::Unavailable("verifier's response has no boolean `active`".into()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +288,9 @@ pub enum AuthFailure {
     },
     /// Valid credentials without the required scopes: `403`.
     InsufficientScope { scheme: String, scopes: Vec<String> },
+    /// The credential couldn't be checked, because its verifier is down or
+    /// misbehaving: `503`.
+    Unavailable { scheme: String, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -192,10 +306,14 @@ pub trait CredentialSource {
 }
 
 /// Checks a request against an [`AuthReq`].
+///
+/// `keys` gives a JWT scheme's verification keys; `verdicts` gives a remote
+/// API key scheme's verdict on the key this request carries.
 pub fn authenticate(
     req: &AuthReq,
     schemes: &BTreeMap<String, Arc<Scheme>>,
     keys: &dyn Fn(&str) -> Option<Arc<KeySet>>,
+    verdicts: &dyn Fn(&str) -> Option<Verdict>,
     source: &dyn CredentialSource,
     now: u64,
 ) -> Result<Option<AuthSuccess>, AuthFailure> {
@@ -205,13 +323,24 @@ pub fn authenticate(
     };
     let mut first_failure: Option<AuthFailure> = None;
     let mut scope_failure: Option<AuthFailure> = None;
+    let mut unavailable: Option<AuthFailure> = None;
     for AuthAlt { scheme, scopes } in alts {
         let Some(s) = schemes.get(scheme) else {
             continue;
         };
         let result = match s.as_ref() {
             Scheme::Jwt(jwt) => check_jwt(jwt, keys, source, now),
-            Scheme::ApiKey(k) => check_api_key(k, source),
+            Scheme::ApiKey(k) => match check_api_key(k, verdicts, source) {
+                Err(KeyError::Unavailable(reason)) => {
+                    unavailable.get_or_insert(AuthFailure::Unavailable {
+                        scheme: scheme.clone(),
+                        reason,
+                    });
+                    continue;
+                }
+                Err(KeyError::Invalid(reason)) => Err(reason),
+                Ok(claims) => Ok(claims),
+            },
         };
         match result {
             Ok(Some(claims)) => {
@@ -240,7 +369,10 @@ pub fn authenticate(
             }
         }
     }
+    // A verifier outage outranks an invalid credential: the key it couldn't
+    // check may well have been valid.
     Err(scope_failure
+        .or(unavailable)
         .or(first_failure)
         .unwrap_or_else(|| AuthFailure::Unauthorized {
             scheme: alts.first().map(|a| a.scheme.clone()),
@@ -330,22 +462,33 @@ fn check_jwt(
     Ok(Some(claims))
 }
 
+enum KeyError {
+    Invalid(String),
+    Unavailable(String),
+}
+
 fn check_api_key(
     scheme: &ApiKeyScheme,
+    verdicts: &dyn Fn(&str) -> Option<Verdict>,
     source: &dyn CredentialSource,
-) -> Result<Option<Map<String, Value>>, String> {
-    let provided = scheme
-        .header
-        .as_deref()
-        .and_then(|h| source.header(h))
-        .or_else(|| scheme.query.as_deref().and_then(|q| source.query(q)));
-    let Some(provided) = provided else {
+) -> Result<Option<Map<String, Value>>, KeyError> {
+    let Some(provided) = scheme.credential(source) else {
         return Ok(None);
     };
-    let matched = scheme
-        .keys
+    let keys = match &scheme.keys {
+        ApiKeys::Static(keys) => keys,
+        ApiKeys::Remote(_) => {
+            return match verdicts(&scheme.name) {
+                Some(Verdict::Active(claims)) => Ok(Some(claims)),
+                Some(Verdict::Inactive) => Err(KeyError::Invalid("invalid API key".into())),
+                Some(Verdict::Unavailable(reason)) => Err(KeyError::Unavailable(reason)),
+                None => Err(KeyError::Unavailable("the key wasn't verified".into())),
+            };
+        }
+    };
+    let matched = keys
         .iter()
-        .position(|k| constant_time_eq(k.as_bytes(), provided.trim().as_bytes()));
+        .position(|k| constant_time_eq(k.as_bytes(), provided.as_bytes()));
     match matched {
         Some(index) => {
             let mut claims = Map::new();
@@ -353,7 +496,7 @@ fn check_api_key(
             claims.insert("key".into(), json!(index));
             Ok(Some(claims))
         }
-        None => Err("invalid API key".into()),
+        None => Err(KeyError::Invalid("invalid API key".into())),
     }
 }
 
@@ -381,6 +524,7 @@ pub fn www_authenticate(
     let scheme_name = match failure {
         AuthFailure::Unauthorized { scheme, .. } => scheme.as_deref()?,
         AuthFailure::InsufficientScope { scheme, .. } => scheme,
+        AuthFailure::Unavailable { .. } => return None,
     };
     let Scheme::Jwt(jwt) = schemes.get(scheme_name)?.as_ref() else {
         return None;
@@ -396,6 +540,7 @@ pub fn www_authenticate(
             parts.push("error=\"insufficient_scope\"".to_string());
             parts.push(format!("scope=\"{}\"", scopes.join(" ")));
         }
+        AuthFailure::Unavailable { .. } => {}
     }
     if let Some(pr) = &jwt.protected_resource {
         parts.push(format!("resource_metadata=\"{}\"", pr.metadata_url()));
@@ -464,11 +609,48 @@ mod tests {
                 name: "key".into(),
                 header: Some("x-api-key".into()),
                 query: None,
-                keys: vec!["k1".into()],
+                keys: ApiKeys::Static(vec!["k1".into()]),
+            })),
+        );
+        schemes.insert(
+            "remote".to_string(),
+            Arc::new(Scheme::ApiKey(ApiKeyScheme {
+                name: "remote".into(),
+                header: Some("x-customer-key".into()),
+                query: None,
+                keys: ApiKeys::Remote(KeyVerifier {
+                    url: "https://auth.example.com/verify-key".into(),
+                    headers: vec![],
+                    timeout: Duration::from_secs(1),
+                    cache: None,
+                }),
             })),
         );
         let set = Arc::new(KeySet::from_secret("secret").unwrap());
-        authenticate(req, &schemes, &|_| Some(set.clone()), &Req(headers), 1_000)
+        let verdict = |name: &str| -> Option<Verdict> {
+            if name != "remote" {
+                return None;
+            }
+            let key = headers.iter().find(|(n, _)| *n == "x-customer-key")?;
+            Some(match key.1.as_str() {
+                "good" => Verdict::Active(
+                    json!({"sub": "customer_1", "scope": "reports:read"})
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
+                "down" => Verdict::Unavailable("verifier returned 502".into()),
+                _ => Verdict::Inactive,
+            })
+        };
+        authenticate(
+            req,
+            &schemes,
+            &|_| Some(set.clone()),
+            &verdict,
+            &Req(headers.clone()),
+            1_000,
+        )
     }
 
     fn jwt_req(scopes: &[&str]) -> AuthReq {
@@ -531,6 +713,132 @@ mod tests {
         assert_eq!(ok.scheme, "key");
         assert!(run(&req, vec![("x-api-key", "nope".into())]).is_err());
         assert_eq!(run(&AuthReq::Public, vec![]).unwrap(), None);
+    }
+
+    #[test]
+    fn remote_api_keys() {
+        let req = |scopes: &[&str]| {
+            AuthReq::AnyOf(vec![AuthAlt {
+                scheme: "remote".into(),
+                scopes: scopes.iter().map(|s| s.to_string()).collect(),
+            }])
+        };
+        let ok = run(
+            &req(&["reports:read"]),
+            vec![("x-customer-key", "good".into())],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(ok.claims["sub"], "customer_1");
+        assert!(matches!(
+            run(
+                &req(&["reports:write"]),
+                vec![("x-customer-key", "good".into())]
+            ),
+            Err(AuthFailure::InsufficientScope { .. })
+        ));
+        assert!(matches!(
+            run(&req(&[]), vec![("x-customer-key", "bad".into())]),
+            Err(AuthFailure::Unauthorized { .. })
+        ));
+        assert!(matches!(
+            run(&req(&[]), vec![("x-customer-key", "down".into())]),
+            Err(AuthFailure::Unavailable { .. })
+        ));
+        assert_eq!(
+            run(&req(&[]), vec![]).unwrap_err(),
+            AuthFailure::Unauthorized {
+                scheme: Some("remote".into()),
+                reason: "missing credentials".into()
+            }
+        );
+
+        // An outage outranks another scheme's rejection, and doesn't stop
+        // another scheme from succeeding.
+        let either = AuthReq::AnyOf(vec![
+            AuthAlt {
+                scheme: "key".into(),
+                scopes: vec![],
+            },
+            AuthAlt {
+                scheme: "remote".into(),
+                scopes: vec![],
+            },
+        ]);
+        let down_and_bad = vec![
+            ("x-api-key", "nope".to_string()),
+            ("x-customer-key", "down".to_string()),
+        ];
+        assert!(matches!(
+            run(&either, down_and_bad),
+            Err(AuthFailure::Unavailable { .. })
+        ));
+        let down_and_good = vec![
+            ("x-api-key", "k1".to_string()),
+            ("x-customer-key", "down".to_string()),
+        ];
+        assert_eq!(run(&either, down_and_good).unwrap().unwrap().scheme, "key");
+    }
+
+    #[test]
+    fn verdict_contract() {
+        assert_eq!(
+            Verdict::from_response(200, br#"{"active": true, "claims": {"sub": "c1"}}"#),
+            Verdict::Active(json!({"sub": "c1"}).as_object().cloned().unwrap())
+        );
+        assert_eq!(
+            Verdict::from_response(200, br#"{"active": true}"#),
+            Verdict::Active(Map::new())
+        );
+        assert_eq!(
+            Verdict::from_response(200, br#"{"active": false}"#),
+            Verdict::Inactive
+        );
+        for (status, body) in [
+            (401, &br#"{"active": false}"#[..]),
+            (500, b""),
+            (200, b"not json"),
+            (200, br#"{"active": "yes"}"#),
+            (200, br#"{"claims": {}}"#),
+            (200, br#"{"active": true, "claims": "sub"}"#),
+            (200, br#"[true]"#),
+        ] {
+            assert!(
+                matches!(
+                    Verdict::from_response(status, body),
+                    Verdict::Unavailable(_)
+                ),
+                "{status} {}",
+                String::from_utf8_lossy(body)
+            );
+        }
+        assert_eq!(Verdict::request_body("k"), br#"{"key":"k"}"#);
+    }
+
+    #[test]
+    fn verdict_caching() {
+        let active = |claims: Value| Verdict::Active(claims.as_object().cloned().unwrap());
+        let max = Duration::from_secs(30);
+        for v in [active(json!({"sub": "c1"})), Verdict::Inactive] {
+            let json = v.to_json().unwrap();
+            assert_eq!(Verdict::from_response(200, &json), v, "round trip");
+            assert_eq!(v.cache_ttl(max, 1_000), Some(max));
+        }
+        assert_eq!(Verdict::Unavailable("down".into()).to_json(), None);
+        assert_eq!(
+            Verdict::Unavailable("down".into()).cache_ttl(max, 1_000),
+            None
+        );
+        // An `exp` claim caps the TTL, and an expired one isn't cached.
+        assert_eq!(
+            active(json!({"exp": 1_010})).cache_ttl(max, 1_000),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(active(json!({"exp": 1_000})).cache_ttl(max, 1_000), None);
+        assert_eq!(
+            active(json!({"exp": 9_999})).cache_ttl(max, 1_000),
+            Some(max)
+        );
     }
 
     #[test]

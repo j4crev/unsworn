@@ -77,8 +77,8 @@ A host combines an ingress, a dispatcher and a store around the core.
    entries, the routes directory and the OpenAPI spec (see
    [`config.md`](config.md#route-sources)).
 3. **Policies.** CORS, IP rules, body size limit, rate limit.
-4. **Authenticate.** JWT/JWKS or API key verification. Claims go into the
-   request context.
+4. **Authenticate.** JWT/JWKS or API key verification (against listed keys,
+   or by calling a remote verifier). Claims go into the request context.
 5. **Validate.** Path params, query, headers and body are checked against the
    route's schemas and converted to typed values (`"42"` becomes `42`).
 6. **Cache lookup.** A hit is returned directly.

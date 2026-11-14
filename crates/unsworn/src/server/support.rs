@@ -1,5 +1,5 @@
 //! Shared pieces for the server: bodies, problem responses, the memory
-//! store, metrics, JWT key caching and client IPs.
+//! store, metrics, JWT key caching, remote API-key checks and client IPs.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -14,10 +14,10 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use ipnet::IpNet;
 use serde_json::{Value, json};
-use unsworn_core::auth::{JwtKeys, KeySet, Scheme};
+use unsworn_core::auth::{JwtKeys, KeySet, KeyVerifier, Scheme, Verdict};
 use unsworn_core::validate::FieldError;
 
-use crate::store::Store;
+use crate::store::{CachedResponse, Store};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type Body = UnsyncBoxBody<Bytes, BoxError>;
@@ -274,6 +274,95 @@ impl KeyCache {
             Err(e) => tracing::error!(scheme = %jwt.name, "can't load signing keys: {e}"),
         }
     }
+}
+
+/// The most of a verifier's response Unsworn reads.
+const VERDICT_LIMIT: usize = 64 * 1024;
+
+/// Asks a remote verifier whether `key` is valid.
+async fn verify_key(client: &HttpClient, verifier: &KeyVerifier, key: &str) -> Verdict {
+    let mut req = http::Request::post(verifier.url.as_str())
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, "application/json")
+        .header(
+            header::USER_AGENT,
+            concat!("unsworn/", env!("CARGO_PKG_VERSION")),
+        );
+    for (name, value) in &verifier.headers {
+        req = req.header(name.as_str(), value.as_str());
+    }
+    let req = match req.body(full(Verdict::request_body(key))) {
+        Ok(r) => r,
+        Err(e) => return Verdict::Unavailable(format!("can't build the request: {e}")),
+    };
+    let call = async {
+        let resp = client
+            .request(req)
+            .await
+            .map_err(|e| format!("can't reach the verifier: {e}"))?;
+        let status = resp.status().as_u16();
+        let body = http_body_util::Limited::new(resp.into_body(), VERDICT_LIMIT)
+            .collect()
+            .await
+            .map_err(|e| format!("can't read the verifier's response: {e}"))?
+            .to_bytes();
+        Ok::<_, String>(Verdict::from_response(status, &body))
+    };
+    match tokio::time::timeout(verifier.timeout, call).await {
+        Ok(Ok(verdict)) => verdict,
+        Ok(Err(e)) => Verdict::Unavailable(e),
+        Err(_) => Verdict::Unavailable(format!(
+            "the verifier didn't answer within {:?}",
+            verifier.timeout
+        )),
+    }
+}
+
+/// Checks `key` with the verifier, through the `[store]` cache when the
+/// scheme sets `cache`. Store errors count as a miss.
+pub async fn check_key(
+    client: &HttpClient,
+    store: &Arc<Store>,
+    verifier: &KeyVerifier,
+    key: &str,
+    now: u64,
+) -> Verdict {
+    let Some(max) = verifier.cache else {
+        return verify_key(client, verifier, key).await;
+    };
+    let cache_key = verdict_cache_key(verifier, key);
+    if let Some(hit) = store.cache_get(&cache_key).await {
+        match Verdict::from_response(hit.status, &hit.body) {
+            Verdict::Unavailable(_) => {} // not ours; ask again
+            verdict => return verdict,
+        }
+    }
+    let verdict = verify_key(client, verifier, key).await;
+    if let (Some(ttl), Some(body)) = (verdict.cache_ttl(max, now), verdict.to_json()) {
+        let entry = CachedResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: body.into(),
+            stored: std::time::SystemTime::now(),
+            ttl,
+        };
+        // Written in the background, so a slow store never delays the request.
+        let store = store.clone();
+        tokio::spawn(async move { store.cache_put(cache_key, entry).await });
+    }
+    verdict
+}
+
+/// Where a verdict is cached. Keys are hashed, so the store never holds
+/// them, and the verifier URL is included, so changing it starts afresh.
+fn verdict_cache_key(verifier: &KeyVerifier, key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(verifier.url.as_bytes());
+    hash.update([0]);
+    hash.update(key.as_bytes());
+    let hex: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    format!("auth|{hex}")
 }
 
 async fn fetch_text(client: &HttpClient, url: &str) -> Result<String, String> {

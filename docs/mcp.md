@@ -50,7 +50,7 @@ An auth scheme can describe the resource it protects:
 [auth.oauth]
 type     = "jwt"
 issuer   = "https://auth.example.com/"
-jwks_url = "https://auth.example.com/.well-known/jwks.json"
+url      = "https://auth.example.com/.well-known/jwks.json"
 audience = "https://api.example.com/mcp"     # required: tokens must be issued for this server
 
 [auth.oauth.protected_resource]
