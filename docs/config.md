@@ -779,6 +779,9 @@ $ unsworn check --target vercel
 The capability table for each target is part of Unsworn's source, so a config
 that passes `check` for a target is expected to work there.
 
+`unsworn build --target cloudflare` bundles a project into a Cloudflare
+Worker; see [`cloudflare.md`](cloudflare.md).
+
 ## Open questions
 
 - Should route files also allow one file with several method exports
