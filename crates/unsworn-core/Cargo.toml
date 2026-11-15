@@ -20,3 +20,11 @@ toml = "1.2.1"
 
 [lints]
 workspace = true
+
+# On wasm32-unknown-unknown, `getrandom` (reached through `jsonschema` and
+# `jsonwebtoken`) has no randomness source unless one is picked. That target
+# means a JavaScript host (edge isolates, serverless shims), so use its
+# `crypto.getRandomValues`. Other targets, WASI included, pick their own.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }

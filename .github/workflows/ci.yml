@@ -45,3 +45,17 @@ jobs:
           go vet ./...
           go test ./...
       - run: cargo test --all
+
+  # The core and the protocol must keep building for wasm32, where the edge
+  # and serverless hosts run them. See docs/architecture.md.
+  wasm32:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p unsworn-core -p unsworn-proto --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo build -p unsworn-core -p unsworn-proto --target wasm32-unknown-unknown --release

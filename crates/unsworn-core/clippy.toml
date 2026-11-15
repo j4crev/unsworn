@@ -1,0 +1,21 @@
+# The core never performs I/O or reads the clock (see src/lib.rs). These
+# compile for wasm32 but panic there at runtime, so a wasm32 build alone
+# doesn't catch them. Hosts pass the time and file contents in instead.
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "the core doesn't read the clock; take the time from the host" },
+    { path = "std::time::SystemTime::now", reason = "the core doesn't read the clock; take the time from the host" },
+    { path = "std::thread::spawn", reason = "the core doesn't start threads" },
+    { path = "std::thread::sleep", reason = "the core doesn't block" },
+    { path = "std::env::var", reason = "environment variables come through `Host::env`" },
+    { path = "std::env::var_os", reason = "environment variables come through `Host::env`" },
+    { path = "std::fs::read", reason = "files come through `Host`" },
+    { path = "std::fs::read_to_string", reason = "files come through `Host`" },
+    { path = "std::fs::read_dir", reason = "files come through `Host`" },
+    { path = "std::fs::metadata", reason = "files come through `Host`" },
+    { path = "std::fs::write", reason = "the core doesn't write files" },
+    { path = "std::fs::File::open", reason = "files come through `Host`" },
+    { path = "std::fs::File::create", reason = "the core doesn't write files" },
+    { path = "std::process::Command::new", reason = "the core doesn't start processes" },
+    { path = "std::net::TcpStream::connect", reason = "the core doesn't open sockets" },
+    { path = "std::net::TcpListener::bind", reason = "the core doesn't open sockets" },
+]

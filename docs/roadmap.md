@@ -14,11 +14,11 @@ deployment target is meant to look like, see
 
 Cloudflare Workers first (`unsworn build --target cloudflare`). Work needed:
 
-- **Build the core for `wasm32`.** `unsworn-core` does no I/O, but it
-  doesn't compile for `wasm32-unknown-unknown` yet: `getrandom` is pulled in
-  through `jsonwebtoken` (via `rsa`) and `jsonschema` (via `ahash`) and needs
-  its WebAssembly backend enabled. Add a CI job that builds the core for
-  `wasm32` so it stays that way.
+- ~~**Build the core for `wasm32`.**~~ Done: `unsworn-core` and
+  `unsworn-proto` build for `wasm32-unknown-unknown`, with `getrandom`'s
+  JavaScript backend picked for that target. A CI job keeps it that way, and
+  the core's `clippy.toml` rejects clock, file, process and socket calls,
+  which compile for `wasm32` but panic there.
 - **Move the request pipeline into the core.** Policy evaluation (rate
   limits, caching, IP rules, auth checks, MCP dispatch) currently lives in
   the binary's `server/pipeline.rs`. An edge host needs the same decisions
