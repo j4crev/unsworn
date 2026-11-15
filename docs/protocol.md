@@ -25,6 +25,11 @@ variables:
 | `UNSWORN_DEV` | `1` | Set only under `unsworn dev` and `unsworn check --deep`. SDKs then include stack traces in `error` messages |
 | `UNSWORN_LOG_LEVEL` | `info` | The most verbose [`log`](#log-worker--unsworn) level Unsworn keeps: `error`, `warn`, `info`, `debug`, `trace` or `off` |
 
+The worker also inherits Unsworn's own environment, without the variables
+the config reads credentials from (see
+[`{env.NAME}`](config.md#envname)). On Tier 2, its socket is in a directory
+only Unsworn's user can open, so the worker has to run as that user.
+
 **The worker speaks first** by sending `ready`. Unsworn sends nothing until it
 arrives, so a worker never has to handle a greeting.
 

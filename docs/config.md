@@ -164,6 +164,21 @@ A reload that changes `secret`, the `public_key` file or `url` switches to
 the new keys at once: tokens signed with the old key stop working. To keep
 both working while clients move over, serve both keys from a JWKS `url`.
 
+`unsworn check` looks for the ways a scheme ends up accepting tokens it
+shouldn't:
+
+- **A `url` without `issuer` or `audience`** (a warning). Every token the
+  key set signs passes, and some key sets, such as Firebase's, sign tokens
+  for every customer's project. Set `audience`, and `issuer` when the
+  provider has one per tenant.
+- **An `http://` `url`** that isn't on this machine (a warning). Keys
+  fetched in the clear can be replaced on the way, and whoever replaces
+  them can sign tokens. The same goes for an `api_key` verifier's `url`,
+  which every key is sent to.
+- **An empty `secret`** (an error), which is what `{env.JWT_SECRET}` gives
+  when the variable is set to nothing. A `secret` under 32 bytes is a
+  warning: one token is enough to guess a short one offline.
+
 #### `type = "api_key"`
 
 For a handful of keys, list them:
@@ -327,6 +342,19 @@ Values in these places can include `{env.NAME}`, replaced with the
 environment variable `NAME` when the config loads: auth scheme secrets, JWKS
 and verifier URLs, verifier `headers`, issuers, audiences and API keys, proxy upstreams, `[store].url` and `token`, and
 runtime `env` values. A missing variable is an error.
+
+Workers inherit Unsworn's environment, except for the variables it reads
+its own credentials from: a JWT `secret`, API `keys`, verifier `headers`,
+and `[store].url` and `token`. A handler that could read the signing secret
+could mint its own tokens, so those stay with Unsworn. If a handler needs
+one of them (the same Redis, say), pass it on by name:
+
+```toml
+[runtimes.ts]
+env = { REDIS_URL = "{env.REDIS_URL}" }
+```
+
+Unsworn logs the variables it holds back when a runtime starts.
 
 ## Routes
 

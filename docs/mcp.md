@@ -172,6 +172,10 @@ rate_limit = { requests = 10, per = "1m", key = "auth.sub" }
   server behind it might not check them. A `tools/call` for
   `create_invoice` gets that tool's policies on top of the `[mcp]` ones.
   Other tools get the `[mcp]` ones.
+- A message in which an object has two members with the same name is
+  rejected (`-32600`). JSON parsers disagree about which one counts, so the
+  server behind Unsworn could otherwise run a different tool, or the same
+  tool with different arguments, than the one Unsworn checked.
 - Responses, including the tool list, pass through unchanged. The
   [tool list visibility](#tool-list-visibility) rules below apply only to
   tools Unsworn hosts itself, because filtering a proxied server's list would

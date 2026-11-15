@@ -222,10 +222,10 @@ async fn route_request<H: Host>(
         let alt = project.match_request(host_name.as_deref(), &method, &toggled);
         if let MatchResult::Found(_) = alt {
             if project.server.trailing_slash == TrailingSlash::Redirect {
-                let location = match req.uri().query() {
+                let location = super::checks::same_site(match req.uri().query() {
                     Some(q) => format!("{toggled}?{q}"),
                     None => toggled,
-                };
+                });
                 let mut resp = empty_response(StatusCode::PERMANENT_REDIRECT);
                 if let Ok(v) = HeaderValue::from_str(&location) {
                     resp.headers_mut().insert(header::LOCATION, v);

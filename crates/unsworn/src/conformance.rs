@@ -125,6 +125,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
             build: true,
             socket_dir: sockets.path().to_path_buf(),
             log_tap: Some(log_tx),
+            withheld_env: Vec::new(),
         },
     );
 

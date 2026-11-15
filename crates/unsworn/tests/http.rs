@@ -689,6 +689,91 @@ fn reload_on_sighup() {
 }
 
 #[test]
+fn workers_dont_inherit_credentials() {
+    if !needs_python() {
+        return;
+    }
+    // A worker that answers with the variables it can see.
+    let worker = r#"
+import json, os, sys
+out = sys.stdout.buffer
+def send(message):
+    out.write(json.dumps(message).encode() + b"\n")
+    out.flush()
+send({"type": "ready", "protocol": 1})
+for line in sys.stdin.buffer:
+    msg = json.loads(line)
+    if msg["type"] == "request":
+        names = ["JWT_SECRET", "API_KEYS", "VERIFIER_TOKEN", "PASSED_ON", "ISSUER", "UNRELATED"]
+        send({"type": "response", "id": msg["id"], "status": 200,
+              "json": {n: os.environ.get(n) for n in names}})
+"#;
+    let cfg = r#"
+[runtimes.py]
+extensions = [".py"]
+command = "python3 worker.py"
+env = { PASSED_ON = "{env.PASSED_ON}" }
+
+[auth.users]
+type = "jwt"
+secret = "{env.JWT_SECRET}"
+issuer = "{env.ISSUER}"
+
+[auth.keys]
+type = "api_key"
+keys = "{env.API_KEYS}"
+
+[auth.remote]
+type = "api_key"
+header = "X-Remote-Key"
+url = "http://127.0.0.1:9/verify"
+headers = { Authorization = "Bearer {env.VERIFIER_TOKEN}" }
+
+[auth.partners]
+type = "jwt"
+secret = "{env.PASSED_ON}"
+
+[[route]]
+path = "/env"
+method = "GET"
+handler = "worker.py#env"
+"#;
+    let p = Project::new(&[("unsworn.toml", cfg), ("worker.py", worker)]);
+    let s = p.start_with_env(
+        &["serve"],
+        &[
+            ("JWT_SECRET", "0123456789abcdef0123456789abcdef"),
+            ("API_KEYS", "k1,k2"),
+            ("VERIFIER_TOKEN", "service-token"),
+            ("PASSED_ON", "fedcba9876543210fedcba9876543210"),
+            ("ISSUER", "https://auth.example/"),
+            ("UNRELATED", "kept"),
+        ],
+    );
+    let r = s.get("/env");
+    assert_eq!(r.status, 200, "{}\n{}", r.text(), s.logs());
+    assert_eq!(
+        r.json(),
+        serde_json::json!({
+            // What Unsworn checks credentials with stays with Unsworn,
+            "JWT_SECRET": null,
+            "API_KEYS": null,
+            "VERIFIER_TOKEN": null,
+            // unless the runtime's `env` asks for it.
+            "PASSED_ON": "fedcba9876543210fedcba9876543210",
+            // Everything else is inherited as before.
+            "ISSUER": "https://auth.example/",
+            "UNRELATED": "kept",
+        })
+    );
+    let logs = s.logs();
+    assert!(
+        logs.contains("not passing API_KEYS, JWT_SECRET, VERIFIER_TOKEN to workers"),
+        "{logs}"
+    );
+}
+
+#[test]
 fn connections_are_limited() {
     use std::io::{Read, Write};
     use std::net::TcpStream;

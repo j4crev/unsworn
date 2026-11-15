@@ -94,6 +94,12 @@ impl Project {
     /// listening. The OS picks the port and the server reports it in its
     /// log, so tests running in parallel can't end up on the same port.
     pub fn start_with(&self, args: &[&str]) -> Server {
+        self.start_with_env(args, &[])
+    }
+
+    /// As [`Project::start_with`], with extra environment variables.
+    #[allow(dead_code)] // not every test binary uses it
+    pub fn start_with_env(&self, args: &[&str], env: &[(&str, &str)]) -> Server {
         let log = self.path().join("unsworn.log");
         let child = Command::new(env!("CARGO_BIN_EXE_unsworn"))
             .arg("-C")
@@ -103,6 +109,7 @@ impl Project {
             .arg("127.0.0.1:0")
             .env("PYTHONPATH", repo_root().join("sdk/python"))
             .env("UNSWORN_LOG", "info")
+            .envs(env.iter().copied())
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(&log).unwrap())
             .spawn()

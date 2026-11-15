@@ -425,6 +425,12 @@ pub struct Project {
     /// Files read while loading, for watching in dev mode.
     pub files: Vec<String>,
     pub routes_dir: Option<String>,
+    /// The environment variables `[auth]` and `[store]` read credentials
+    /// from: signing secrets, API keys, a verifier's headers, the store's
+    /// URL and token. A handler has no use for them unless its runtime's
+    /// `env` passes them on, and one that could read the signing secret
+    /// could mint its own tokens.
+    pub secret_env: Vec<String>,
     routers: HashMap<Option<String>, matchit::Router<usize>>,
     slots: Vec<Vec<SlotEntry>>,
     /// Catch-all routes, longest prefix first, with their segments.
@@ -729,6 +735,7 @@ pub fn compile_with(host: &dyn Host, config_file: &str, schemas: Build) -> Compi
         sets: BTreeMap::new(),
         files: vec![config_file.to_string()],
         route_tools: Vec::new(),
+        secret_env: std::collections::BTreeSet::new(),
     };
     let project = c.run();
     let mut diagnostics = c.diags.items;
@@ -755,6 +762,8 @@ struct Compiler<'h> {
     /// Routes to offer as MCP tools: route id, declaration, where it was
     /// declared, and whether `[openapi] mcp_tools` picked it in bulk.
     route_tools: Vec<(usize, RawRouteTool, String, bool)>,
+    /// Environment variables that credentials were read from.
+    secret_env: std::collections::BTreeSet<String>,
 }
 
 /// An action-less `[[route]]` entry with an exact path.
@@ -1094,6 +1103,7 @@ impl<'h> Compiler<'h> {
             mcp,
             files: std::mem::take(&mut self.files),
             routes_dir,
+            secret_env: std::mem::take(&mut self.secret_env).into_iter().collect(),
             routers,
             slots,
             catch_alls,
@@ -1125,6 +1135,20 @@ impl<'h> Compiler<'h> {
         out
     }
 
+    /// As [`Compiler::subst`], for a value that is a credential: a signing
+    /// secret, API keys, a verifier's or the store's own credentials. The
+    /// variables it reads are noted, so hosts can keep them from handlers.
+    fn subst_secret(&mut self, value: &str, loc: &str) -> String {
+        let mut rest = value;
+        while let Some(start) = rest.find("{env.") {
+            let after = &rest[start + 5..];
+            let Some(end) = after.find('}') else { break };
+            self.secret_env.insert(after[..end].to_string());
+            rest = &after[end + 1..];
+        }
+        self.subst(value, loc)
+    }
+
     /// Reports a URL Unsworn fetches that isn't `http://` or `https://`.
     fn check_url(&mut self, url: &str, loc: &str) {
         // An unset variable has already been reported.
@@ -1140,6 +1164,32 @@ impl<'h> Compiler<'h> {
             self.diags.push(
                 Diagnostic::error(loc, format!("\"{url}\" isn't an http:// or https:// URL"))
                     .hint("use a full URL, such as https://auth.example.com/verify-key"),
+            );
+        }
+    }
+
+    /// Warns about a URL that credentials or signing keys travel over in
+    /// the clear. This machine's own addresses are fine.
+    fn warn_plain_http(&mut self, url: &str, loc: &str, risk: &str) {
+        let Ok(uri) = url.parse::<http::Uri>() else {
+            return;
+        };
+        if !uri
+            .scheme_str()
+            .is_some_and(|s| s.eq_ignore_ascii_case("http"))
+        {
+            return;
+        }
+        let host = uri.host().unwrap_or_default();
+        let bare = host.trim_start_matches('[').trim_end_matches(']');
+        let local = host.eq_ignore_ascii_case("localhost")
+            || bare
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback());
+        if !local {
+            self.diags.push(
+                Diagnostic::warning(loc, format!("\"{url}\" isn't encrypted, so {risk}"))
+                    .hint("use an https:// URL"),
             );
         }
     }
@@ -1288,9 +1338,43 @@ impl<'h> Compiler<'h> {
                     let keys = if let Some(url) = url {
                         let url = self.subst(url, &format!("{loc}.url"));
                         self.check_url(&url, &format!("{loc}.url"));
+                        self.warn_plain_http(
+                            &url,
+                            &format!("{loc}.url"),
+                            "anyone on the network path can swap in their own signing keys and mint tokens",
+                        );
+                        if j.issuer.is_none() && j.audience.is_none() {
+                            self.diags.push(
+                                Diagnostic::warning(
+                                    &loc,
+                                    "without `issuer` or `audience`, any token signed by these keys is accepted",
+                                )
+                                .hint("set `audience` (and `issuer`): key sets such as Firebase's sign tokens for every project, not only yours"),
+                            );
+                        }
                         JwtKeys::Jwks(url)
                     } else if let Some(secret) = &j.secret {
-                        JwtKeys::Secret(self.subst(secret, &loc))
+                        let at = format!("{loc}.secret");
+                        let reported = self.diags.items.len();
+                        let secret = self.subst_secret(secret, &at);
+                        // An unset variable has already been reported.
+                        if secret.is_empty() && self.diags.items.len() == reported {
+                            self.diags.push(
+                                Diagnostic::error(&at, "the secret is empty")
+                                    .hint("anyone can sign a token with an empty secret; set one of at least 32 random bytes"),
+                            );
+                        } else if !secret.is_empty() && secret.len() < MIN_SECRET_BYTES {
+                            self.diags.push(
+                                Diagnostic::warning(
+                                    &at,
+                                    format!(
+                                        "the secret is shorter than {MIN_SECRET_BYTES} bytes; one this short can be guessed from a single token"
+                                    ),
+                                )
+                                .hint(format!("use at least {MIN_SECRET_BYTES} random bytes, e.g. from `openssl rand -base64 32`")),
+                            );
+                        }
+                        JwtKeys::Secret(secret)
                     } else {
                         let path = j.public_key.clone().unwrap_or_default();
                         self.files.push(path.clone());
@@ -1392,7 +1476,7 @@ impl<'h> Compiler<'h> {
                             }
                             let mut keys = Vec::new();
                             for key in list.to_vec() {
-                                let value = self.subst(&key, &format!("{loc}.keys"));
+                                let value = self.subst_secret(&key, &format!("{loc}.keys"));
                                 keys.extend(
                                     value
                                         .split(',')
@@ -1410,10 +1494,15 @@ impl<'h> Compiler<'h> {
                         (None, Some(url)) => {
                             let url = self.subst(url, &format!("{loc}.url"));
                             self.check_url(&url, &format!("{loc}.url"));
+                            self.warn_plain_http(
+                                &url,
+                                &format!("{loc}.url"),
+                                "every API key sent to it can be read on the network path",
+                            );
                             let mut headers = Vec::new();
                             for (name, value) in k.headers.iter().flatten() {
                                 let at = format!("{loc}.headers.{name}");
-                                let value = self.subst(value, &at);
+                                let value = self.subst_secret(value, &at);
                                 if !valid_header_name(name) {
                                     self.diags.error(&at, "not a valid header name");
                                 } else if value.chars().any(|c| c.is_control() && c != '\t') {
@@ -1461,7 +1550,10 @@ impl<'h> Compiler<'h> {
 
     fn store(&mut self, raw: &RawConfig) -> StoreConfig {
         let store = raw.store.clone().unwrap_or_default();
-        let url = store.url.as_ref().map(|u| self.subst(u, "[store].url"));
+        let url = store
+            .url
+            .as_ref()
+            .map(|u| self.subst_secret(u, "[store].url"));
         match (store.backend, &url) {
             (config::StoreBackend::Redis, None) => {
                 self.diags.push(
@@ -1491,7 +1583,10 @@ impl<'h> Compiler<'h> {
             }
             _ => {}
         }
-        let token = store.token.as_ref().map(|t| self.subst(t, "[store].token"));
+        let token = store
+            .token
+            .as_ref()
+            .map(|t| self.subst_secret(t, "[store].token"));
         let rest = url.as_deref().is_some_and(StoreConfig::is_rest_url);
         if store.backend == config::StoreBackend::Redis && rest && token.is_none() {
             self.diags.push(
@@ -3311,6 +3406,10 @@ impl<'h> Compiler<'h> {
         (routers, slots, catch_alls)
     }
 }
+
+/// An HMAC secret shorter than this draws a warning: HS256's key should be
+/// as long as its 256-bit output (RFC 7518 section 3.2).
+const MIN_SECRET_BYTES: usize = 32;
 
 fn credential_headers(schemes: &BTreeMap<String, Arc<Scheme>>, auth: &AuthReq) -> Vec<String> {
     let AuthReq::AnyOf(alts) = auth else {

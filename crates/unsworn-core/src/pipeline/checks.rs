@@ -430,7 +430,22 @@ pub fn redirect_location(to: &str, params: &[(String, String)]) -> String {
             .replace(&format!("{{*{k}}}"), &path.join("/"))
             .replace(&format!("{{{k}}}"), &encode(v));
     }
-    location
+    if to.starts_with("//") {
+        location
+    } else {
+        same_site(location)
+    }
+}
+
+/// A `Location` built from a request's path, kept on this site. Browsers
+/// read `//host/path` as another site's URL, so a path whose first segment
+/// is empty (`/old//evil.example`) could otherwise send a visitor anywhere.
+pub fn same_site(location: String) -> String {
+    if location.starts_with("//") {
+        format!("/{}", location.trim_start_matches('/'))
+    } else {
+        location
+    }
 }
 
 /// The status and headers of a handler's response, with a `Content-Type`
@@ -632,6 +647,18 @@ mod tests {
         assert_eq!(
             redirect_location("https://x.example/{*p}", &params),
             "https://x.example/a%20b/c%3Fd%23%C3%A9%0A"
+        );
+        // A parameter can't turn a local target into another site's.
+        let params = vec![("rest".to_string(), "/evil.example/x".to_string())];
+        assert_eq!(redirect_location("/{*rest}", &params), "/evil.example/x");
+        assert_eq!(
+            redirect_location("/new/{*rest}", &params),
+            "/new//evil.example/x"
+        );
+        // One the config spells out is left alone.
+        assert_eq!(
+            redirect_location("//cdn.example/{*rest}", &params),
+            "//cdn.example//evil.example/x"
         );
         assert_eq!(decode_param("a%20b"), "a b");
         assert_eq!(

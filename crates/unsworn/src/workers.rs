@@ -189,6 +189,9 @@ pub struct PoolOptions {
     pub socket_dir: PathBuf,
     /// Receives a copy of every `log` message, for the conformance suite.
     pub log_tap: Option<mpsc::UnboundedSender<proto::Log>>,
+    /// Environment variables workers don't inherit: the project's
+    /// [`Project::secret_env`]. [`Pools::new`] fills it in.
+    pub withheld_env: Vec<String>,
 }
 
 pub struct Pool {
@@ -213,7 +216,8 @@ pub struct Pools {
 }
 
 impl Pools {
-    pub fn new(project: &Project, opts: PoolOptions) -> Arc<Pools> {
+    pub fn new(project: &Project, mut opts: PoolOptions) -> Arc<Pools> {
+        opts.withheld_env = project.secret_env.clone();
         let handlers = project.handlers_by_runtime();
         let streaming = project.stream_handlers_by_runtime();
         let pools = project
@@ -398,7 +402,9 @@ impl Pool {
     async fn start_inner(self: &Arc<Self>) -> Result<(), String> {
         if let Some(build) = self.runtime.build.as_ref().filter(|_| self.opts.build) {
             tracing::info!(runtime = %self.runtime.name, "building: {build}");
-            let output = shell(build)
+            let mut cmd = shell(build);
+            self.withhold_env(&mut cmd);
+            let output = cmd
                 .current_dir(&self.opts.root)
                 .stdin(Stdio::null())
                 .output()
@@ -414,6 +420,19 @@ impl Pool {
                     stderr.trim()
                 ));
             }
+        }
+        let withheld: Vec<&str> = self
+            .withheld()
+            .filter(|name| std::env::var_os(name).is_some())
+            .collect();
+        if !withheld.is_empty() {
+            tracing::info!(
+                runtime = %self.runtime.name,
+                "not passing {} to workers: the config reads credentials from {}; to pass one on, list it under [runtimes.{}].env",
+                withheld.join(", "),
+                if withheld.len() == 1 { "it" } else { "them" },
+                self.runtime.name
+            );
         }
         let mut started = Vec::new();
         for i in 0..self.worker_count {
@@ -435,10 +454,31 @@ impl Pool {
         Ok(())
     }
 
+    /// The credentials' environment variables this runtime doesn't ask for
+    /// in its own `env`.
+    fn withheld(&self) -> impl Iterator<Item = &str> {
+        self.opts
+            .withheld_env
+            .iter()
+            .filter(|name| !self.runtime.env.contains_key(*name))
+            .map(String::as_str)
+    }
+
+    /// Keeps the variables Unsworn's own credentials come from out of a
+    /// command's environment. Handlers are the project's code, but a flaw
+    /// in one (or in a package it uses) shouldn't hand over the secret
+    /// that signs every token.
+    fn withhold_env(&self, cmd: &mut Command) {
+        for name in self.withheld() {
+            cmd.env_remove(name);
+        }
+    }
+
     async fn spawn_worker(self: &Arc<Self>, index: usize) -> Result<Arc<Worker>, String> {
         let rt = &self.runtime;
         let worker_id = format!("{}-{index}", rt.name);
         let mut cmd = shell(&rt.command);
+        self.withhold_env(&mut cmd);
         cmd.current_dir(&self.opts.root)
             .env("UNSWORN_PROTOCOL", PROTOCOL_VERSION.to_string())
             .env("UNSWORN_VERSION", unsworn_core::VERSION)
@@ -1344,22 +1384,42 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
 }
 
 /// A directory for worker sockets, removed when dropped.
-pub struct SocketDir(pub PathBuf);
+///
+/// Whoever connects to a worker's socket first is taken to be the worker,
+/// and then sees every request sent to it. So the directory is this
+/// process's alone: newly made, under a name nobody could have made in
+/// advance, and open to its owner only (`0700`). A worker has to run as
+/// the same user as Unsworn to reach its socket.
+pub struct SocketDir(tempfile::TempDir);
 
 impl SocketDir {
     pub fn create() -> std::io::Result<SocketDir> {
-        let dir = std::env::temp_dir().join(format!("unsworn-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::Builder::new()
+            .prefix("unsworn-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()?;
         Ok(SocketDir(dir))
     }
 
     pub fn path(&self) -> &Path {
-        &self.0
+        self.0.path()
     }
 }
 
-impl Drop for SocketDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+#[cfg(test)]
+mod tests {
+    use super::SocketDir;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn the_socket_directory_is_private_and_removed() {
+        let (a, b) = (SocketDir::create().unwrap(), SocketDir::create().unwrap());
+        assert_ne!(a.path(), b.path());
+        let mode = std::fs::metadata(a.path()).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        let path = a.path().to_path_buf();
+        drop(a);
+        assert!(!path.exists());
     }
 }
