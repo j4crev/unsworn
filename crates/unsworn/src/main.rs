@@ -4,6 +4,7 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("the unsworn server runs on Linux only");
 
+mod build;
 mod commands;
 mod conformance;
 mod load;
@@ -63,6 +64,17 @@ enum Command {
         /// Check against a deployment target's capabilities.
         #[arg(long)]
         target: Option<String>,
+    },
+    /// Bundle the project for a deployment target. For now:
+    /// `--target cloudflare`, a Cloudflare Worker.
+    Build {
+        /// The deployment target.
+        #[arg(long)]
+        target: String,
+        /// Output directory, relative to the project directory.
+        /// Default: `dist/<target>`.
+        #[arg(long, short)]
+        out: Option<PathBuf>,
     },
     /// Print the resolved route table.
     Routes {
@@ -158,6 +170,12 @@ fn main() -> ExitCode {
             }
             runtime.block_on(commands::check(&root, &config, deep, target.as_deref()))
         }
+        Command::Build { target, out } => build::build(build::BuildOptions {
+            root,
+            config,
+            target,
+            out,
+        }),
         Command::Routes { policies, json } => commands::routes(&root, &config, policies, json),
         Command::Openapi { output } => commands::openapi(&root, &config, output.as_deref()),
         Command::Conformance {
