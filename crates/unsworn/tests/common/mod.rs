@@ -346,6 +346,13 @@ while True:
         send({"type": "response", "id": rid, "status": 200, "text": "late"})
     elif name == "big":
         send({"type": "response", "id": rid, "status": 200, "json": {"items": ["unsworn"] * 500}})
+    elif name == "huge":
+        send({"type": "response", "id": rid, "status": 200, "text": "x" * 1_500_000})
+    elif name == "huge_stream":
+        send({"type": "response", "id": rid, "status": 200, "stream": True, "headers": {"content-type": "text/plain"}})
+        for _ in range(15):
+            send({"type": "chunk", "id": rid, "text": "y" * 100_000})
+        send({"type": "end", "id": rid})
     else:
         send({"type": "response", "id": rid, "status": 200, "json": {
             "count": count, "handler": m["handler"], "method": m["method"], "path": m["path"],

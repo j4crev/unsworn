@@ -118,22 +118,41 @@ fn chunk_to_frame(item: Result<Bytes, String>) -> Result<Frame<Bytes>, BoxError>
     }
 }
 
-/// Reads a body up to `limit` bytes. Returns the bytes and whether the
-/// whole body was read.
-async fn collect_up_to(mut body: Body, limit: usize) -> (Bytes, bool) {
-    let mut out = bytes::BytesMut::new();
-    while let Some(frame) = body.frame().await {
-        let Ok(frame) = frame else {
-            return (out.freeze(), false);
-        };
-        if let Ok(data) = frame.into_data() {
-            if out.len() + data.len() > limit {
-                return (out.freeze(), false);
+/// Reads a body whole if it's at most `limit` bytes. Otherwise gives back a
+/// body that replays what was read, then the rest (or the read error).
+async fn collect_up_to(mut body: Body, limit: usize) -> Result<Bytes, Body> {
+    let mut chunks: Vec<Bytes> = Vec::new();
+    let mut len = 0;
+    let rest = loop {
+        match body.frame().await {
+            None => break None,
+            Some(Ok(frame)) => {
+                // Trailers aren't kept; responses that cache don't send them.
+                let Ok(data) = frame.into_data() else {
+                    continue;
+                };
+                len += data.len();
+                chunks.push(data);
+                if len > limit {
+                    break Some(Ok(body));
+                }
             }
-            out.extend_from_slice(&data);
+            Some(Err(e)) => break Some(Err(e)),
         }
-    }
-    (out.freeze(), true)
+    };
+    let Some(rest) = rest else {
+        let mut out = bytes::BytesMut::with_capacity(len);
+        for c in chunks {
+            out.extend_from_slice(&c);
+        }
+        return Ok(out.freeze());
+    };
+    let read = futures_util::stream::iter(chunks.into_iter().map(|c| Ok(Frame::data(c))));
+    let rest = match rest {
+        Ok(body) => StreamExt::boxed(http_body_util::BodyStream::new(body)),
+        Err(e) => StreamExt::boxed(futures_util::stream::once(async move { Err(e) })),
+    };
+    Err(StreamBody::new(read.chain(rest)).boxed_unsync())
 }
 
 /// The I/O for one request.
@@ -196,7 +215,7 @@ impl Host for ServerHost {
         Limited::new(body, max as usize).boxed_unsync()
     }
 
-    async fn collect(&self, body: Body, limit: usize) -> (Bytes, bool) {
+    async fn collect(&self, body: Body, limit: usize) -> Result<Bytes, Body> {
         collect_up_to(body, limit).await
     }
 

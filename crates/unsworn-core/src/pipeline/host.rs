@@ -189,13 +189,15 @@ pub trait Host: MaybeSync {
     /// bodies passed on unread.
     fn limit_body(&self, body: Self::RequestBody, max: u64) -> Self::RequestBody;
 
-    /// Reads a response body up to `limit` bytes. Returns the bytes and
-    /// whether that was the whole body.
+    /// Reads a response body whole, if it's at most `limit` bytes.
+    /// Otherwise, or when reading fails, gives back a body that yields the
+    /// same data (what was read, then the rest, or the error), so the
+    /// response can still be sent in full.
     fn collect(
         &self,
         body: Self::ResponseBody,
         limit: usize,
-    ) -> impl Future<Output = (Bytes, bool)> + MaybeSend;
+    ) -> impl Future<Output = Result<Bytes, Self::ResponseBody>> + MaybeSend;
 
     /// Calls a handler, or a `before` handler when `request.phase` says so.
     /// The call must end by `deadline`.

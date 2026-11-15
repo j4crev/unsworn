@@ -308,14 +308,18 @@ impl<H: Host> Ctx<'_, H> {
         .await
     }
 
-    /// Reads a response body up to `limit` bytes. Returns the bytes and
-    /// whether that was the whole body.
-    async fn collect(&self, body: Body<H::ResponseBody>, limit: usize) -> (Bytes, bool) {
+    /// Reads a response body whole, if it's at most `limit` bytes.
+    /// Otherwise gives back an equivalent body.
+    async fn collect(
+        &self,
+        body: Body<H::ResponseBody>,
+        limit: usize,
+    ) -> Result<Bytes, Body<H::ResponseBody>> {
         match body {
-            Body::Empty => (Bytes::new(), true),
-            Body::Bytes(b) if b.len() <= limit => (b, true),
-            Body::Bytes(b) => (b.slice(..limit), false),
-            Body::Host(b) => self.host.collect(b, limit).await,
+            Body::Empty => Ok(Bytes::new()),
+            Body::Bytes(b) if b.len() <= limit => Ok(b),
+            Body::Bytes(b) => Err(Body::Bytes(b)),
+            Body::Host(b) => self.host.collect(b, limit).await.map_err(Body::Host),
         }
     }
 }
@@ -691,11 +695,11 @@ async fn store_in_cache<H: Host>(
         return resp;
     }
     let (parts, body) = resp.into_parts();
-    let (bytes, complete) = ctx.collect(body, MAX_CACHED_BODY).await;
-    if !complete {
-        // Too large or failed midway: serve what we have without caching.
-        return http::Response::from_parts(parts, Body::Bytes(bytes));
-    }
+    let bytes = match ctx.collect(body, MAX_CACHED_BODY).await {
+        Ok(bytes) => bytes,
+        // Too large, or failed midway: sent as it is, without caching.
+        Err(body) => return http::Response::from_parts(parts, body),
+    };
     let entry = CachedResponse {
         status,
         headers: parts

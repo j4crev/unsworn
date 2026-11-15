@@ -432,6 +432,10 @@ async fn forward<H: Host>(
 /// What a `before` handler's rejection says, for the model.
 async fn rejection_text<H: Host>(ctx: &Ctx<'_, H>, resp: Resp<H>) -> String {
     let status = resp.status();
-    let (bytes, _) = ctx.collect(resp.into_body(), 16 * 1024).await;
+    // A body too long to be a message is left out.
+    let bytes = ctx
+        .collect(resp.into_body(), 16 * 1024)
+        .await
+        .unwrap_or_default();
     rpc::rejection_text(status, &bytes)
 }
