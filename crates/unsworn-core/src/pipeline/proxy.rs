@@ -131,11 +131,37 @@ pub struct ForwardInfo {
     /// The client connected over HTTPS.
     pub tls: bool,
     pub request_id: Option<String>,
+    /// The request came from a proxy Unsworn trusts (`[server].trusted_proxies`),
+    /// so the forwarding headers it carries are kept and added to. Otherwise
+    /// the client wrote them, and they're replaced.
+    pub trusted_peer: bool,
 }
+
+/// Forwarding headers a proxy in front of Unsworn sets, which a client
+/// could otherwise set to anything: an upstream that reads the leftmost
+/// `X-Forwarded-For`, or `X-Real-IP`, would take the client's word for its
+/// address.
+const FROM_PROXIES: &[&str] = &[
+    "x-forwarded-for",
+    "forwarded",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "x-forwarded-prefix",
+    "x-forwarded-ssl",
+    "x-real-ip",
+];
+
+/// Headers some frameworks (Symfony, IIS URL Rewrite) read as the request's
+/// real path. Unsworn matched the request by its own path, so an upstream
+/// that honored one of these could serve a route whose policies never ran.
+const PATH_OVERRIDES: &[&str] = &["x-original-url", "x-rewrite-url"];
 
 /// Rewrites a request for one of the proxy's upstreams: the target URI,
 /// hop-by-hop headers removed (an upgrade's and `TE: trailers` kept),
-/// `Forwarded`, `X-Forwarded-*`, `Via`, `X-Request-Id` and `Host`. Returns
+/// `Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `Via`, `X-Request-Id` and
+/// `Host`. Forwarding headers from a peer that isn't a trusted proxy, and
+/// path overrides such as `X-Original-URL`, are removed first. Returns
 /// the upstream it picked, or `502` when the target isn't a valid URL.
 pub fn rewrite(
     proxy: &Proxy,
@@ -181,6 +207,14 @@ pub fn rewrite(
         .flat_map(|v| v.split(','))
         .any(|t| t.trim().eq_ignore_ascii_case("trailers"));
     strip_hop_by_hop(headers);
+    for name in PATH_OVERRIDES {
+        headers.remove(*name);
+    }
+    if !info.trusted_peer {
+        for name in FROM_PROXIES {
+            headers.remove(*name);
+        }
+    }
     if let Some(u) = upgrade_value.filter(|_| upgrade) {
         headers.insert(header::UPGRADE, u);
         headers.insert(header::CONNECTION, HeaderValue::from_static("upgrade"));
@@ -208,6 +242,9 @@ pub fn rewrite(
         "x-forwarded-proto",
         HeaderValue::from_static(if info.tls { "https" } else { "http" }),
     );
+    if let Ok(v) = HeaderValue::from_str(&info.client_ip.to_string()) {
+        headers.insert("x-real-ip", v);
+    }
     if let Some(h) = original_host {
         headers.insert("x-forwarded-host", h);
     }
@@ -267,6 +304,7 @@ mod tests {
             client_ip: "192.0.2.7".parse().unwrap(),
             tls: true,
             request_id: Some("abc".into()),
+            trusted_peer: true,
         };
         assert_eq!(rewrite(&p, &mut req, &info).unwrap(), "http://up:8080");
         assert_eq!(req.uri, "http://up:8080/users?x=1");
@@ -305,6 +343,7 @@ mod tests {
             client_ip: "2001:db8::7".parse().unwrap(),
             tls: false,
             request_id: None,
+            trusted_peer: true,
         };
         rewrite(&p, &mut req, &info).unwrap();
         let h = &req.headers;
@@ -328,6 +367,59 @@ mod tests {
     }
 
     #[test]
+    fn replaces_what_an_untrusted_client_sent() {
+        let p = proxy(&["http://up:8080"]);
+        let mut req = parts(
+            "/api/users",
+            &[
+                ("host", "example.com"),
+                ("x-forwarded-for", "127.0.0.1"),
+                ("forwarded", "for=127.0.0.1"),
+                ("x-real-ip", "127.0.0.1"),
+                ("x-forwarded-port", "443"),
+                ("x-forwarded-prefix", "/admin"),
+                ("x-original-url", "/admin/users"),
+                ("x-rewrite-url", "/admin/users"),
+            ],
+        );
+        let info = ForwardInfo {
+            client_ip: "198.51.100.4".parse().unwrap(),
+            tls: true,
+            request_id: None,
+            trusted_peer: false,
+        };
+        rewrite(&p, &mut req, &info).unwrap();
+        let h = &req.headers;
+        assert_eq!(h["x-forwarded-for"], "198.51.100.4");
+        assert_eq!(h["x-real-ip"], "198.51.100.4");
+        assert_eq!(
+            h["forwarded"],
+            "for=198.51.100.4;proto=https;host=\"example.com\""
+        );
+        for gone in [
+            "x-forwarded-port",
+            "x-forwarded-prefix",
+            "x-original-url",
+            "x-rewrite-url",
+        ] {
+            assert!(!h.contains_key(gone), "{gone}");
+        }
+
+        // A trusted proxy's headers are kept, but a path override never is.
+        let mut req = parts(
+            "/api/users",
+            &[("x-forwarded-prefix", "/v1"), ("x-original-url", "/admin")],
+        );
+        let info = ForwardInfo {
+            trusted_peer: true,
+            ..info
+        };
+        rewrite(&p, &mut req, &info).unwrap();
+        assert_eq!(req.headers["x-forwarded-prefix"], "/v1");
+        assert!(!req.headers.contains_key("x-original-url"));
+    }
+
+    #[test]
     fn keeps_an_upgrade_and_the_host_when_asked() {
         let mut p = proxy(&["http://up"]);
         p.preserve_host = true;
@@ -343,6 +435,7 @@ mod tests {
             client_ip: "::1".parse().unwrap(),
             tls: false,
             request_id: None,
+            trusted_peer: false,
         };
         rewrite(&p, &mut req, &info).unwrap();
         assert_eq!(req.uri, "http://up/");
@@ -374,6 +467,7 @@ mod tests {
             client_ip: "::1".parse().unwrap(),
             tls: false,
             request_id: None,
+            trusted_peer: false,
         };
         assert_eq!(
             rewrite(&p, &mut req, &info).unwrap_err().status,

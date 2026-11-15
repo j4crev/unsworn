@@ -272,6 +272,10 @@ impl Host for WasmHost {
             client_ip: request.client_ip,
             tls: self.tls,
             request_id: Some(self.request_id.clone()),
+            // The platform gives the client's address, and the forwarding
+            // headers the request arrived with may be the client's own, so
+            // the upstream gets fresh ones.
+            trusted_peer: false,
         };
         let upstream = match rewrite(&request.proxy, &mut parts, &info) {
             Ok(u) => u,

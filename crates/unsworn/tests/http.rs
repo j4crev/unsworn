@@ -660,6 +660,49 @@ handler = "src/a.py#a"
 }
 
 #[test]
+fn a_skipped_build_is_named_when_its_worker_is_missing() {
+    let cfg = r#"
+[runtimes.go]
+extensions = [".go"]
+build = "go build -o .unsworn/go-worker ./src"
+command = ".unsworn/go-worker"
+protocol = "framed"
+workers = 1
+eager = true
+
+[[route]]
+path = "/a"
+handler = "src/a.go#A"
+"#;
+    let p = Project::new(&[("unsworn.toml", cfg), ("src/a.go", "")]);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_unsworn"))
+        .arg("-C")
+        .arg(p.path())
+        .args(["serve", "--listen", "127.0.0.1:0"])
+        .env("UNSWORN_NO_BUILD", "1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("[runtimes.go].build (`go build -o .unsworn/go-worker ./src`) didn't run"),
+        "{stderr}"
+    );
+    // `0` turns building back on: the build runs (and fails on an empty file).
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_unsworn"))
+        .arg("-C")
+        .arg(p.path())
+        .args(["serve", "--listen", "127.0.0.1:0"])
+        .env("UNSWORN_NO_BUILD", "0")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("build failed"), "{stderr}");
+    assert!(!stderr.contains("didn't run"), "{stderr}");
+}
+
+#[test]
 fn reload_on_sighup() {
     let p = Project::new(&[(
         "unsworn.toml",
@@ -939,7 +982,9 @@ fn websocket_pass_through() {
     }
     let p = Project::new(&[(
         "unsworn.toml",
-        &format!("[[route]]\npath = \"/ws\"\nproxy = \"http://{up_addr}\"\n"),
+        &format!(
+            "[server]\nmax_connections = 1\nidle_timeout = \"1s\"\n\n[[route]]\npath = \"/ws\"\nproxy = \"http://{up_addr}\"\n"
+        ),
     )]);
     let s = p.serve();
 
@@ -969,6 +1014,15 @@ fn websocket_pass_through() {
     assert_eq!(buf[0], 0x81, "text frame back");
     let len = (buf[1] & 0x7f) as usize;
     assert_eq!(&buf[2..2 + len], b"echo:hi", "{:?}", &buf[..n]);
+
+    // The open WebSocket still counts toward `max_connections`, so the next
+    // connection waits until it closes for being idle.
+    let start = std::time::Instant::now();
+    s.get("/ws");
+    let waited = start.elapsed();
+    assert!(waited > std::time::Duration::from_millis(700), "{waited:?}");
+    assert!(waited < std::time::Duration::from_secs(4), "{waited:?}");
+    assert_eq!(stream.read(&mut buf).unwrap_or(0), 0, "closed when idle");
     let _ = upstream.kill();
     let _ = upstream.wait();
 }

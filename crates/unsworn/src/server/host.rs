@@ -63,6 +63,7 @@ async fn handle_inner(
         .map(String::from)
         .unwrap_or_else(|| shared.next_request_id());
     let client_ip = generation.client_ip.resolve(peer.ip(), req.headers());
+    let trusted_peer = generation.client_ip.trusts(peer.ip());
 
     let (mut resp, route_label) = if path == "/_unsworn/health" {
         // Anyone can ask here, so outside dev mode the answer is only
@@ -75,6 +76,7 @@ async fn handle_inner(
             store: shared.store.load_full(),
             request_id: request_id.clone(),
             tls,
+            trusted_peer,
         };
         let req = req.map(|b| b.map_err(BoxError::from).boxed_unsync());
         let handled = generation.router.handle(&host, req, client_ip).await;
@@ -166,6 +168,8 @@ struct ServerHost {
     store: Arc<Store>,
     request_id: String,
     tls: bool,
+    /// The connection came from one of `[server].trusted_proxies`.
+    trusted_peer: bool,
 }
 
 impl Host for ServerHost {
@@ -266,6 +270,7 @@ impl Host for ServerHost {
                 client_ip: request.client_ip,
                 tls: self.tls,
                 request_id: Some(self.request_id.clone()),
+                trusted_peer: self.trusted_peer,
             },
         )
         .await;

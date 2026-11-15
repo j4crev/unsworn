@@ -37,8 +37,10 @@ pub struct RawConfig {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawServer {
-    #[serde(default = "default_listen")]
-    pub listen: String,
+    /// The address to serve on. Default: "0.0.0.0:8080", or
+    /// "127.0.0.1:8080" under `unsworn dev`, whose detailed errors are for
+    /// this machine only.
+    pub listen: Option<String>,
     pub max_body: Option<ConfigSize>,
     pub timeout: Option<ConfigDuration>,
     #[serde(default)]
@@ -63,7 +65,7 @@ pub struct RawServer {
 impl Default for RawServer {
     fn default() -> Self {
         RawServer {
-            listen: default_listen(),
+            listen: None,
             max_body: None,
             timeout: None,
             trailing_slash: TrailingSlash::default(),
@@ -79,9 +81,10 @@ impl Default for RawServer {
     }
 }
 
-fn default_listen() -> String {
-    "0.0.0.0:8080".into()
-}
+/// Where `unsworn serve` listens when the config doesn't say.
+pub const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
+/// Where `unsworn dev` listens when the config doesn't say.
+pub const DEFAULT_DEV_LISTEN: &str = "127.0.0.1:8080";
 
 fn default_true() -> bool {
     true
@@ -881,7 +884,7 @@ path = "/legacy/{*rest}"
 proxy = "http://old:8080"
 "#;
         let cfg: RawConfig = parse_document(text, Format::Toml).unwrap();
-        assert_eq!(cfg.server.listen, "127.0.0.1:9000");
+        assert_eq!(cfg.server.listen.as_deref(), Some("127.0.0.1:9000"));
         assert_eq!(cfg.route.len(), 2);
         let r = &cfg.route[0];
         assert_eq!(r.cache, Some(OrOff::Off));

@@ -37,6 +37,12 @@ impl ClientIp {
         self.trust_all || self.nets.iter().any(|n| n.contains(&ip))
     }
 
+    /// Whether the connection's peer is a trusted proxy, whose forwarding
+    /// headers may be passed on.
+    pub fn trusts(&self, peer: IpAddr) -> bool {
+        self.trusted(peer.to_canonical())
+    }
+
     /// The client's address, given the address of the connection's peer.
     ///
     /// Addresses come out in canonical form: an IPv4 client that reached an

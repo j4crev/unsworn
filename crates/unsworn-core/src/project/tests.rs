@@ -413,6 +413,23 @@ cors = { origins = "*", credentials = true }
 }
 
 #[test]
+fn trusting_every_proxy_warns() {
+    for (list, warned) in [(r#"["all"]"#, true), (r#"["10.0.0.0/8"]"#, false)] {
+        let cfg = format!(
+            "[server]\ntrusted_proxies = {list}\n[[route]]\npath = \"/\"\nrespond = {{ status = 200 }}\n"
+        );
+        let host = MemHost::with(&[("unsworn.toml", &cfg)]);
+        let compiled = compile(&host, "unsworn.toml");
+        assert!(compiled.project.is_some());
+        let found = compiled.diagnostics.iter().any(|d| {
+            d.to_string()
+                .contains("takes every client's `X-Forwarded-For`")
+        });
+        assert_eq!(found, warned, "{list}");
+    }
+}
+
+#[test]
 fn cache_with_auth_warns() {
     let cfg = r#"
 [auth.jwt]

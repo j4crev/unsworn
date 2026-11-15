@@ -6,7 +6,7 @@ use hyper_util::rt::TokioIo;
 use unsworn_core::pipeline::proxy::{ForwardInfo, is_upgrade, response_headers, rewrite};
 use unsworn_core::project::Proxy;
 
-use super::support::{Body, BoxError, HttpClient, problem, problem_response};
+use super::support::{Body, BoxError, HttpClient, Tunnel, problem, problem_response};
 
 /// Forwards a request to one of the proxy's upstreams.
 pub fn forward(
@@ -25,6 +25,7 @@ async fn forward_inner(
     info: ForwardInfo,
 ) -> Response<Body> {
     let upgrade = is_upgrade(req.headers());
+    let tunnel = req.extensions().get::<Tunnel>().cloned();
     let client_upgrade = upgrade.then(|| hyper::upgrade::on(&mut req));
     let (mut parts, body) = req.into_parts();
     let upstream = match rewrite(&proxy, &mut parts, &info) {
@@ -51,9 +52,16 @@ async fn forward_inner(
         tokio::spawn(async move {
             match tokio::try_join!(client_upgrade, upstream_upgrade) {
                 Ok((client_io, upstream_io)) => {
-                    let mut a = TokioIo::new(client_io);
-                    let mut b = TokioIo::new(upstream_io);
-                    let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
+                    let (a, b) = (TokioIo::new(client_io), TokioIo::new(upstream_io));
+                    match tunnel {
+                        Some(tunnel) => tunnel.run(a, b).await,
+                        // Only a request that didn't come through the
+                        // listener (none today) lacks one.
+                        None => {
+                            let (mut a, mut b) = (a, b);
+                            let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
+                        }
+                    }
                 }
                 Err(e) => tracing::warn!("upgrade failed: {e}"),
             }

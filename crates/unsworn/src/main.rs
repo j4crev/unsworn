@@ -45,8 +45,13 @@ enum Command {
         #[arg(long, default_value = "text", value_parser = ["text", "json"])]
         log_format: String,
         /// Skip runtimes' `build` commands and start the workers as they
-        /// are, for deployments that ship prebuilt workers.
-        #[arg(long, env = "UNSWORN_NO_BUILD")]
+        /// are, for deployments that ship prebuilt workers. The official
+        /// image sets UNSWORN_NO_BUILD=1; UNSWORN_NO_BUILD=0 builds again.
+        #[arg(
+            long,
+            env = "UNSWORN_NO_BUILD",
+            value_parser = clap::builder::BoolishValueParser::new()
+        )]
         no_build: bool,
     },
     /// Serve with file watching, every runtime started up front, and

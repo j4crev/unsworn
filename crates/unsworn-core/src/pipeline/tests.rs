@@ -107,6 +107,8 @@ struct TestHost {
     /// Canned answers to outgoing requests, by URL.
     fetches: HashMap<String, (u16, String)>,
     fetched: Mutex<Vec<String>>,
+    /// Outgoing requests never get an answer: a stalled identity provider.
+    stall_fetches: AtomicBool,
 }
 
 impl TestHost {
@@ -125,6 +127,7 @@ impl TestHost {
             calls: Mutex::default(),
             fetches: HashMap::new(),
             fetched: Mutex::default(),
+            stall_fetches: AtomicBool::new(false),
         }
     }
 
@@ -253,6 +256,9 @@ impl Host for TestHost {
     ) -> Result<http::Response<Bytes>, FetchError> {
         let url = request.uri().to_string();
         self.fetched.lock().unwrap().push(url.clone());
+        if self.stall_fetches.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
         let Some((status, body)) = self.fetches.get(&url) else {
             return Err(FetchError::Connect("no such host".into()));
         };
@@ -1233,12 +1239,36 @@ rate_limit = {{ requests = 1, per = "1m", key = "auth.sub" }}
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(t.host.fetch_count(), 1);
 
+    // A refetch that stalls holds up no one who already has keys.
+    t.host.clock.advance(Duration::from_secs(601));
+    t.host.stall_fetches.store(true, Ordering::SeqCst);
+    let token = jwt(b"secret-one", Some("k1"), claims("u7", "profile"));
+    let req = http::Request::get("/me")
+        .header("authorization", &token)
+        .body(Bytes::new())
+        .unwrap();
+    let mut stuck = Box::pin(t.router.handle(&t.host, req, IP.parse().unwrap()));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(
+        stuck.as_mut().poll(&mut cx).is_pending(),
+        "refreshing the JWKS"
+    );
+    let r = me(&jwt(b"secret-one", Some("k1"), claims("u8", "profile")));
+    assert_eq!(r.status, StatusCode::OK, "served with the keys it had");
+    drop(stuck);
+    t.host.stall_fetches.store(false, Ordering::SeqCst);
+    let fetches = t.host.fetch_count();
+
     // An unknown key id refetches, but at most once a minute.
     me(&jwt(b"secret-two", Some("k2"), claims("u5", "profile")));
-    assert_eq!(t.host.fetch_count(), 1, "fetched less than a minute ago");
+    assert_eq!(
+        t.host.fetch_count(),
+        fetches,
+        "fetched less than a minute ago"
+    );
     t.host.clock.advance(Duration::from_secs(61));
     me(&jwt(b"secret-two", Some("k2"), claims("u5", "profile")));
-    assert_eq!(t.host.fetch_count(), 2);
+    assert_eq!(t.host.fetch_count(), fetches + 1);
 
     // Requests that fail authentication have no subject to count by, so
     // they count against the client's address.
