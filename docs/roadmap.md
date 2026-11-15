@@ -19,11 +19,10 @@ Cloudflare Workers first (`unsworn build --target cloudflare`). Work needed:
   JavaScript backend picked for that target. A CI job keeps it that way, and
   the core's `clippy.toml` rejects clock, file, process and socket calls,
   which compile for `wasm32` but panic there.
-- **Move the request pipeline into the core.** Policy evaluation (rate
-  limits, caching, IP rules, auth checks, MCP dispatch) currently lives in
-  the binary's `server/pipeline.rs`. An edge host needs the same decisions
-  without hyper or tokio, so they belong in the core behind host-provided
-  inputs.
+- ~~**Move the request pipeline into the core.**~~ Done:
+  `unsworn_core::pipeline` runs every request, MCP included, behind a
+  `Host` trait for the I/O. The binary is one host, and the core's tests
+  run against an in-memory one. A Worker host implements the same trait.
 - ~~**A store interface hosts implement.**~~ Done: `unsworn_core::store`
   defines a `RateLimiter` and a `ResponseCache` trait, so a host can back
   them differently, such as Durable Objects for rate-limit counters (which
