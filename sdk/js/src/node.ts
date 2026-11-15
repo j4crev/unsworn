@@ -27,7 +27,7 @@ import {
   errorMessage,
   failure,
   jsonLogs,
-  loadProject,
+  lazyProject,
   pairs,
   toResponse,
   toValue,
@@ -234,13 +234,16 @@ export function createHandler(bundle: Bundle, options: HandlerOptions = {}): Han
       : resolve(options.assets instanceof URL ? fileURLToPath(options.assets) : options.assets);
   jsonLogs(true);
 
-  let app: Unsworn | undefined;
   let store: Store | undefined;
-  const load = () => {
-    if (app) return app;
-    const wasm = options.wasm ?? new URL("../wasm/unsworn_bg.wasm", import.meta.url);
-    return (app = loadProject(bundle, wasm instanceof URL ? readFileSync(wasm) : wasm, env, dev));
-  };
+  const load = lazyProject(
+    bundle,
+    () => {
+      const wasm = options.wasm ?? new URL("../wasm/unsworn_bg.wasm", import.meta.url);
+      return wasm instanceof URL ? readFileSync(wasm) : wasm;
+    },
+    () => env,
+    dev,
+  );
 
   const pending = new Set<Promise<unknown>>();
   const track = (promise: Promise<unknown>) => {

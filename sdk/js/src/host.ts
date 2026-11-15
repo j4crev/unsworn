@@ -260,44 +260,58 @@ export function baseBridge(bundle: Bundle, dev: boolean, fetchArgs?: () => unkno
 // ---------------------------------------------------------------------------
 // Loading the project, and answering
 
-let instance: Unsworn | undefined;
-let loadError: string | undefined;
-
 /**
- * The project, loaded into the core once per isolate or process. `wasm` is
- * the core's module or its bytes; `vars` is what `{env.NAME}` reads. Throws
- * when the project has errors, every time it's called.
+ * Loads the project into the core. `wasm` is the core's module or its
+ * bytes; `vars` is what `{env.NAME}` reads. Throws when the project has
+ * errors.
  */
-export function loadProject(
+function loadProject(
   bundle: Bundle,
   wasm: WebAssembly.Module | BufferSource,
   vars: Record<string, unknown>,
   dev: boolean,
 ): Unsworn {
-  if (instance) return instance;
-  if (loadError) throw new Error(loadError);
-  try {
-    initSync({ module: wasm });
-    const strings = Object.fromEntries(Object.entries(vars).filter(([, v]) => typeof v === "string"));
-    const app = new Unsworn(bundle.config, bundle.files, strings, dev);
-    for (const ref of app.handlers) {
-      const [file] = splitRef(ref);
-      const mod = bundle.modules[file];
-      if (!mod) console.error(`unsworn: handler ${ref}: ${file} isn't in the bundle`);
-      else {
-        try {
-          pickHandler(mod, ref);
-        } catch (err) {
-          console.error(`unsworn: handler ${ref}: ${errorMessage(err, false)}`);
-        }
+  initSync({ module: wasm });
+  const strings = Object.fromEntries(Object.entries(vars).filter(([, v]) => typeof v === "string"));
+  const app = new Unsworn(bundle.config, bundle.files, strings, dev);
+  for (const ref of app.handlers) {
+    const [file] = splitRef(ref);
+    const mod = bundle.modules[file];
+    if (!mod) console.error(`unsworn: handler ${ref}: ${file} isn't in the bundle`);
+    else {
+      try {
+        pickHandler(mod, ref);
+      } catch (err) {
+        console.error(`unsworn: handler ${ref}: ${errorMessage(err, false)}`);
       }
     }
-    instance = app;
-    return app;
-  } catch (err) {
-    loadError = errorMessage(err, false);
-    throw err;
   }
+  return app;
+}
+
+/**
+ * A project that's loaded when first asked for, once per isolate or
+ * process: `load()` gives the same one every time, or throws the same
+ * error. `wasm` and `vars` are only called for that first load.
+ */
+export function lazyProject(
+  bundle: Bundle,
+  wasm: () => WebAssembly.Module | BufferSource,
+  vars: () => Record<string, unknown>,
+  dev: boolean,
+): () => Unsworn {
+  let app: Unsworn | undefined;
+  let failed: string | undefined;
+  return () => {
+    if (app) return app;
+    if (failed !== undefined) throw new Error(failed);
+    try {
+      return (app = loadProject(bundle, wasm(), vars(), dev));
+    } catch (err) {
+      failed = errorMessage(err, false);
+      throw err;
+    }
+  };
 }
 
 /** A `500` for a request the core never saw. */

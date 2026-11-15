@@ -9,6 +9,7 @@
 
 mod cloudflare;
 mod functions;
+mod netlify;
 mod vercel;
 
 use std::cell::RefCell;
@@ -144,6 +145,13 @@ const TARGETS: &[Target] = &[
         out: "dist/cloudflare",
         env_hint: "set it with `wrangler secret put {name}` or as a var",
         build: cloudflare::build,
+    },
+    Target {
+        name: "netlify",
+        // Where Netlify's Frameworks API looks.
+        out: ".netlify/v1",
+        env_hint: "set it with `netlify env:set {name} <value>`",
+        build: netlify::build,
     },
     Target {
         name: "vercel",

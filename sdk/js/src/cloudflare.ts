@@ -22,14 +22,14 @@
 
 import { DurableObject } from "cloudflare:workers";
 
-import { type Bridge, initSync, takeToken } from "../wasm/unsworn.js";
+import { type Bridge, initSync, takeToken, type Unsworn } from "../wasm/unsworn.js";
 import wasmModule from "../wasm/unsworn_bg.wasm";
 import {
   baseBridge,
   type Bundle,
   errorMessage,
   failure,
-  loadProject,
+  lazyProject,
   pairs,
   toResponse,
   toValue,
@@ -133,12 +133,15 @@ function bridge(
 
 /** A Worker that serves the bundled project. */
 export function createWorker(bundle: Bundle) {
+  // The first request brings the `env` the project loads with.
+  let load: (() => Unsworn) | undefined;
   return {
     async fetch(request: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
       const dev = env.UNSWORN_DEV === "1";
-      let app;
+      let app: Unsworn;
       try {
-        app = loadProject(bundle, wasmModule, env, dev);
+        load ??= lazyProject(bundle, () => wasmModule, () => env, dev);
+        app = load();
       } catch (err) {
         console.error("unsworn: the project didn't load:", errorMessage(err, false));
         return failure(500, errorMessage(err, false), dev);

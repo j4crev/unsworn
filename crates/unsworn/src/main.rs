@@ -65,8 +65,8 @@ enum Command {
         #[arg(long)]
         target: Option<String>,
     },
-    /// Bundle the project for a deployment target: `cloudflare` (a Worker)
-    /// or `vercel` (a Vercel Function).
+    /// Bundle the project for a deployment target: `cloudflare` (a
+    /// Worker), `vercel` or `netlify` (a function on either).
     Build {
         /// The deployment target.
         #[arg(long)]
