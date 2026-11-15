@@ -111,8 +111,9 @@ which calls back into the binary for I/O.
    rules are checked.
 4. **Authenticate.** JWT/JWKS or API key verification (against listed keys,
    or by calling a remote verifier). Claims go into the request context.
-5. **Rate limit.** It comes after authentication, so its key can be a claim
-   such as `auth.sub`.
+5. **Rate limit.** A limit keyed on a claim such as `auth.sub` comes after
+   authentication. One keyed on the IP or a header is counted before it, and
+   a request that fails authentication counts against either kind.
 6. **Validate.** Path params, query and headers are checked against the
    route's rules and converted to typed values (`"42"` becomes `42`).
 7. **Cache lookup.** A hit is returned directly.

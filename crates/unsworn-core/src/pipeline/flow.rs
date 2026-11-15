@@ -20,7 +20,7 @@ use super::{
     redirect_location, response_head, validate_inputs,
 };
 use crate::config::{ResponseValidation, TrailingSlash};
-use crate::policy::{Effective, HandlerRef, RateLimit as RateLimitRule};
+use crate::policy::{Effective, HandlerRef, KeySource, RateLimit as RateLimitRule};
 use crate::project::{Action, MatchResult, Project, RespondBody, Route};
 use crate::rules;
 use crate::store::{
@@ -403,12 +403,40 @@ async fn prepare<H: Host>(
     let query_pairs = query_pairs(req.uri().query());
     access(eff, ctx.origin.as_deref(), ctx.client_ip).map_err(problem_response)?;
 
-    let (context, claims) = ctx.authenticate(req.headers(), eff, &query_pairs).await?;
-
     // An MCP endpoint counts requests once their headers are checked
     // against the body, so header keys can be trusted.
     let is_mcp = matches!(route.action, Action::Mcp);
-    if let Some(limit) = eff.rate_limit.as_ref().filter(|_| !is_mcp) {
+    let limit = eff.rate_limit.as_ref().filter(|_| !is_mcp);
+    // A limit that doesn't depend on who the caller is runs first, so
+    // requests with bad credentials count, and a remote key verifier is
+    // never asked more often than the limit allows.
+    let before_auth = |l: &&RateLimitRule| !matches!(l.key, KeySource::Claim(_));
+    if let Some(limit) = limit.filter(before_auth) {
+        rate_limited(ctx.rate_limit(route.id, limit, req.headers(), None).await)?;
+    }
+
+    let (context, claims) = match ctx.authenticate(req.headers(), eff, &query_pairs).await {
+        Ok(outcome) => outcome,
+        Err(resp) => {
+            // The limits that wait for the caller's claims (one keyed on a
+            // claim, and an MCP endpoint's) count a request that fails
+            // authentication against the client's address instead, so
+            // guessing credentials is limited too. A verifier outage (`503`)
+            // isn't the caller's doing, and doesn't count.
+            let rejected = resp.status() != StatusCode::SERVICE_UNAVAILABLE;
+            if rejected
+                && let Some(limit) = eff
+                    .rate_limit
+                    .as_ref()
+                    .filter(|l| is_mcp || !before_auth(l))
+            {
+                let headers = crate::mcp::rpc::trusted_headers(req.headers(), None);
+                rate_limited(ctx.rate_limit(route.id, limit, &headers, None).await)?;
+            }
+            return Err(resp);
+        }
+    };
+    if let Some(limit) = limit.filter(|l| !before_auth(l)) {
         rate_limited(
             ctx.rate_limit(route.id, limit, req.headers(), claims.as_ref())
                 .await,

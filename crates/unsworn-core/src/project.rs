@@ -49,6 +49,8 @@ pub struct Server {
     pub admin_listen: Option<String>,
     pub response_validation: ResponseValidation,
     pub shutdown_timeout: Duration,
+    pub max_connections: usize,
+    pub idle_timeout: Duration,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -339,11 +341,19 @@ pub struct PrefixEntry {
 }
 
 impl PrefixEntry {
+    /// Whether the entry covers `method`. One for `GET` covers `HEAD` too,
+    /// since a `GET` route answers `HEAD`: otherwise `HEAD` would reach the
+    /// route without the entry's policies.
+    fn covers(&self, method: &str) -> bool {
+        self.methods.as_ref().is_none_or(|m| {
+            m.iter()
+                .any(|x| x == method || (method == "HEAD" && x == "GET"))
+        })
+    }
+
     fn matches_exact(&self, method: &str, path: &str) -> bool {
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        self.methods
-            .as_ref()
-            .is_none_or(|m| m.iter().any(|x| x == method))
+        self.covers(method)
             && parts.len() == self.segs.len()
             && self.segs.iter().zip(&parts).all(|(seg, part)| match seg {
                 Seg::Lit(l) => l == part,
@@ -353,10 +363,7 @@ impl PrefixEntry {
     }
 
     pub fn matches(&self, method: &str, path: &str) -> bool {
-        self.methods
-            .as_ref()
-            .is_none_or(|m| m.iter().any(|x| x == method))
-            && match_prefix(&self.segs, path).is_some()
+        self.covers(method) && match_prefix(&self.segs, path).is_some()
     }
 }
 
@@ -1070,7 +1077,7 @@ impl<'h> Compiler<'h> {
         }
 
         self.check_handlers(&routes, &prefixes);
-        self.warnings(&routes, &prefixes);
+        self.warnings(&routes, &prefixes, &path_entries);
 
         let (routers, slots, catch_alls) = self.build_routers(&routes);
 
@@ -1145,6 +1152,18 @@ impl<'h> Compiler<'h> {
                 format!("\"{}\" isn't an address like \"0.0.0.0:8080\"", s.listen),
             ));
         }
+        if s.max_connections == Some(0) {
+            self.diags.error(
+                "[server].max_connections",
+                "max_connections must be at least 1",
+            );
+        }
+        if s.idle_timeout.is_some_and(|d| d.0.is_zero()) {
+            self.diags.error(
+                "[server].idle_timeout",
+                "idle_timeout must be longer than 0",
+            );
+        }
         let tls = s.tls.as_ref().map(|t| (t.cert.clone(), t.key.clone()));
         if let Some((cert, key)) = &tls {
             for (name, path) in [("cert", cert), ("key", key)] {
@@ -1167,6 +1186,8 @@ impl<'h> Compiler<'h> {
             admin_listen: s.admin_listen.clone(),
             response_validation: s.response_validation,
             shutdown_timeout: s.shutdown_timeout.map_or(Duration::from_secs(10), |d| d.0),
+            max_connections: s.max_connections.unwrap_or(10_000) as usize,
+            idle_timeout: s.idle_timeout.map_or(Duration::from_secs(300), |d| d.0),
         }
     }
 
@@ -3095,7 +3116,14 @@ impl<'h> Compiler<'h> {
         }
     }
 
-    fn warnings(&mut self, routes: &[Route], prefixes: &[PrefixEntry]) {
+    fn warnings(
+        &mut self,
+        routes: &[Route],
+        prefixes: &[PrefixEntry],
+        path_entries: &[PrefixEntry],
+    ) {
+        // Entries already reported as guarding only some spellings of a path.
+        let mut reported: Vec<String> = Vec::new();
         // Tools never stream or cache; `[mcp]` checks their policies.
         for r in routes.iter().filter(|r| r.mcp_tool().is_none()) {
             let probe = r.path.replace("{*", "{");
@@ -3137,6 +3165,79 @@ impl<'h> Compiler<'h> {
                         )
                         .hint("add `vary = [\"Authorization\"]` or `key = \"auth.sub\"` to cache per user"),
                     );
+            }
+            // A header the route's auth doesn't read is whatever the client
+            // says it is. (`Mcp-Param-*` headers are checked against the
+            // call's arguments, and keying on one is a documented use.)
+            if let Some(RateLimit {
+                key: KeySource::Header(h),
+                ..
+            }) = &eff.rate_limit
+                && !h.starts_with("mcp-param-")
+                && !credential_headers(&self.schemes, &eff.auth).contains(h)
+            {
+                self.diags.push(
+                    Diagnostic::warning(
+                        format!("{}", r.source),
+                        format!(
+                            "{} {} counts its rate limit by the `{h}` header, which the client sets: changing it starts a new count",
+                            r.method_label(),
+                            r.path
+                        ),
+                    )
+                    .hint("use `key = \"ip\"` or `key = \"auth.<claim>\"`, unless a proxy you trust sets this header"),
+                );
+            }
+
+            // A catch-all hands every path under it to an app that does its
+            // own routing. A policy entry for some of those paths matches
+            // them as written, but the app may read `/Admin/x` or
+            // `/admin%2Fx` as `/admin/x` and serve it without the policy.
+            let serves_paths = matches!(
+                r.action,
+                Action::Proxy(_) | Action::Handler(_) | Action::Static { .. }
+            );
+            if r.catch_all.is_none() || !serves_paths {
+                continue;
+            }
+            let route_segs = parse_pattern(&r.path);
+            let narrower = prefixes
+                .iter()
+                .filter(|p| match_prefix(&p.segs, &probe).is_none())
+                .chain(path_entries)
+                .filter(|p| match_prefix(&route_segs, &p.path.replace("{*", "{")).is_some());
+            for entry in narrower {
+                let adds_auth = eff.auth == AuthReq::Public
+                    && matches!(entry.layer.auth, Some(AuthReq::AnyOf(_)));
+                let adds_ip = eff.ip.is_none() && matches!(entry.layer.ip, Some(OrOff::On(_)));
+                let key = if adds_auth {
+                    "auth"
+                } else if adds_ip {
+                    "ip"
+                } else {
+                    continue;
+                };
+                let loc = entry.source.loc();
+                if reported.contains(&loc) {
+                    continue;
+                }
+                reported.push(loc.clone());
+                self.diags.push(
+                    Diagnostic::warning(
+                        format!("{loc}.{key}"),
+                        format!(
+                            "`{key}` on {} only covers paths written that way, and {} {} serves every other path without it",
+                            entry.path,
+                            r.method_label(),
+                            r.path
+                        ),
+                    )
+                    .hint(format!(
+                        "an app that reads `/Admin/x` or `/admin%2Fx` as `/admin/x` would answer them unchecked; set `{key}` on {} (or in [defaults]) and open the public paths instead{}",
+                        r.path,
+                        if adds_auth { " with `auth = \"none\"`" } else { "" }
+                    )),
+                );
             }
         }
     }

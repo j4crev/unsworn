@@ -8,13 +8,15 @@ use unsworn_core::store::{Bucket, CachedResponse, take_token};
 
 pub const MAX_CACHE_ENTRIES: usize = 10_000;
 
-/// Buckets idle this long are dropped by [`MemoryStore::sweep`].
-const IDLE_BUCKET: Duration = Duration::from_secs(3600);
+/// The most rate-limit buckets kept. A client that could mint keys without
+/// end (many addresses, say) would otherwise fill memory with them.
+pub const MAX_BUCKETS: usize = 200_000;
 
 pub struct MemoryStore {
     /// The zero of the buckets' monotonic clock.
     epoch: Instant,
-    buckets: Mutex<HashMap<String, Bucket>>,
+    /// Each bucket with its refill period, which is how long it's kept.
+    buckets: Mutex<HashMap<String, (Bucket, Duration)>>,
     cache: Mutex<HashMap<String, CachedResponse>>,
 }
 
@@ -33,8 +35,18 @@ impl MemoryStore {
     pub fn take(&self, key: &str, requests: u32, per: Duration) -> Option<Duration> {
         let now = self.epoch.elapsed();
         let mut buckets = self.buckets.lock().unwrap();
-        let (bucket, wait) = take_token(buckets.get(key).copied(), now, requests, per);
-        buckets.insert(key.to_string(), bucket);
+        let known = buckets.get(key).map(|(b, _)| *b);
+        if known.is_none() && buckets.len() >= MAX_BUCKETS {
+            buckets.retain(|_, b| !refilled(b, now));
+            // Still full of buckets in use: one makes way, as in the cache.
+            if buckets.len() >= MAX_BUCKETS
+                && let Some(k) = buckets.keys().next().cloned()
+            {
+                buckets.remove(&k);
+            }
+        }
+        let (bucket, wait) = take_token(known, now, requests, per);
+        buckets.insert(key.to_string(), (bucket, per));
         wait
     }
 
@@ -55,13 +67,44 @@ impl MemoryStore {
         cache.insert(key, value);
     }
 
-    /// Drops expired entries and idle buckets.
+    /// Drops expired entries and refilled buckets.
     pub fn sweep(&self, now_ms: u64) {
         self.cache.lock().unwrap().retain(|_, v| v.fresh(now_ms));
         let now = self.epoch.elapsed();
         self.buckets
             .lock()
             .unwrap()
-            .retain(|_, b| now.saturating_sub(b.last) < IDLE_BUCKET);
+            .retain(|_, b| !refilled(b, now));
+    }
+
+    #[cfg(test)]
+    pub fn bucket_count(&self) -> usize {
+        self.buckets.lock().unwrap().len()
+    }
+}
+
+/// Whether a bucket has been idle for its whole refill period. It's full
+/// again by then, the same as a new one, so nothing is lost by dropping it.
+fn refilled((bucket, per): &(Bucket, Duration), now: Duration) -> bool {
+    now.saturating_sub(bucket.last) >= *per
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refilled_buckets_are_dropped() {
+        let store = MemoryStore::default();
+        store.take("short", 1, Duration::from_millis(20));
+        store.take("long", 1, Duration::from_secs(60));
+        assert_eq!(store.bucket_count(), 2);
+        std::thread::sleep(Duration::from_millis(40));
+        store.sweep(0);
+        // `short` is full again, so dropping it loses nothing; `long`
+        // still remembers the token it gave out.
+        assert_eq!(store.bucket_count(), 1);
+        assert!(store.take("long", 1, Duration::from_secs(60)).is_some());
+        assert!(store.take("short", 1, Duration::from_millis(20)).is_none());
     }
 }

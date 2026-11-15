@@ -408,6 +408,114 @@ cache = { ttl = "1m" }
 }
 
 #[test]
+fn warns_about_policies_a_catch_all_app_can_sidestep() {
+    let warnings = |routes: &str| -> Vec<String> {
+        let cfg = format!(
+            r#"
+[auth.jwt]
+type = "jwt"
+secret = "s"
+{routes}"#
+        );
+        let host = MemHost::with(&[("unsworn.toml", &cfg)]);
+        let compiled = compile(&host, "unsworn.toml");
+        assert!(compiled.project.is_some(), "{:#?}", compiled.diagnostics);
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| format!("{}: {}", d.location, d.message))
+            .collect()
+    };
+    // Auth on part of a public catch-all: the app behind it decides which
+    // spellings of `/admin` it serves.
+    let w = warnings(
+        r#"
+[[route]]
+path = "/{*rest}"
+proxy = "http://127.0.0.1:3000"
+
+[[route]]
+path = "/admin/{*rest}"
+auth = "jwt"
+
+[[route]]
+path = "/internal"
+ip = { allow = ["10.0.0.0/8"] }
+"#,
+    );
+    assert_eq!(w.len(), 2, "{w:#?}");
+    assert!(w[0].contains(".auth: `auth` on /admin/{*rest} only covers"));
+    assert!(w[1].contains(".ip: `ip` on /internal only covers"));
+
+    // The other way round is safe: a path that slips past the entry that
+    // opens it only meets the stricter policy.
+    let w = warnings(
+        r#"
+[[route]]
+path = "/{*rest}"
+proxy = "http://127.0.0.1:3000"
+auth = "jwt"
+
+[[route]]
+path = "/public/{*rest}"
+auth = "none"
+
+[[route]]
+path = "/admin/{*rest}"
+rate_limit = { requests = 5, per = "1m" }
+"#,
+    );
+    assert!(w.is_empty(), "{w:#?}");
+
+    // So is auth in `[defaults]`, or on a prefix that covers the catch-all.
+    let w = warnings(
+        r#"
+[defaults]
+auth = "jwt"
+
+[[route]]
+path = "/api/{*rest}"
+proxy = "http://127.0.0.1:3000"
+
+[[route]]
+path = "/api/admin/{*rest}"
+auth = { scheme = "jwt", scopes = ["admin"] }
+"#,
+    );
+    assert!(w.is_empty(), "{w:#?}");
+}
+
+#[test]
+fn warns_about_rate_limit_keys_the_client_sets() {
+    let cfg = r#"
+[auth.key]
+type = "api_key"
+header = "X-Customer-Key"
+keys = ["k1"]
+
+[[route]]
+path = "/a"
+respond = { status = 200 }
+rate_limit = { requests = 5, per = "1m", key = "header.x-tenant" }
+
+[[route]]
+path = "/b"
+respond = { status = 200 }
+auth = "key"
+rate_limit = { requests = 5, per = "1m", key = "header.x-customer-key" }
+"#;
+    let host = MemHost::with(&[("unsworn.toml", cfg)]);
+    let compiled = compile(&host, "unsworn.toml");
+    let warnings: Vec<&str> = compiled
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(warnings.len(), 1, "{warnings:#?}");
+    assert!(warnings[0].contains("* /a counts its rate limit by the `x-tenant` header"));
+}
+
+#[test]
 fn binary_protocol_is_an_alias_for_framed() {
     let cfg = r#"
 [runtimes.ts]

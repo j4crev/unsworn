@@ -13,7 +13,8 @@ use serde_json::{Map, Value, json};
 use super::host::{FetchError, Host};
 use super::{Problem, auth_failure};
 use crate::auth::{
-    CredentialSource, JwtKeys, KeySet, KeyVerifier, Scheme, Verdict, authenticate, token_kid,
+    CredentialSource, JwtKeys, JwtScheme, KeySet, KeyVerifier, Scheme, Verdict, authenticate,
+    token_kid,
 };
 use crate::policy::{AuthReq, Effective};
 use crate::project::Project;
@@ -41,6 +42,13 @@ struct KeyEntry {
 /// use, refreshed every 10 minutes, and refetched (at most once a minute)
 /// when a token names an unknown key id. Outlives a project: hosts keep one
 /// for the life of the process, so reloads keep their keys.
+///
+/// Entries are keyed by [`JwtScheme::cache_key`], which covers where the
+/// keys come from. A reload that changes a scheme's secret, key file or
+/// JWKS URL therefore loads the new keys instead of keeping the old ones,
+/// while requests still running on the old project keep theirs. An entry
+/// for a source that's no longer used stays, unread: one small key set per
+/// reload that rotates a key.
 pub struct KeyCache {
     /// Held while loading, so concurrent requests wait for one fetch.
     entries: futures_util::lock::Mutex<HashMap<String, KeyEntry>>,
@@ -58,8 +66,12 @@ impl Default for KeyCache {
 
 impl KeyCache {
     /// The loaded keys for a scheme.
-    pub fn get(&self, scheme: &str) -> Option<Arc<KeySet>> {
-        self.snapshot.lock().unwrap().get(scheme).cloned()
+    pub fn get(&self, scheme: &JwtScheme) -> Option<Arc<KeySet>> {
+        self.snapshot
+            .lock()
+            .unwrap()
+            .get(&scheme.cache_key())
+            .cloned()
     }
 
     /// Makes sure keys for `scheme` are loaded, fetching a JWKS if needed.
@@ -67,8 +79,9 @@ impl KeyCache {
         let Scheme::Jwt(jwt) = scheme else {
             return;
         };
+        let cache_key = jwt.cache_key();
         let mut entries = self.entries.lock().await;
-        let entry = entries.entry(jwt.name.clone()).or_insert(KeyEntry {
+        let entry = entries.entry(cache_key.clone()).or_insert(KeyEntry {
             set: None,
             loaded: None,
         });
@@ -99,7 +112,7 @@ impl KeyCache {
             Ok(set) => {
                 let set = Arc::new(set);
                 entry.set = Some(set.clone());
-                self.snapshot.lock().unwrap().insert(jwt.name.clone(), set);
+                self.snapshot.lock().unwrap().insert(cache_key, set);
             }
             Err(e) => tracing::error!(scheme = %jwt.name, "can't load signing keys: {e}"),
         }
@@ -246,7 +259,10 @@ pub(super) async fn authenticate_request<H: Host>(
         }
         verdicts.insert(k.name.clone(), verdict);
     }
-    let lookup = |n: &str| keys.get(n);
+    let lookup = |n: &str| match project.schemes.get(n)?.as_ref() {
+        Scheme::Jwt(jwt) => keys.get(jwt),
+        Scheme::ApiKey(_) => None,
+    };
     let verdict = |n: &str| verdicts.get(n).cloned();
     let outcome = authenticate(
         &eff.auth,

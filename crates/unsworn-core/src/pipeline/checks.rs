@@ -279,6 +279,19 @@ pub fn key_value(
     }
 }
 
+/// The client's address as a rate-limit key. An IPv6 client counts by its
+/// /64: a network hands out at least that much to one subscriber, who could
+/// otherwise get a new bucket with every request by changing address.
+pub fn rate_limit_ip(client_ip: IpAddr) -> String {
+    match client_ip {
+        IpAddr::V4(ip) => ip.to_string(),
+        IpAddr::V6(ip) => {
+            let network = u128::from(ip) & (u128::MAX << 64);
+            format!("{}/64", std::net::Ipv6Addr::from(network))
+        }
+    }
+}
+
 /// The rate-limit bucket a request counts against. `route_id` keeps each
 /// route's (and each MCP tool's) counts separate. A key the request lacks
 /// falls back to the client's IP.
@@ -289,8 +302,11 @@ pub fn rate_limit_bucket(
     headers: &HeaderMap,
     claims: Option<&Map<String, Value>>,
 ) -> String {
-    let key =
-        key_value(&limit.key, client_ip, headers, claims).unwrap_or_else(|| client_ip.to_string());
+    let key = match &limit.key {
+        KeySource::Ip => None,
+        key => key_value(key, client_ip, headers, claims),
+    }
+    .unwrap_or_else(|| rate_limit_ip(client_ip));
     format!("{route_id}|{}|{key}", limit.key.describe())
 }
 
@@ -496,6 +512,13 @@ mod tests {
             rate_limit_bucket(3, &limit(KeySource::Ip), client, &headers, None),
             "3|ip|192.0.2.1"
         );
+        // An IPv6 client is its /64, whatever the rest of the address.
+        for v6 in ["2001:db8:1:2:3:4:5:6", "2001:db8:1:2::1"] {
+            assert_eq!(
+                rate_limit_bucket(3, &limit(KeySource::Ip), ip(v6), &headers, None),
+                "3|ip|2001:db8:1:2::/64"
+            );
+        }
         assert_eq!(
             rate_limit_bucket(
                 3,

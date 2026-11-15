@@ -278,7 +278,8 @@ When a tool call fails a policy:
 
 The `[mcp]` rate limit answers `429` like any route. It's counted once the
 request's headers have been checked against its body, so its key can be a
-checked header.
+checked header. A request that fails `auth`, the endpoint's or a tool's,
+counts against that limit by the client's IP.
 
 ### Tool list visibility
 

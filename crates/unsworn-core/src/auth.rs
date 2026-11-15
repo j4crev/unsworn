@@ -160,6 +160,25 @@ pub fn token_kid(scheme: &JwtScheme, source: &dyn CredentialSource) -> Option<St
 }
 
 impl JwtScheme {
+    /// Where the scheme's verification keys are cached: its name and a hash
+    /// of where they come from. A reload that changes the secret, the key
+    /// file or the JWKS URL starts afresh, so a rotated key takes effect at
+    /// once, and the old one stops being accepted.
+    pub fn cache_key(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let (kind, material) = match &self.keys {
+            JwtKeys::Jwks(url) => ("jwks", url),
+            JwtKeys::Secret(secret) => ("secret", secret),
+            JwtKeys::PublicKey(pem) => ("pem", pem),
+        };
+        let mut hash = Sha256::new();
+        hash.update(kind.as_bytes());
+        hash.update([0]);
+        hash.update(material.as_bytes());
+        let hex: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        format!("{}|{hex}", self.name)
+    }
+
     /// The token in the value of the scheme's header: after `Bearer` in
     /// `Authorization`, the whole value of any other header.
     fn token<'a>(&self, raw: &'a str) -> Option<&'a str> {
@@ -1067,6 +1086,15 @@ mod tests {
             kid(&scheme, "authorization", format!("Bearer {token}")),
             None
         );
+
+        // Keys are cached per source, and the cache key doesn't hold it.
+        let cached = scheme.cache_key();
+        assert!(cached.starts_with("jwt|") && !cached.contains("secret"));
+        let mut rotated = scheme.clone();
+        rotated.keys = JwtKeys::Secret("rotated".into());
+        assert_ne!(cached, rotated.cache_key());
+        rotated.keys = JwtKeys::Jwks("secret".into());
+        assert_ne!(cached, rotated.cache_key());
 
         let verifier = KeyVerifier {
             url: "https://keys.example/verify".into(),
