@@ -1,6 +1,8 @@
 //! One suite, run against every backend. The Redis runs need a server:
 //! set `UNSWORN_TEST_REDIS_URL`, e.g. `redis://127.0.0.1:6379`.
 
+use bytes::Bytes;
+
 use super::*;
 
 fn config(backend: StoreBackend, url: Option<String>, on_error: OnError) -> StoreConfig {
@@ -31,12 +33,9 @@ fn redis_url() -> Option<String> {
 fn response(body: &'static [u8], ttl: Duration) -> CachedResponse {
     CachedResponse {
         status: 200,
-        headers: vec![(
-            "content-type".into(),
-            HeaderValue::from_static("text/plain"),
-        )],
+        headers: vec![("content-type".into(), "text/plain".into())],
         body: Bytes::from_static(body),
-        stored: SystemTime::now(),
+        stored_ms: now_ms(),
         ttl,
     }
 }
@@ -92,7 +91,7 @@ async fn suite(store: &Store) {
     let hit = store.cache_get("page").await.expect("a cache hit");
     assert_eq!(hit.body, Bytes::from_static(b"hello"));
     assert_eq!(hit.headers[0].0, "content-type");
-    assert!(hit.age() < Duration::from_secs(5));
+    assert!(hit.age(now_ms()) < Duration::from_secs(5));
     store
         .cache_put("short".into(), response(b"x", Duration::from_millis(100)))
         .await;

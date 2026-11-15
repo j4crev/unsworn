@@ -1,21 +1,18 @@
 //! The `redis` store: rate limits and cached responses shared by every
 //! instance that uses the same Redis (or Valkey, Dragonfly, ...).
 
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
-use bytes::Bytes;
-use http::HeaderValue;
 use redis::AsyncCommands;
 use redis::aio::{ConnectionManager, ConnectionManagerConfig};
-use serde::{Deserialize, Serialize};
 
 use super::CachedResponse;
 
 /// How long one store operation may take before it counts as failed.
 pub const TIMEOUT: Duration = Duration::from_secs(1);
 
-/// The same token bucket as the memory store, run atomically in Redis on
-/// Redis's clock, so instances with skewed clocks still agree. Returns
+/// The core's token bucket (`unsworn_core::store::take_token`), run
+/// atomically in Redis on Redis's clock, so instances with skewed clocks still agree. Returns
 /// how many milliseconds to wait, or 0 when the request is allowed.
 const RATE_LIMIT: &str = r#"
 local capacity = tonumber(ARGV[1])
@@ -62,7 +59,7 @@ impl RedisStore {
         })
     }
 
-    pub async fn rate_limit(
+    pub async fn take(
         &self,
         key: &str,
         requests: u32,
@@ -79,95 +76,22 @@ impl RedisStore {
         Ok((wait > 0).then(|| Duration::from_millis(wait)))
     }
 
-    pub async fn cache_get(&self, key: &str) -> redis::RedisResult<Option<CachedResponse>> {
+    /// An entry that doesn't decode (written by another version, say)
+    /// counts as a miss.
+    pub async fn get(&self, key: &str) -> redis::RedisResult<Option<CachedResponse>> {
         let mut conn = self.conn.clone();
         let raw: Option<Vec<u8>> = conn.get(format!("{}cache:{key}", self.prefix)).await?;
-        Ok(raw.and_then(|r| decode(&r)).filter(|e| e.fresh()))
+        Ok(raw.and_then(|r| CachedResponse::decode(&r)))
     }
 
-    pub async fn cache_put(&self, key: &str, value: &CachedResponse) -> redis::RedisResult<()> {
+    pub async fn put(&self, key: &str, value: &CachedResponse) -> redis::RedisResult<()> {
         let ttl_ms = value.ttl.as_millis().max(1) as u64;
         let mut conn = self.conn.clone();
-        conn.pset_ex::<_, _, ()>(format!("{}cache:{key}", self.prefix), encode(value), ttl_ms)
-            .await
-    }
-}
-
-/// A cached response: a JSON line with the status, headers and timing,
-/// then the raw body.
-#[derive(Serialize, Deserialize)]
-struct Meta {
-    status: u16,
-    headers: Vec<(String, String)>,
-    stored_ms: u64,
-    ttl_ms: u64,
-}
-
-fn encode(value: &CachedResponse) -> Vec<u8> {
-    let meta = Meta {
-        status: value.status,
-        // Header values that aren't text can't be cached in Redis; cacheable
-        // responses practically never have them.
-        headers: value
-            .headers
-            .iter()
-            .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.clone(), v.to_string())))
-            .collect(),
-        stored_ms: value
-            .stored
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64,
-        ttl_ms: value.ttl.as_millis() as u64,
-    };
-    let mut out = serde_json::to_vec(&meta).unwrap_or_default();
-    out.push(b'\n');
-    out.extend_from_slice(&value.body);
-    out
-}
-
-fn decode(raw: &[u8]) -> Option<CachedResponse> {
-    let split = raw.iter().position(|b| *b == b'\n')?;
-    let meta: Meta = serde_json::from_slice(&raw[..split]).ok()?;
-    Some(CachedResponse {
-        status: meta.status,
-        headers: meta
-            .headers
-            .into_iter()
-            .filter_map(|(k, v)| HeaderValue::from_str(&v).ok().map(|v| (k, v)))
-            .collect(),
-        body: Bytes::copy_from_slice(&raw[split + 1..]),
-        stored: UNIX_EPOCH + Duration::from_millis(meta.stored_ms),
-        ttl: Duration::from_millis(meta.ttl_ms),
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::SystemTime;
-
-    use super::*;
-
-    #[test]
-    fn cached_responses_round_trip() {
-        let value = CachedResponse {
-            status: 201,
-            headers: vec![
-                (
-                    "content-type".into(),
-                    HeaderValue::from_static("text/plain"),
-                ),
-                ("x-a".into(), HeaderValue::from_static("1")),
-                ("x-a".into(), HeaderValue::from_static("2")),
-            ],
-            body: Bytes::from_static(b"line one\nline two\x00\xff"),
-            stored: SystemTime::now(),
-            ttl: Duration::from_secs(30),
-        };
-        let back = decode(&encode(&value)).unwrap();
-        assert_eq!(back.status, 201);
-        assert_eq!(back.headers, value.headers);
-        assert_eq!(back.body, value.body);
-        assert_eq!(back.ttl, value.ttl);
+        conn.pset_ex::<_, _, ()>(
+            format!("{}cache:{key}", self.prefix),
+            value.encode(),
+            ttl_ms,
+        )
+        .await
     }
 }

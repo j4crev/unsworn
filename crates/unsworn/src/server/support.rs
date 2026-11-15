@@ -285,7 +285,7 @@ pub async fn check_key(
             status: 200,
             headers: Vec::new(),
             body: body.into(),
-            stored: std::time::SystemTime::now(),
+            stored_ms: crate::store::now_ms(),
             ttl,
         };
         // Written in the background, so a slow store never delays the request.

@@ -24,10 +24,12 @@ Cloudflare Workers first (`unsworn build --target cloudflare`). Work needed:
   the binary's `server/pipeline.rs`. An edge host needs the same decisions
   without hyper or tokio, so they belong in the core behind host-provided
   inputs.
-- **A store interface hosts implement.** The store is a concrete type in the
-  binary today, with memory and Redis backends. Edge hosts need their own
-  backends, such as Durable Objects for rate-limit counters (which need
-  consistent increments) and the Cache API or KV for cached responses.
+- ~~**A store interface hosts implement.**~~ Done: `unsworn_core::store`
+  defines a `RateLimiter` and a `ResponseCache` trait, so a host can back
+  them differently, such as Durable Objects for rate-limit counters (which
+  need consistent increments) and the Cache API or KV for cached responses.
+  The core owns the token bucket, the cache entry format and what
+  `on_error` means. The binary's memory and Redis stores implement both.
 - **`unsworn-wasm`:** core bindings for edge and serverless hosts.
 - **`unsworn build --target cloudflare`:** bundle the core and JS/TS and
   WASM handlers into a Worker, with handlers called in-process.

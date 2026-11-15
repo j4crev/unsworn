@@ -23,6 +23,7 @@ pub mod policy;
 pub mod project;
 pub mod routefiles;
 pub mod rules;
+pub mod store;
 pub mod targets;
 pub mod units;
 pub mod validate;
@@ -32,6 +33,31 @@ pub use project::{Compiled, Host, MatchResult, Matched, Project, Route, compile}
 
 /// The Unsworn version, shared by the core and every host.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// `Send` on native targets, nothing on wasm32.
+///
+/// Native hosts run requests on a multi-threaded runtime, so the futures
+/// hosts hand the core must be `Send`. In a JavaScript host everything runs
+/// on one thread and platform values (requests, KV bindings) aren't `Send`,
+/// so wasm32 drops the bound.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + ?Sized> MaybeSend for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> MaybeSend for T {}
+
+/// `Sync` on native targets, nothing on wasm32. See [`MaybeSend`].
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSync: Sync {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Sync + ?Sized> MaybeSync for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSync {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> MaybeSync for T {}
 
 #[cfg(test)]
 mod auto_traits {
