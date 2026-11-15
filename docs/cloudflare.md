@@ -39,7 +39,7 @@ so `{env.NAME}` is read from the Worker's variables and secrets, not from
 your shell at build time. The build lists any it can't see:
 
 ```
-! {env.JWT_SECRET} isn't set here; the Worker reads it at runtime, so set it with `wrangler secret put JWT_SECRET` or as a var
+! {env.JWT_SECRET} isn't set here; it's read at runtime, so set it with `wrangler secret put JWT_SECRET` or as a var
 ✓ built dist/cloudflare: 12 routes, 3 handler modules, 3 asset files
 ```
 
@@ -141,6 +141,7 @@ dependencies included.
 `Unsworn` class that loads the bundled project and handles each request with
 the same `Router` as the binary, asking a JavaScript *bridge* for I/O:
 calling a handler, reading a stream, the store, assets, `fetch()`.
-`sdk/js/src/cloudflare.ts` is the Cloudflare bridge and the
+`sdk/js/src/cloudflare.ts` is the Cloudflare bridge (on the parts every JS
+host shares, in `sdk/js/src/host.ts`) and the
 `UnswornRateLimiter` Durable Object. Serverless targets will reuse the same
 wasm with a bridge of their own. See [`architecture.md`](architecture.md).
