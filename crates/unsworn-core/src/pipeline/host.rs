@@ -55,6 +55,8 @@ pub struct Deadline(pub Duration);
 pub enum Reply<B> {
     Response {
         response: unsworn_proto::Response,
+        /// The response body. For a `json` or `text` response it may be
+        /// left empty: the core encodes those.
         body: Body<B>,
     },
     /// A `before` handler let the request through, adding these to the

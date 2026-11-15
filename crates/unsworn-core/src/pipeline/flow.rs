@@ -764,11 +764,19 @@ fn call_error<B>(dev: bool, handler: &HandlerRef, e: CallError) -> Response<B> {
     }
 }
 
-/// Converts a handler's response message into an HTTP response.
+/// Converts a handler's response message into an HTTP response. An empty
+/// body is filled from the message's `json` or `text`.
 fn to_http<B>(response: unsworn_proto::Response, body: Body<B>) -> Response<B> {
     let (status, headers) = match response_head(&response) {
         Ok(head) => head,
         Err(p) => return problem_response(p),
+    };
+    let body = match (body, &response.json, &response.text) {
+        (Body::Empty, Some(json), _) => {
+            Body::Bytes(serde_json::to_vec(json).unwrap_or_default().into())
+        }
+        (Body::Empty, None, Some(text)) => Body::Bytes(Bytes::from(text.clone())),
+        (body, _, _) => body,
     };
     let mut resp = http::Response::new(body);
     *resp.status_mut() = status;

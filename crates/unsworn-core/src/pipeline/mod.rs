@@ -32,3 +32,6 @@ pub use checks::{
 };
 pub use client_ip::ClientIp;
 pub use problem::{Problem, auth_failure, rate_limit_unavailable, retry_secs, too_many_requests};
+
+#[cfg(test)]
+mod tests;
