@@ -1,0 +1,73 @@
+# A project for the Cloudflare tests: one route per feature the Worker host
+# supplies I/O for.
+
+[runtimes.ts]
+extensions = [".ts"]
+command = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
+
+[[route]]
+path = "/health"
+method = "GET"
+respond = { status = 200, json = { ok = true } }
+
+[[route]]
+path = "/users/{id}"
+method = "GET"
+handler = "src/users.ts#get"
+params = { id = { type = "integer", min = 1 } }
+before = ["src/auth.ts#tenant"]
+
+[[route]]
+path = "/users"
+method = "POST"
+handler = "src/users.ts#create"
+body = { type = "object", required = ["name"], properties = { name = { type = "string" } } }
+
+[[route]]
+path = "/echo"
+method = "POST"
+handler = "src/users.ts#echo"
+stream_body = true
+max_body = "1kb"
+
+[[route]]
+path = "/events"
+method = "GET"
+handler = "src/users.ts#events"
+
+[[route]]
+path = "/slow"
+method = "GET"
+handler = "src/users.ts#slow"
+timeout = "500ms"
+
+[[route]]
+path = "/boom"
+method = "GET"
+handler = "src/users.ts#boom"
+
+[[route]]
+path = "/app/{*rest}"
+method = "GET"
+handler = "src/app.ts"
+
+[[route]]
+path = "/limited"
+method = "GET"
+respond = { status = 200, text = "ok" }
+rate_limit = { requests = 2, per = "1m" }
+
+[[route]]
+path = "/counter"
+method = "GET"
+handler = "src/users.ts#counter"
+cache = { ttl = "30s" }
+
+[[route]]
+path = "/site/{*rest}"
+method = "GET"
+static = { dir = "public", spa_fallback = "index.html", cache_control = "public, max-age=60" }
+
+[[route]]
+path = "/up/{*rest}"
+proxy = { upstreams = ["{env.UPSTREAM}"], strip_prefix = "/up" }

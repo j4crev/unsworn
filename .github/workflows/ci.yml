@@ -69,3 +69,9 @@ jobs:
       - name: Build the wasm core and check its size
         run: crates/unsworn-wasm/build.sh --check-size
       - run: node --test crates/unsworn-wasm/tests/smoke.test.mjs
+      # The Cloudflare host end to end, in workerd via wrangler dev.
+      - name: Cloudflare Worker tests
+        working-directory: tests/cloudflare
+        run: |
+          npm ci --no-audit --no-fund
+          node --test worker.test.mjs

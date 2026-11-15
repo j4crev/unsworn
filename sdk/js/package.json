@@ -1,7 +1,7 @@
 {
   "name": "@unswornjs/sdk",
   "version": "0.2.0",
-  "description": "Write Unsworn handlers in JavaScript or TypeScript (Bun, Node, Deno).",
+  "description": "Write Unsworn handlers in JavaScript or TypeScript (Bun, Node, Deno), and run Unsworn projects on Cloudflare Workers.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -11,9 +11,17 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./worker": "./src/worker.ts"
+    "./worker": "./src/worker.ts",
+    "./cloudflare": "./src/cloudflare.ts"
   },
-  "files": ["src", "README.md"],
+  "files": [
+    "src",
+    "wasm",
+    "README.md"
+  ],
+  "scripts": {
+    "prepublishOnly": "../../crates/unsworn-wasm/build.sh --check-size"
+  },
   "publishConfig": {
     "access": "public"
   }
