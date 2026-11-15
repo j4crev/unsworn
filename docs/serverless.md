@@ -58,17 +58,24 @@ The build writes a deployment in Vercel's
 | `.vercel/output/config.json` | Sends every path to the function. |
 | `.vercel/output/functions/unsworn.func/` | The function: `index.mjs`, the core's `unsworn_bg.wasm`, `assets/` and `.vc-config.json`. |
 
-A prebuilt deployment doesn't take function settings from `vercel.json`.
-Put them in `vercel.function.json` in the project root, and the build copies
-them into the function's `.vc-config.json`:
+Function settings come from your `vercel.json`. Vercel's own build is what
+normally applies them, and a prebuilt deployment skips it, so `unsworn
+build` copies them into the function's `.vc-config.json`:
 
 ```json
-{ "memory": 1024, "maxDuration": 60, "regions": ["fra1"] }
+{
+  "regions": ["fra1"],
+  "functions": {
+    "unsworn": { "memory": 1024, "maxDuration": 60 }
+  }
+}
 ```
 
-`runtime` can be set there too; it defaults to `nodejs22.x`. Set environment
-variables with `vercel env add`, or in the project's settings. Add `.vercel/`
-to `.gitignore`.
+It reads `regions`, and `memory` and `maxDuration` from the entry in
+`functions`. The project is one function, so the entry's key doesn't matter
+and there can be only one; other keys in it are ignored with a note. The
+function runs on `nodejs22.x`. Set environment variables with `vercel env
+add`, or in the project's settings. Add `.vercel/` to `.gitignore`.
 
 Responses stream. The client IP comes from the `X-Real-IP` header that
 Vercel sets, and the request id from `X-Vercel-Id`.

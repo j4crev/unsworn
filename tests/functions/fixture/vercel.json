@@ -1,0 +1,6 @@
+{
+  "regions": ["fra1"],
+  "functions": {
+    "unsworn": { "maxDuration": 30, "memory": 1024 }
+  }
+}
