@@ -939,7 +939,9 @@ fn websocket_pass_through() {
     }
     let p = Project::new(&[(
         "unsworn.toml",
-        &format!("[[route]]\npath = \"/ws\"\nproxy = \"http://{up_addr}\"\n"),
+        &format!(
+            "[server]\nmax_connections = 1\nidle_timeout = \"1s\"\n\n[[route]]\npath = \"/ws\"\nproxy = \"http://{up_addr}\"\n"
+        ),
     )]);
     let s = p.serve();
 
@@ -969,6 +971,15 @@ fn websocket_pass_through() {
     assert_eq!(buf[0], 0x81, "text frame back");
     let len = (buf[1] & 0x7f) as usize;
     assert_eq!(&buf[2..2 + len], b"echo:hi", "{:?}", &buf[..n]);
+
+    // The open WebSocket still counts toward `max_connections`, so the next
+    // connection waits until it closes for being idle.
+    let start = std::time::Instant::now();
+    s.get("/ws");
+    let waited = start.elapsed();
+    assert!(waited > std::time::Duration::from_millis(700), "{waited:?}");
+    assert!(waited < std::time::Duration::from_secs(4), "{waited:?}");
+    assert_eq!(stream.read(&mut buf).unwrap_or(0), 0, "closed when idle");
     let _ = upstream.kill();
     let _ = upstream.wait();
 }

@@ -63,7 +63,7 @@ into a second programming language.
 
 ```toml
 [server]
-listen              = "0.0.0.0:8080"
+listen              = "0.0.0.0:8080"   # the default; `unsworn dev` uses 127.0.0.1:8080
 max_body            = "1MB"          # default for every route (1024-based units)
 timeout             = "30s"          # default for every route
 trailing_slash      = "redirect"     # "redirect" | "strict" | "ignore"
@@ -80,7 +80,10 @@ cert = "certs/fullchain.pem"
 key  = "certs/privkey.pem"
 ```
 
-`unsworn serve --listen <addr>` overrides `listen`. Every server also answers
+`unsworn serve --listen <addr>` overrides `listen`. Without `listen` in the
+config, `unsworn dev` serves on `127.0.0.1:8080` only, since its responses
+carry error details meant for you; give it `--listen 0.0.0.0:8080` to reach
+it from another machine or from outside a container. Every server also answers
 `/_unsworn/health`: `200` and `{"status": "ok"}` when it's healthy, `503`
 and `"degraded"` when a runtime has no workers or keeps crashing. That's
 all it says, since anyone can ask. The same path on `admin_listen` adds the
@@ -91,7 +94,10 @@ Connections are limited, so clients that open them and then stall can't
 tie the server up:
 
 - At `max_connections`, new connections wait to be accepted until one
-  closes. A proxied WebSocket stops counting once it has upgraded.
+  closes. A proxied WebSocket counts until it closes, and it's closed once
+  neither side has sent anything for `idle_timeout`, so a WebSocket app
+  should ping more often than that (most libraries do, every 30 seconds or
+  so).
 - A new connection has 10 seconds to finish its TLS handshake, and 30
   seconds (or `idle_timeout`, if that's shorter) to send its first request.
 - `idle_timeout` is how long an HTTP/1.1 connection may then wait for its
@@ -408,9 +414,19 @@ encoded slash (`%2F`) stays encoded and never separates segments.
 
 A `proxy` route tells its upstream about the request it forwards: it adds
 this hop to `Forwarded` (RFC 7239), `X-Forwarded-For` and `Via`, and sets
-`X-Forwarded-Proto`, `X-Forwarded-Host` and `X-Request-Id`. Hop-by-hop
-headers stop at Unsworn, in both directions, and the response gets a `Via`
-entry too.
+`X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Real-IP` (the client's address)
+and `X-Request-Id`. Hop-by-hop headers stop at Unsworn, in both directions,
+and the response gets a `Via` entry too.
+
+Only a proxy in `[server].trusted_proxies` gets its forwarding headers
+passed on and added to. From anyone else, `Forwarded`, `X-Real-IP` and the
+`X-Forwarded-*` headers are the client's own words, so they're replaced
+rather than extended: otherwise an upstream that reads the first
+`X-Forwarded-For` entry would take the client's word for its address. On
+Cloudflare and serverless targets, the platform gives the client's
+address, and the upstream gets fresh headers with it. `X-Original-URL` and
+`X-Rewrite-URL` are always removed: some frameworks serve the path they
+name, which would sidestep the policies Unsworn applied to the real one.
 
 A `static` route never serves a dotfile or anything inside a dot directory
 (`.env`, `.git/config`): those answer `404`. `.well-known` is the exception.

@@ -56,6 +56,102 @@ pub fn problem_response(problem: Problem) -> Response<Body> {
     resp
 }
 
+/// What a request carries for a WebSocket its connection may upgrade to:
+/// the connection's place among `[server].max_connections`, which the
+/// tunnel keeps until it closes, and how long it may go without traffic.
+#[derive(Clone)]
+pub struct Tunnel {
+    pub permit: std::sync::Arc<tokio::sync::OwnedSemaphorePermit>,
+    pub idle: Duration,
+}
+
+impl Tunnel {
+    /// Copies between the client and the upstream until either side closes
+    /// or neither sends anything for `idle`.
+    pub async fn run<A, B>(self, client: A, upstream: B)
+    where
+        A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+        B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let _permit = self.permit;
+        let start = std::time::Instant::now();
+        let last = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut a = Activity::new(client, start, last.clone());
+        let mut b = Activity::new(upstream, start, last.clone());
+        let copy = tokio::io::copy_bidirectional(&mut a, &mut b);
+        tokio::pin!(copy);
+        let check = (self.idle / 4).max(Duration::from_millis(10));
+        loop {
+            tokio::select! {
+                _ = &mut copy => return,
+                _ = tokio::time::sleep(check) => {
+                    let since = Duration::from_millis(last.load(std::sync::atomic::Ordering::Relaxed));
+                    if start.elapsed().saturating_sub(since) >= self.idle {
+                        tracing::debug!("closing a WebSocket idle for {}s", self.idle.as_secs());
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// An I/O stream that notes when it last read anything, in milliseconds
+/// since `start`.
+struct Activity<T> {
+    io: T,
+    start: std::time::Instant,
+    last: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl<T> Activity<T> {
+    fn new(
+        io: T,
+        start: std::time::Instant,
+        last: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Self {
+        Activity { io, start, last }
+    }
+}
+
+impl<T: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Activity<T> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let poll = std::pin::Pin::new(&mut self.io).poll_read(cx, buf);
+        if matches!(poll, std::task::Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            let now = self.start.elapsed().as_millis() as u64;
+            self.last.store(now, std::sync::atomic::Ordering::Relaxed);
+        }
+        poll
+    }
+}
+
+impl<T: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for Activity<T> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+}
+
 pub fn build_client() -> HttpClient {
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_webpki_roots()

@@ -49,16 +49,21 @@ struct KeyEntry {
 /// while requests still running on the old project keep theirs. An entry
 /// for a source that's no longer used stays, unread: one small key set per
 /// reload that rotates a key.
+///
+/// Each entry has a lock of its own, held while its keys load. A request
+/// waits for it only when its scheme has no keys yet; while a JWKS is
+/// refetched, the others go on with the keys they have, so a slow identity
+/// provider (or a stream of tokens with made-up key ids) never holds up
+/// every request.
 pub struct KeyCache {
-    /// Held while loading, so concurrent requests wait for one fetch.
-    entries: futures_util::lock::Mutex<HashMap<String, KeyEntry>>,
+    entries: Mutex<HashMap<String, Arc<futures_util::lock::Mutex<KeyEntry>>>>,
     snapshot: Mutex<HashMap<String, Arc<KeySet>>>,
 }
 
 impl Default for KeyCache {
     fn default() -> Self {
         KeyCache {
-            entries: futures_util::lock::Mutex::new(HashMap::new()),
+            entries: Mutex::new(HashMap::new()),
             snapshot: Mutex::new(HashMap::new()),
         }
     }
@@ -80,11 +85,32 @@ impl KeyCache {
             return;
         };
         let cache_key = jwt.cache_key();
-        let mut entries = self.entries.lock().await;
-        let entry = entries.entry(cache_key.clone()).or_insert(KeyEntry {
-            set: None,
-            loaded: None,
-        });
+        let loaded = self.snapshot.lock().unwrap().contains_key(&cache_key);
+        // A secret or key file never changes once loaded.
+        if loaded && !matches!(jwt.keys, JwtKeys::Jwks(_)) {
+            return;
+        }
+        let slot = self
+            .entries
+            .lock()
+            .unwrap()
+            .entry(cache_key.clone())
+            .or_insert_with(|| {
+                Arc::new(futures_util::lock::Mutex::new(KeyEntry {
+                    set: None,
+                    loaded: None,
+                }))
+            })
+            .clone();
+        let mut entry = if loaded {
+            // Another request is refreshing them; these keys will do.
+            match slot.try_lock() {
+                Some(entry) => entry,
+                None => return,
+            }
+        } else {
+            slot.lock().await
+        };
         let now = host.monotonic();
         let since = |t: Duration| now.saturating_sub(t);
         let needs = match (&jwt.keys, &entry.set, entry.loaded) {

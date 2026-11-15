@@ -6,8 +6,10 @@
 # Options (environment variables):
 #   UNSWORN_VERSION      a release tag such as v0.1.0 (default: latest)
 #   UNSWORN_INSTALL_DIR  where to put the binary (default: ~/.local/bin)
-#   UNSWORN_VERIFY       1 to check the release's build attestation, which
-#                        needs the GitHub CLI (`gh`), signed in
+#   UNSWORN_VERIFY       whether to check the release's build attestation,
+#                        which needs the GitHub CLI (`gh`), signed in:
+#                        "auto" (the default) checks when `gh` can, 1 always
+#                        checks and fails without `gh`, 0 never checks
 #
 # The checksum below guards against a broken download. It comes from the
 # same release as the archive, so it can't tell whether the release itself
@@ -52,7 +54,17 @@ if [ "$expected" != "$actual" ]; then
   exit 1
 fi
 
-if [ "${UNSWORN_VERIFY:-0}" = "1" ]; then
+verify="${UNSWORN_VERIFY:-auto}"
+if [ "$verify" = "auto" ]; then
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    verify=1
+  else
+    verify=0
+    echo "unsworn: not checking the build attestation (it needs the GitHub CLI, signed in); set UNSWORN_VERIFY=1 to require it"
+  fi
+fi
+
+if [ "$verify" = "1" ]; then
   if ! command -v gh >/dev/null 2>&1; then
     echo "unsworn: UNSWORN_VERIFY=1 needs the GitHub CLI (https://cli.github.com)" >&2
     exit 1

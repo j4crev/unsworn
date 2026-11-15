@@ -140,6 +140,10 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
     };
     if let Some(listen) = &opts.listen {
         project.server.listen = listen.clone();
+    } else if opts.dev && !project.server.listen_set {
+        // Dev mode answers with error details and the full health report,
+        // which are for this machine, not the network it's on.
+        project.server.listen = unsworn_core::config::DEFAULT_DEV_LISTEN.into();
     }
     let sockets = SocketDir::create().map_err(|e| format!("can't create socket directory: {e}"))?;
     let keys = Arc::new(KeyCache::default());
@@ -243,6 +247,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
     let options = ConnOptions {
         compression: server.compression,
         first_request: FIRST_REQUEST_TIMEOUT.min(server.idle_timeout),
+        idle: server.idle_timeout,
     };
     // One permit per open connection. With none left, new connections wait
     // in the listener's backlog rather than taking memory here.
@@ -272,22 +277,30 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         let watcher = graceful.watcher();
         let tls = tls.clone();
         tokio::spawn(async move {
-            let _permit = permit;
+            // Shared with a WebSocket this connection upgrades to, which
+            // outlives it and should count as open until it closes too.
+            let permit = Arc::new(permit);
+            let conn = Conn {
+                peer,
+                tls: false,
+                tunnel: support::Tunnel {
+                    permit,
+                    idle: options.idle,
+                },
+            };
             match tls {
                 Some(acceptor) => {
                     let handshake = acceptor.accept(stream);
                     match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, handshake).await {
                         Ok(Ok(stream)) => {
-                            serve_connection(stream, peer, true, shared, builder, watcher, options)
-                                .await
+                            let conn = Conn { tls: true, ..conn };
+                            serve_connection(stream, conn, shared, builder, watcher, options).await
                         }
                         Ok(Err(e)) => tracing::debug!("TLS handshake failed: {e}"),
                         Err(_) => tracing::debug!(%peer, "TLS handshake timed out"),
                     }
                 }
-                None => {
-                    serve_connection(stream, peer, false, shared, builder, watcher, options).await
-                }
+                None => serve_connection(stream, conn, shared, builder, watcher, options).await,
             }
         });
     }
@@ -327,6 +340,15 @@ struct ConnOptions {
     compression: bool,
     /// See [`FIRST_REQUEST_TIMEOUT`].
     first_request: Duration,
+    /// `[server].idle_timeout`, which also closes a quiet WebSocket.
+    idle: Duration,
+}
+
+/// One accepted connection.
+struct Conn {
+    peer: std::net::SocketAddr,
+    tls: bool,
+    tunnel: support::Tunnel,
 }
 
 /// Serves one connection until it closes, or until `first_request` passes
@@ -335,8 +357,7 @@ struct ConnOptions {
 /// one that never opens a stream.
 async fn serve_connection<I>(
     io: I,
-    peer: std::net::SocketAddr,
-    is_tls: bool,
+    conn: Conn,
     shared: Arc<Shared>,
     builder: auto::Builder<TokioExecutor>,
     watcher: hyper_util::server::graceful::Watcher,
@@ -344,12 +365,18 @@ async fn serve_connection<I>(
 ) where
     I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    let Conn {
+        peer,
+        tls: is_tls,
+        tunnel,
+    } = conn;
     let seen = Arc::new(AtomicBool::new(false));
     let svc = {
         let seen = seen.clone();
-        hyper::service::service_fn(move |req: Request<Incoming>| {
+        hyper::service::service_fn(move |mut req: Request<Incoming>| {
             seen.store(true, Ordering::Relaxed);
             let shared = shared.clone();
+            req.extensions_mut().insert(tunnel.clone());
             async move {
                 let accept = req.headers().get(http::header::ACCEPT_ENCODING).cloned();
                 let method = req.method().clone();
@@ -509,13 +536,33 @@ fn spawn_watcher(shared: Arc<Shared>, config: String) {
     });
 }
 
+/// The most connections the admin listener holds open. It serves a scraper
+/// or two, so more than this is something else.
+const ADMIN_MAX_CONNECTIONS: usize = 64;
+/// How long an admin connection may take to send a request's headers, or
+/// wait between requests.
+const ADMIN_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 async fn admin_server(listener: TcpListener, shared: Arc<Shared>) {
+    let connections = Arc::new(tokio::sync::Semaphore::new(ADMIN_MAX_CONNECTIONS));
     loop {
-        let Ok((stream, _)) = listener.accept().await else {
-            continue;
+        let permit = connections
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("the semaphore is never closed");
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(e) => {
+                // Out of file descriptors, say: retrying at once would spin.
+                tracing::warn!("admin listener: accept failed: {e}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
         };
         let shared = shared.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let svc = hyper::service::service_fn(move |req: Request<Incoming>| {
                 let shared = shared.clone();
                 async move {
@@ -537,9 +584,14 @@ async fn admin_server(listener: TcpListener, shared: Arc<Shared>) {
                     Ok::<_, std::convert::Infallible>(resp)
                 }
             });
-            let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(TokioIo::new(stream), svc)
-                .await;
+            let conn = hyper::server::conn::http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(ADMIN_IDLE_TIMEOUT)
+                .serve_connection(TokioIo::new(stream), svc);
+            // The header timer also covers the wait for a kept-alive
+            // connection's next request. A scraper reconnects in any case
+            // after five minutes, so nothing holds a slot for good.
+            let _ = tokio::time::timeout(ADMIN_IDLE_TIMEOUT * 10, conn).await;
         });
     }
 }

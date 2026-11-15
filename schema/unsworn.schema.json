@@ -1556,8 +1556,11 @@
           "description": "How long a kept-alive connection may wait for its next request."
         },
         "listen": {
-          "default": "0.0.0.0:8080",
-          "type": "string"
+          "description": "The address to serve on. Default: \"0.0.0.0:8080\", or\n\"127.0.0.1:8080\" under `unsworn dev`, whose detailed errors are for\nthis machine only.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "max_body": {
           "anyOf": [

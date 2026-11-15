@@ -40,6 +40,9 @@ pub trait Host {
 #[derive(Debug, Clone, Serialize)]
 pub struct Server {
     pub listen: String,
+    /// The config sets `listen`. Otherwise `listen` is the default for
+    /// `unsworn serve`, and `unsworn dev` uses its own.
+    pub listen_set: bool,
     pub max_body: u64,
     pub timeout: Duration,
     pub trailing_slash: TrailingSlash,
@@ -1196,10 +1199,12 @@ impl<'h> Compiler<'h> {
 
     fn server(&mut self, raw: &RawConfig) -> Server {
         let s = &raw.server;
-        if s.listen.parse::<std::net::SocketAddr>().is_err() {
+        if let Some(listen) = &s.listen
+            && listen.parse::<std::net::SocketAddr>().is_err()
+        {
             self.diags.push(Diagnostic::error(
                 "[server].listen",
-                format!("\"{}\" isn't an address like \"0.0.0.0:8080\"", s.listen),
+                format!("\"{listen}\" isn't an address like \"0.0.0.0:8080\""),
             ));
         }
         if s.max_connections == Some(0) {
@@ -1214,6 +1219,15 @@ impl<'h> Compiler<'h> {
                 "idle_timeout must be longer than 0",
             );
         }
+        if s.trusted_proxies.iter().any(|t| t == "all") {
+            self.diags.push(
+                Diagnostic::warning(
+                    "[server].trusted_proxies",
+                    "\"all\" takes every client's `X-Forwarded-For` at its word, so a client that reaches Unsworn directly can pick the address its `ip` rules and rate limits see",
+                )
+                .hint("list the addresses or ranges of your load balancer instead, or make sure nothing but it can reach Unsworn's port"),
+            );
+        }
         let tls = s.tls.as_ref().map(|t| (t.cert.clone(), t.key.clone()));
         if let Some((cert, key)) = &tls {
             for (name, path) in [("cert", cert), ("key", key)] {
@@ -1226,7 +1240,11 @@ impl<'h> Compiler<'h> {
             }
         }
         Server {
-            listen: s.listen.clone(),
+            listen: s
+                .listen
+                .clone()
+                .unwrap_or_else(|| config::DEFAULT_LISTEN.into()),
+            listen_set: s.listen.is_some(),
             max_body: s.max_body.map_or(1024 * 1024, |b| b.0),
             timeout: s.timeout.map_or(Duration::from_secs(30), |d| d.0),
             trailing_slash: s.trailing_slash,

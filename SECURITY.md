@@ -42,4 +42,6 @@ gh attestation verify unsworn-x86_64-unknown-linux-musl.tar.gz --repo j4crev/uns
 gh attestation verify oci://ghcr.io/j4crev/unsworn:latest --repo j4crev/unsworn
 ```
 
-`install.sh` runs the first check when `UNSWORN_VERIFY=1` is set.
+`install.sh` runs the first check whenever the GitHub CLI is installed and
+signed in. `UNSWORN_VERIFY=1` makes it fail without one, and
+`UNSWORN_VERIFY=0` skips the check.
