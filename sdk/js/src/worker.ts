@@ -13,6 +13,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { connect } from "node:net";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { type Callable, handlerRequest, outcome, pickHandler, splitRef, toBytes } from "./handler.ts";
 import {
   type Codec,
   FramedCodec,
@@ -88,13 +89,6 @@ function logger(id: () => string | undefined) {
 
 const modules = new Map<string, Promise<Record<string, unknown>>>();
 
-function splitRef(ref: string): [string, string | undefined] {
-  const i = ref.indexOf("#");
-  if (i < 0) return [ref, undefined];
-  const name = ref.slice(i + 1);
-  return [ref.slice(0, i), name || undefined];
-}
-
 function load(file: string): Promise<Record<string, unknown>> {
   let m = modules.get(file);
   if (!m) {
@@ -105,46 +99,9 @@ function load(file: string): Promise<Record<string, unknown>> {
   return m;
 }
 
-type Callable = (req: unknown, ctx: unknown) => unknown;
-
 async function resolveHandler(ref: string): Promise<Callable> {
-  const [file, name] = splitRef(ref);
-  const mod = await load(file);
-  const exported = name ? mod[name] : (mod.default ?? mod.handler);
-  if (typeof exported === "function") return exported as Callable;
-  if (exported && typeof (exported as { fetch?: unknown }).fetch === "function") {
-    return fetchAdapter(exported as { fetch: (r: Request) => Response | Promise<Response> });
-  }
-  if (exported === undefined) {
-    throw new Error(name ? `${file} has no export "${name}"` : `${file} has no default export`);
-  }
-  throw new Error(`${ref} isn't a function or an app with a fetch() method`);
-}
-
-/** Lets an app with a `fetch(Request)` method (Hono, Elysia, ...) be a handler. */
-function fetchAdapter(app: { fetch: (r: Request) => Response | Promise<Response> }): Callable {
-  return (req: any) => {
-    const host = req.headers.host ?? "localhost";
-    const url = `http://${host}${req.path}${req.rawQuery ? `?${req.rawQuery}` : ""}`;
-    let body: BodyInit | undefined;
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      if (req.stream) body = req.stream;
-      else if (req.json !== undefined) body = JSON.stringify(req.json);
-      else if (req.text !== undefined) body = req.text;
-      else if (req.body) body = req.body;
-    }
-    const headers = new Headers();
-    for (const [k, v] of Object.entries(req.headers as Record<string, string>)) {
-      try {
-        headers.set(k, v);
-      } catch {
-        // skip headers the platform refuses
-      }
-    }
-    // `duplex` is required by Node and Deno for a streamed body.
-    const init = { method: req.method, headers, body, signal: req.signal, duplex: "half" } as RequestInit;
-    return app.fetch(new Request(url, init));
-  };
+  const [file] = splitRef(ref);
+  return pickHandler(await load(file), ref);
 }
 
 // ---------------------------------------------------------------------------
@@ -206,23 +163,6 @@ class IncomingBody {
 
 const bodies = new Map<string, IncomingBody>();
 
-function toBytes(chunk: unknown): Uint8Array {
-  if (chunk instanceof Uint8Array) return chunk;
-  if (typeof chunk === "string") return encoder.encode(chunk);
-  if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
-  return encoder.encode(String(chunk));
-}
-
-function headerRecord(headers: Headers): Record<string, string | string[]> {
-  const out: Record<string, string | string[]> = {};
-  headers.forEach((value, key) => {
-    if (key !== "set-cookie") out[key] = value;
-  });
-  const cookies = headers.getSetCookie?.() ?? [];
-  if (cookies.length) out["set-cookie"] = cookies;
-  return out;
-}
-
 async function streamBody(id: string, source: AsyncIterable<unknown>, signal: AbortSignal) {
   for await (const chunk of source) {
     if (signal.aborted) return;
@@ -232,68 +172,17 @@ async function streamBody(id: string, source: AsyncIterable<unknown>, signal: Ab
   if (!signal.aborted) send({ type: "end", id });
 }
 
-function iterate(stream: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> {
-  if (Symbol.asyncIterator in stream) return stream as unknown as AsyncIterable<Uint8Array>;
-  return {
-    async *[Symbol.asyncIterator]() {
-      const reader = stream.getReader();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) return;
-        yield value;
-      }
-    },
-  };
-}
-
 async function reply(id: string, result: unknown, signal: AbortSignal) {
   if (signal.aborted) return;
-  if (result instanceof Response) {
-    const headers = headerRecord(result.headers);
-    const contentType = result.headers.get("content-type") ?? "";
-    if (result.body && contentType.startsWith("text/event-stream")) {
-      send({ type: "response", id, status: result.status, headers, stream: true });
-      await streamBody(id, iterate(result.body), signal);
-      return;
-    }
-    const bytes = new Uint8Array(await result.arrayBuffer());
-    send({ type: "response", id, status: result.status, headers }, bytes);
-    return;
-  }
-  if (result === undefined || result === null) {
-    send({ type: "response", id, status: 204 });
-    return;
-  }
-  if (typeof result !== "object") {
-    throw new Error("a handler must return an object like { json }, { text }, { body }, or a Response");
-  }
-  const r = result as Record<string, any>;
-  if ("continue" in r) {
-    send({ type: "continue", id, context: r.continue ?? {} });
-    return;
-  }
-  const base: Outgoing = { type: "response", id, status: r.status ?? 200 };
-  if (r.headers) base.headers = r.headers;
-  if (r.mcpContent !== undefined) base.mcp_content = r.mcpContent;
-  if (r.json !== undefined) {
-    send({ ...base, json: r.json });
-  } else if (r.text !== undefined) {
-    send({ ...base, text: String(r.text) });
-  } else if (r.body !== undefined) {
-    const body = r.body;
-    if (typeof body === "string" || body instanceof Uint8Array || body instanceof ArrayBuffer) {
-      send(base, toBytes(body));
-    } else if (body instanceof ReadableStream) {
-      send({ ...base, stream: true });
-      await streamBody(id, iterate(body), signal);
-    } else if (body && typeof body[Symbol.asyncIterator] === "function") {
-      send({ ...base, stream: true });
-      await streamBody(id, body, signal);
-    } else {
-      throw new Error("`body` must be a string, bytes, a ReadableStream or an async iterable");
-    }
+  const out = await outcome(result);
+  if (signal.aborted) return;
+  if (out.type === "continue") {
+    send({ type: "continue", id, context: out.context });
+  } else if (out.stream) {
+    send({ type: "response", id, ...out.response, stream: true });
+    await streamBody(id, out.stream, signal);
   } else {
-    send(base);
+    send({ type: "response", id, ...out.response }, out.body);
   }
 }
 
@@ -302,23 +191,12 @@ async function handle(msg: RequestMessage, body: Uint8Array | undefined) {
   inFlight.set(msg.id, controller);
   try {
     const fn = await resolveHandler(msg.handler);
-    const req = {
-      method: msg.method,
-      path: msg.path,
-      route: msg.route,
-      params: msg.params ?? {},
-      query: msg.query ?? {},
-      rawQuery: msg.raw_query,
-      headers: msg.headers ?? {},
-      json: msg.json,
-      text: msg.text,
+    const req = handlerRequest(msg, {
       body,
       stream: bodies.get(msg.id)?.stream,
       signal: controller.signal,
-      handler: msg.handler,
-      phase: msg.phase ?? "handle",
       log: logger(() => msg.id),
-    };
+    });
     const result = await currentId.run(msg.id, () => fn(req, msg.context ?? {}));
     await reply(msg.id, result, controller.signal);
   } catch (err) {

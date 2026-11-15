@@ -1,0 +1,111 @@
+// The Cloudflare host end to end: a project bundled into a Worker and run
+// in workerd. Needs the wasm core built (crates/unsworn-wasm/build.sh) and
+// `npm install` here.
+
+import assert from "node:assert/strict";
+import { after, before, test } from "node:test";
+
+import { bundle, start, upstream } from "./harness.mjs";
+
+let worker;
+let up;
+
+before(async () => {
+  up = await upstream();
+  const config = bundle(new URL("./fixture", import.meta.url).pathname);
+  worker = await start(config, { UPSTREAM: up.url, GREETING: "hello", UNSWORN_DEV: "1" });
+});
+
+after(() => {
+  worker?.stop();
+  up?.close();
+});
+
+const get = (path, init) => fetch(worker.base + path, init);
+
+test("fixed routes and 404s", async () => {
+  const r = await get("/health");
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { ok: true });
+  assert.ok(r.headers.get("x-request-id"));
+  assert.equal((await get("/nope")).status, 404);
+});
+
+test("handlers get typed params, before context and env", async () => {
+  const r = await get("/users/7", { headers: { "x-tenant": "acme" } });
+  assert.equal(r.status, 200, await r.clone().text());
+  assert.deepEqual(await r.json(), { id: 7, tenant: "acme", greeting: "hello" });
+  assert.equal((await get("/users/0")).status, 400);
+});
+
+test("bodies are validated, and cookies kept apart", async () => {
+  const json = { "content-type": "application/json" };
+  const r = await get("/users", { method: "POST", headers: json, body: '{"name":"Ada"}' });
+  assert.equal(r.status, 201);
+  assert.deepEqual(await r.json(), { name: "Ada" });
+  assert.deepEqual(r.headers.getSetCookie(), ["a=1", "b=2"]);
+  const bad = await get("/users", { method: "POST", headers: json, body: '{"name":1}' });
+  assert.equal(bad.status, 422);
+});
+
+test("streamed bodies, with max_body", async () => {
+  const r = await get("/echo", { method: "POST", body: "hello" });
+  assert.equal(await r.text(), "HELLO");
+  const big = await get("/echo", { method: "POST", body: "x".repeat(5000) });
+  assert.equal(big.status, 413);
+});
+
+test("streamed responses", async () => {
+  const r = await get("/events");
+  assert.equal(r.headers.get("content-type"), "text/event-stream");
+  assert.equal(await r.text(), "data: 1\n\ndata: 2\n\ndata: 3\n\n");
+});
+
+test("timeouts and handler errors", async () => {
+  assert.equal((await get("/slow")).status, 504);
+  const r = await get("/boom");
+  assert.equal(r.status, 500);
+  assert.match(await r.text(), /kaboom/);
+});
+
+test("fetch() apps get the Worker's env", async () => {
+  const r = await get("/app/x");
+  assert.equal(await r.text(), "app /app/x hello");
+  assert.equal(r.headers.get("x-app"), "1");
+});
+
+test("rate limits count in a Durable Object", async () => {
+  assert.equal((await get("/limited")).status, 200);
+  assert.equal((await get("/limited")).status, 200);
+  const r = await get("/limited");
+  assert.equal(r.status, 429);
+  assert.ok(Number(r.headers.get("retry-after")) > 0);
+});
+
+test("responses are cached in the Cache API", async () => {
+  const first = await (await get("/counter")).text();
+  const second = await get("/counter");
+  assert.equal(await second.text(), first);
+  assert.ok(second.headers.get("age") !== null);
+});
+
+test("static assets, with index and fallback", async () => {
+  const css = await get("/site/style.css");
+  assert.equal(css.status, 200);
+  assert.equal(await css.text(), "body { color: red }\n");
+  assert.equal(css.headers.get("cache-control"), "public, max-age=60");
+  assert.equal(await (await get("/site/docs/")).text(), "docs index\n");
+  assert.equal(await (await get("/site/docs")).text(), "docs index\n");
+  assert.equal(await (await get("/site/some/route")).text(), "<h1>spa</h1>\n");
+});
+
+test("proxy routes forward with rewritten headers", async () => {
+  const r = await get("/up/a?b=1");
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get("connection"), null);
+  const seen = await r.json();
+  assert.equal(seen.url, "/a?b=1");
+  assert.equal(seen.headers["x-forwarded-proto"], "http");
+  assert.ok(seen.headers["x-forwarded-for"]);
+  assert.ok(seen.headers["x-request-id"]);
+});

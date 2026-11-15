@@ -1,0 +1,12 @@
+{
+  "name": "unsworn-cloudflare-tests",
+  "private": true,
+  "type": "module",
+  "description": "Runs Unsworn projects in workerd, Cloudflare's runtime, through wrangler dev.",
+  "scripts": {
+    "test": "node --test worker.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.156.0"
+  }
+}
