@@ -1,0 +1,5 @@
+node_modules/
+fixture/node_modules/
+fixture/.vercel/
+fixture/.netlify/
+fixture/dist/

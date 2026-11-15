@@ -1,0 +1,12 @@
+{
+  "name": "unsworn-functions-tests",
+  "private": true,
+  "type": "module",
+  "description": "Runs Unsworn projects built for serverless targets, in plain Node.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

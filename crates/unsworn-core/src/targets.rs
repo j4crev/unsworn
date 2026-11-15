@@ -24,11 +24,12 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
     match target {
         "server" => Vec::new(),
         "cloudflare" => cloudflare(project),
+        "vercel" => functions(project, target),
         _ => planned(project, target, version),
     }
 }
 
-/// File extensions a Worker can import as a handler module.
+/// File extensions a JS host can import as a handler module.
 const ISOLATE_EXTENSIONS: &[&str] = &["js", "mjs", "cjs", "ts", "mts", "cts", "jsx", "tsx"];
 
 /// What runs differently, or not at all, on Cloudflare Workers.
@@ -43,25 +44,100 @@ fn cloudflare(project: &Project) -> Vec<Diagnostic> {
             .hint("remove [store] for this target; the build sets up Cloudflare's store"),
         );
     }
+    ignored_server_settings(
+        project,
+        "cloudflare",
+        "the client IP comes from CF-Connecting-IP",
+        "use Workers Logs and analytics",
+        &mut out,
+    );
+    js_handlers_only(project, "cloudflare", "a Worker", &mut out);
+    out
+}
+
+/// What runs differently, or not at all, in a serverless function: one
+/// Node function runs the whole project, and nothing outlives a request
+/// except what's in the store.
+fn functions(project: &Project, target: &str) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    let store = &project.store;
+    match store.backend {
+        crate::config::StoreBackend::Redis if !store.is_rest() => out.push(
+            Diagnostic::error(
+                "[store].url",
+                format!("functions on {target} can't keep a Redis connection open, so they reach Redis through a REST API"),
+            )
+            .hint("set `url` to the REST API's https:// URL and `token` to its token (Upstash, or anything that speaks its protocol)"),
+        ),
+        crate::config::StoreBackend::Redis => {}
+        crate::config::StoreBackend::Memory => {
+            let hint = "set [store] backend = \"redis\" with a REST API's `url` and `token`, or remove it";
+            for route in &project.routes {
+                let eff = project.route_effective(route);
+                if eff.rate_limit.is_some() {
+                    out.push(
+                        Diagnostic::error(
+                            format!("{}.rate_limit", route.source.loc()),
+                            "needs a shared store on this target: each instance of the function would count on its own",
+                        )
+                        .hint(hint),
+                    );
+                }
+                if eff.cache.is_some() {
+                    out.push(
+                        Diagnostic::error(
+                            format!("{}.cache", route.source.loc()),
+                            "needs a shared store on this target: each instance of the function would fill its own cache",
+                        )
+                        .hint(hint),
+                    );
+                }
+            }
+        }
+    }
+    ignored_server_settings(
+        project,
+        target,
+        "the client IP comes from the platform",
+        "use the platform's logs and metrics",
+        &mut out,
+    );
+    js_handlers_only(project, target, "a Node function", &mut out);
+    out
+}
+
+/// `[server]` settings that only mean something to the binary.
+fn ignored_server_settings(
+    project: &Project,
+    target: &str,
+    client_ip: &str,
+    instead: &str,
+    out: &mut Vec<Diagnostic>,
+) {
     let server = &project.server;
     if server.tls.is_some() {
         out.push(Diagnostic::warning(
             "[server.tls]",
-            "ignored on cloudflare, which terminates TLS",
+            format!("ignored on {target}, which terminates TLS"),
         ));
     }
     if server.admin_listen.is_some() {
         out.push(Diagnostic::warning(
             "[server].admin_listen",
-            "ignored on cloudflare: there's no metrics or admin endpoint; use Workers Logs and analytics",
+            format!("ignored on {target}: there's no metrics or admin endpoint; {instead}"),
         ));
     }
     if !server.trusted_proxies.is_empty() {
         out.push(Diagnostic::warning(
             "[server].trusted_proxies",
-            "ignored on cloudflare: the client IP comes from CF-Connecting-IP",
+            format!("ignored on {target}: {client_ip}"),
         ));
     }
+}
+
+/// Handlers are called in the same isolate or process as the core, so only
+/// JavaScript and TypeScript ones can run. `place` is what that is here.
+fn js_handlers_only(project: &Project, target: &str, place: &str, out: &mut Vec<Diagnostic>) {
     for refs in project.handlers_by_runtime().values() {
         for raw in refs {
             let (file, _) = crate::policy::HandlerRef::split(raw);
@@ -70,7 +146,7 @@ fn cloudflare(project: &Project) -> Vec<Diagnostic> {
                 out.push(
                     Diagnostic::error(
                         format!("handler {raw}"),
-                        "WASM handlers can't be called directly on cloudflare yet",
+                        format!("WASM handlers can't be called directly on {target} yet"),
                     )
                     .hint("export a JS function that instantiates the module and calls it"),
                 );
@@ -78,14 +154,13 @@ fn cloudflare(project: &Project) -> Vec<Diagnostic> {
                 out.push(
                     Diagnostic::error(
                         format!("handler {raw}"),
-                        format!("\"{file}\" can't run in a Worker"),
+                        format!("\"{file}\" can't run in {place}"),
                     )
-                    .hint("only JavaScript and TypeScript handlers run on cloudflare; use the server target for other languages"),
+                    .hint(format!("only JavaScript and TypeScript handlers run on {target}; use the server target for other languages")),
                 );
             }
         }
     }
-    out
 }
 
 /// Targets that aren't built yet: what's known not to work there.
@@ -94,28 +169,7 @@ fn planned(project: &Project, target: &str, version: &str) -> Vec<Diagnostic> {
         "--target",
         format!("the {target} target is planned for {version}; this only checks capabilities"),
     )];
-    let stateless_memory = project.store.backend == crate::config::StoreBackend::Memory;
-    for route in &project.routes {
-        let eff = project.route_effective(route);
-        if stateless_memory && eff.rate_limit.is_some() {
-            out.push(
-                Diagnostic::error(
-                    format!("{}.rate_limit", route.source.loc()),
-                    "needs a shared store on this target",
-                )
-                .hint("set [store] backend to a shared store, or remove rate_limit"),
-            );
-        }
-        if stateless_memory && eff.cache.is_some() {
-            out.push(
-                Diagnostic::error(
-                    format!("{}.cache", route.source.loc()),
-                    "needs a shared store on this target",
-                )
-                .hint("set [store] backend to a shared store, or remove cache"),
-            );
-        }
-    }
+    out.extend(functions(project, target));
     out
 }
 
@@ -180,9 +234,41 @@ cache = { ttl = "1s" }
             "{:?}",
             check(&p, "cloudflare")
         );
-        // Planned targets still need a shared store for the same project.
+        // Functions need a shared store for the same project.
         let v = check(&p, "vercel");
         assert_eq!(v.iter().filter(|d| d.is_error()).count(), 2);
+    }
+
+    #[test]
+    fn functions_reach_redis_over_rest() {
+        let route = r#"
+[[route]]
+path = "/a"
+handler = "src/a.ts#a"
+rate_limit = { requests = 1, per = "1s" }
+"#;
+        let rest = project(&format!(
+            "[store]\nbackend = \"redis\"\nurl = \"https://x.upstash.io\"\ntoken = \"t\"\n{route}"
+        ));
+        assert_eq!(check(&rest, "vercel"), vec![]);
+
+        let tcp = project(&format!(
+            "[store]\nbackend = \"redis\"\nurl = \"rediss://cache:6380\"\n{route}"
+        ));
+        let errors: Vec<_> = check(&tcp, "vercel")
+            .into_iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.location)
+            .collect();
+        assert_eq!(errors, ["[store].url"]);
+
+        // Targets that aren't built yet check the same things, and say so.
+        let planned = check(&rest, "lambda");
+        assert_eq!(planned.len(), 1);
+        assert!(!planned[0].is_error());
+
+        let python = project("[[route]]\npath = \"/b\"\nhandler = \"src/b.py\"\n");
+        assert!(check(&python, "vercel").iter().any(|d| d.is_error()));
     }
 
     #[test]

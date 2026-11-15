@@ -97,7 +97,9 @@ jobs:
           npm ci --no-audit --no-fund
           node --test worker.test.mjs
 
-  # The Node host that the serverless targets run on, driven directly.
+  # The serverless targets: the Node host they run on, driven directly,
+  # then each target built with `unsworn build` and its function run in
+  # plain Node the way the platform calls it.
   functions:
     runs-on: ubuntu-latest
     steps:
@@ -113,6 +115,12 @@ jobs:
         with:
           node-version: 24
       - run: crates/unsworn-wasm/build.sh
-      - name: Node host tests
+      - run: cargo build -p unsworn
+      - name: Function tests
+        working-directory: tests/functions
         timeout-minutes: 10
-        run: node --test tests/functions/node.test.mjs
+        env:
+          UNSWORN_BIN: ${{ github.workspace }}/target/debug/unsworn
+        run: |
+          npm ci --no-audit --no-fund
+          node --test *.test.mjs

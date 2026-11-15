@@ -12,8 +12,10 @@
 // in responses.
 
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { createReadStream, readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -36,8 +38,8 @@ import { type Store, storeFor } from "./store.ts";
 export type { Bundle };
 
 export interface HandlerOptions {
-  /** The core's WebAssembly, as bytes or a module. Read from the SDK when not given. */
-  wasm?: BufferSource | WebAssembly.Module;
+  /** The core's WebAssembly: its bytes, a module, or the file's location. Read from the SDK when not given. */
+  wasm?: BufferSource | WebAssembly.Module | URL;
   /** The directory holding each `static` route's directory, at its project path. */
   assets?: string | URL;
   /** What `{env.NAME}` reads. `process.env` when not given. */
@@ -234,13 +236,11 @@ export function createHandler(bundle: Bundle, options: HandlerOptions = {}): Han
 
   let app: Unsworn | undefined;
   let store: Store | undefined;
-  const load = () =>
-    (app ??= loadProject(
-      bundle,
-      options.wasm ?? readFileSync(new URL("../wasm/unsworn_bg.wasm", import.meta.url)),
-      env,
-      dev,
-    ));
+  const load = () => {
+    if (app) return app;
+    const wasm = options.wasm ?? new URL("../wasm/unsworn_bg.wasm", import.meta.url);
+    return (app = loadProject(bundle, wasm instanceof URL ? readFileSync(wasm) : wasm, env, dev));
+  };
 
   const pending = new Set<Promise<unknown>>();
   const track = (promise: Promise<unknown>) => {
@@ -278,5 +278,78 @@ export function createHandler(bundle: Bundle, options: HandlerOptions = {}): Han
     async idle() {
       while (pending.size) await Promise.all(pending);
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Node's own request and response
+
+const first = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value)?.split(",")[0].trim();
+
+/**
+ * The handler as a Node `(req, res)` listener, for platforms that call
+ * functions that way and for `http.createServer`. `info` says what the
+ * platform knows about a request. The URL's scheme and host come from
+ * `X-Forwarded-Proto` and `X-Forwarded-Host`, so only use this behind a
+ * proxy that sets them.
+ */
+export function nodeListener(
+  app: Handler,
+  info: (req: IncomingMessage) => RequestInfo = () => ({}),
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  return async (req, res) => {
+    const proto = first(req.headers["x-forwarded-proto"]) ?? "http";
+    const host = first(req.headers["x-forwarded-host"]) ?? req.headers.host ?? "localhost";
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(req.headers)) {
+      for (const v of Array.isArray(value) ? value : [value]) {
+        try {
+          if (v !== undefined) headers.append(name, v);
+        } catch {
+          // skip headers the platform refuses
+        }
+      }
+    }
+    // The host the client asked for, which is what the core matches
+    // routes' `host` against and tells upstreams.
+    headers.set("host", host);
+    const method = req.method ?? "GET";
+    const init = {
+      method,
+      headers,
+      body: method === "GET" || method === "HEAD" ? undefined : Readable.toWeb(req),
+      duplex: "half",
+    };
+    let response: Response;
+    try {
+      response = await app.fetch(new Request(`${proto}://${host}${req.url ?? "/"}`, init as RequestInit), info(req));
+    } catch (err) {
+      console.error("unsworn: the request failed:", errorMessage(err, false));
+      response = failure(500, errorMessage(err, false), false);
+    }
+
+    const out = new Map<string, string | string[]>();
+    for (const [name, value] of pairs(response.headers)) {
+      const seen = out.get(name);
+      out.set(name, seen === undefined ? value : [...(Array.isArray(seen) ? seen : [seen]), value]);
+    }
+    res.writeHead(response.status, Object.fromEntries(out));
+    if (response.body) {
+      const reader = response.body.getReader();
+      res.on("close", () => void reader.cancel().catch(() => {}));
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!res.write(value)) await once(res, "drain");
+        }
+      } catch (err) {
+        // The status is sent, so all that's left is to cut the body short.
+        console.error("unsworn: the response body failed:", errorMessage(err, false));
+        res.destroy();
+        return;
+      }
+    }
+    res.end();
   };
 }

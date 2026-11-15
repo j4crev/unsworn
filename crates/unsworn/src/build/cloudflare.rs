@@ -18,9 +18,6 @@ use serde_json::{Map, Value, json};
 
 use super::{Prepared, relative, write};
 
-/// How to set a variable the build couldn't see.
-pub const ENV_HINT: &str = "set it with `wrangler secret put {name}` or as a var";
-
 /// Used when neither the user's wrangler config nor `--compatibility-date`
 /// sets one: a date the Worker is tested on.
 pub const COMPATIBILITY_DATE: &str = "2026-10-01";
