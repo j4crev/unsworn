@@ -9,6 +9,8 @@
 //! trait and the current time is passed in. That keeps it compilable to
 //! `wasm32`, so the same core can run in the `unsworn` binary, inside an
 //! edge isolate, or in a serverless shim. See `docs/architecture.md`.
+//! CI builds the core for `wasm32-unknown-unknown`, and `clippy.toml` rejects
+//! calls that would compile there but panic, such as `Instant::now`.
 
 pub mod auth;
 pub mod config;
