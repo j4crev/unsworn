@@ -91,10 +91,12 @@ export async function upstream() {
 export async function start(config, vars = {}) {
   const port = 20000 + Math.floor(Math.random() * 20000);
   const persist = mkdtempSync(join(tmpdir(), "unsworn-wrangler-"));
-  const args = ["wrangler", "dev", "--config", config, "--ip", "127.0.0.1", "--port", String(port)];
+  // The binary itself, not npx: killing npx would leave wrangler running.
+  const wrangler = join(here, "node_modules/.bin/wrangler");
+  const args = ["dev", "--config", config, "--ip", "127.0.0.1", "--port", String(port)];
   args.push("--persist-to", persist, "--log-level", "warn", "--show-interactive-dev-session=false");
   for (const [k, v] of Object.entries(vars)) args.push("--var", `${k}:${v}`);
-  const child = spawn("npx", args, {
+  const child = spawn(wrangler, args, {
     cwd: here,
     env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" },
     stdio: ["ignore", "pipe", "pipe"],

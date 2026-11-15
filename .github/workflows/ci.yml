@@ -72,6 +72,7 @@ jobs:
       # The Cloudflare host end to end, in workerd via wrangler dev.
       - name: Cloudflare Worker tests
         working-directory: tests/cloudflare
+        timeout-minutes: 10
         run: |
           npm ci --no-audit --no-fund
           node --test worker.test.mjs
