@@ -143,5 +143,6 @@ the same `Router` as the binary, asking a JavaScript *bridge* for I/O:
 calling a handler, reading a stream, the store, assets, `fetch()`.
 `sdk/js/src/cloudflare.ts` is the Cloudflare bridge (on the parts every JS
 host shares, in `sdk/js/src/host.ts`) and the
-`UnswornRateLimiter` Durable Object. Serverless targets will reuse the same
-wasm with a bridge of their own. See [`architecture.md`](architecture.md).
+`UnswornRateLimiter` Durable Object. The [serverless targets](serverless.md)
+use the same wasm with a bridge for Node. See
+[`architecture.md`](architecture.md).
