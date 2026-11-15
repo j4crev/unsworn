@@ -1,7 +1,7 @@
 # Unsworn architecture
 
-> Describes v1 as built. The edge and serverless hosts (v2, v3) are planned;
-> see the [roadmap](roadmap.md).
+> Describes the server (v1) and Cloudflare Workers (v2) hosts as built.
+> Serverless hosts (v3) are planned; see the [roadmap](roadmap.md).
 
 ## Goals
 
@@ -97,7 +97,7 @@ A host combines an ingress, a dispatcher and a store around the core.
 | Host | Ingress | Dispatch | Store |
 |---|---|---|---|
 | `unsworn` binary (servers, containers) | hyper on tokio, HTTP/1.1 and HTTP/2, TLS | worker process pools over Tier 1 or Tier 2 | in memory, optionally external |
-| Edge isolate (v2) | the platform's `fetch` event | direct in-process calls to bundled JS/WASM handlers | platform KV or durable storage |
+| Cloudflare Worker (v2) | the Worker's `fetch` event | direct calls to bundled JS/TS handlers in the isolate | a Durable Object per rate-limit bucket, the Cache API |
 | Serverless (v3) | the platform's function event, via a generated shim | the handler runs in the same function | external store |
 
 ## Request lifecycle (binary host)
@@ -220,18 +220,21 @@ limit buckets, validation, `before` handlers and `unsworn routes --policies`.
 
 - **v1: servers and containers.** The `unsworn` binary plus an official base
   image that projects extend with their runtimes.
-- **v2: edge isolates** (`unsworn build --target cloudflare`). The core is
-  compiled to WASM inside the Worker. JS/TS handlers are bundled in and called
-  directly. Rust handlers compile to WASM. Languages that can't run there need
-  a container target instead.
+- **v2: edge isolates** (`unsworn build --target cloudflare`). The core runs
+  as WebAssembly (`crates/unsworn-wasm`) inside the Worker, and JS/TS
+  handlers are bundled in and called directly. The wasm module asks a
+  JavaScript *bridge* for its I/O, the way the binary implements `Host`; the
+  Cloudflare bridge is `@unswornjs/sdk/cloudflare`. Languages that can't run
+  there need a container target instead. See [`cloudflare.md`](cloudflare.md).
 - **v3: serverless functions** (`--target vercel`, `--target lambda`).
   Declarative routes become the platform's routing config (for example
   Vercel's Build Output API). Each handler becomes a native function wrapped
   by a shim that runs the WASM core for validation and auth before calling it.
 
-Features that need shared state (rate limits, caches) need a configured store
-on stateless targets. `unsworn check --target <name>` reports this from a
-per-target capability table.
+Features that need shared state (rate limits, caches) need a store on
+stateless targets: Cloudflare brings its own, and serverless targets will need
+a configured one. `unsworn check --target <name>` reports what a config needs
+from a per-target capability table (`unsworn-core/src/targets.rs`).
 
 ## Crates
 
@@ -240,11 +243,11 @@ per-target capability table.
 | `crates/unsworn-core` | Pure core: config, route sources, matching, and the request pipeline (policies, auth, validation, caching, MCP) behind the `Host` and store traits. No I/O, no tokio. |
 | `crates/unsworn-proto` | The message model and both encodings, shared by the server and the Rust SDK. |
 | `crates/unsworn` | The binary: the `Host` for servers (hyper, worker pools, proxying, static files, the memory and Redis stores), compression, metrics, CLI. |
-| `sdk/js` | JS/TS SDK for Bun, Node and Deno. |
+| `crates/unsworn-wasm` | The core as a WebAssembly module for JavaScript hosts, with the `Bridge` interface they implement. Built into `sdk/js/wasm`. |
+| `sdk/js` | JS/TS SDK for Bun, Node and Deno, and the Cloudflare Worker runtime (`@unswornjs/sdk/cloudflare`). |
 | `sdk/python` | Python SDK (asyncio). |
 | `sdk/go` | Go SDK, including an `http.Handler` adapter. |
 | `sdk/rust` | Rust SDK (`unsworn-sdk`, Tokio). |
-| `unsworn-wasm` | Planned (v2): core bindings for edge and serverless hosts. |
 
 ## CLI
 
@@ -257,7 +260,7 @@ per-target capability table.
 | `unsworn openapi` | Emit the OpenAPI document. |
 | `unsworn gen <lang>` | Planned: generate typed request and response models for handlers. |
 | `unsworn conformance --runtime <r>` | Run the protocol conformance suite against a runtime. |
-| `unsworn build --target <t>` | Planned (v2/v3): produce a deployment for an edge or serverless target. |
+| `unsworn build --target cloudflare` | Bundle the project into a Cloudflare Worker. Serverless targets are planned (v3). |
 | `unsworn schema` | Print the config's JSON Schema. |
 | `unsworn init` | Write a starter config. |
 

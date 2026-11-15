@@ -95,6 +95,13 @@ log.warn("retrying payment", { attempt: 2 });
 
 Levels are `error`, `warn`, `info`, `debug` and `trace`.
 
+## Cloudflare Workers
+
+The same handlers run in a Cloudflare Worker, called directly by the
+Unsworn core compiled to WebAssembly. `unsworn build --target cloudflare`
+generates the Worker, which imports `@unswornjs/sdk/cloudflare`. See
+[`docs/cloudflare.md`](../../docs/cloudflare.md).
+
 ## Notes
 
 - `req.signal` is aborted when Unsworn cancels the request.

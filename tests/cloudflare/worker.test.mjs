@@ -110,3 +110,24 @@ test("proxy routes forward with rewritten headers", async () => {
   assert.ok(seen.headers["x-forwarded-for"]);
   assert.ok(seen.headers["x-request-id"]);
 });
+
+test("MCP tools run as handlers", async () => {
+  const send = async (method, params, name) => {
+    params._meta = {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientCapabilities": {},
+      "io.modelcontextprotocol/clientInfo": { name: "test", version: "1" },
+    };
+    const headers = { "content-type": "application/json", "mcp-protocol-version": "2026-07-28", "mcp-method": method };
+    if (name) headers["mcp-name"] = name;
+    const r = await get("/mcp", { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+    assert.equal(r.status, 200);
+    return (await r.json()).result;
+  };
+  const list = await send("tools/list", {});
+  assert.deepEqual(list.tools.map((t) => t.name), ["weather"]);
+  const result = await send("tools/call", { name: "weather", arguments: { city: "Oslo" } }, "weather");
+  assert.deepEqual(result.structuredContent, { city: "Oslo", sky: "clear", tool: "weather" });
+  const bad = await send("tools/call", { name: "weather", arguments: {} }, "weather");
+  assert.equal(bad.isError, true);
+});

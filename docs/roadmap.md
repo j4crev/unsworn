@@ -7,7 +7,7 @@ deployment target is meant to look like, see
 | Version | Runs on | Status |
 |---|---|---|
 | v1 | Servers and containers | Available (v0.2.0) |
-| v2 | Adds edge isolates | Planned |
+| v2 | Adds edge isolates | Built: Cloudflare Workers, in the next release |
 | v3 | Adds serverless functions | Planned |
 
 ## v2: edge isolates
@@ -29,14 +29,26 @@ Cloudflare Workers first (`unsworn build --target cloudflare`). Work needed:
   need consistent increments) and the Cache API or KV for cached responses.
   The core owns the token bucket, the cache entry format and what
   `on_error` means. The binary's memory and Redis stores implement both.
-- **`unsworn-wasm`:** core bindings for edge and serverless hosts.
-- **`unsworn build --target cloudflare`:** bundle the core and JS/TS and
-  WASM handlers into a Worker, with handlers called in-process.
-- **Fill in the target capability table** (`unsworn-core/src/targets.rs`)
-  so `unsworn check --target cloudflare` reports everything that won't run
-  there, including which store backends work on it.
-- **MCP on the edge.** The MCP endpoint needs no shared state, so tools as
-  handlers and routes as tools should work once handlers do.
+- ~~**`unsworn-wasm`.**~~ Done: the core as a WebAssembly module that asks
+  a JavaScript bridge for I/O, so every JS platform reuses it. About 1.4 MB
+  gzipped; CI keeps it under 1.6 MB.
+- ~~**`unsworn build --target cloudflare`.**~~ Done: bundles the project
+  files and JS/TS handlers into a Worker, with handlers called in the
+  isolate, a Durable Object per rate-limit bucket, the Cache API for `cache`
+  and Workers Static Assets for `static` routes. See
+  [`cloudflare.md`](cloudflare.md).
+- ~~**Fill in the target capability table.**~~ Done:
+  `unsworn check --target cloudflare` reports handlers that can't run in a
+  Worker, Redis as the store, and server settings Cloudflare ignores.
+- ~~**MCP on the edge.**~~ Done: tools run as handlers in the Worker; the
+  Worker tests cover it.
+
+Still open for the edge:
+
+- **WebSocket upgrades through `proxy` routes** in a Worker.
+- **WASM handlers** called directly, rather than through a JS wrapper.
+- **More isolate platforms,** such as Deno Deploy and Fastly, each with its
+  own bridge.
 
 ## v3: serverless functions
 

@@ -71,3 +71,13 @@ static = { dir = "public", spa_fallback = "index.html", cache_control = "public,
 [[route]]
 path = "/up/{*rest}"
 proxy = { upstreams = ["{env.UPSTREAM}"], strip_prefix = "/up" }
+
+[mcp]
+name = "fixture-tools"
+version = "1.0.0"
+
+[[mcp.tool]]
+name = "weather"
+description = "Weather for a city"
+input = { type = "object", required = ["city"], properties = { city = { type = "string" } } }
+handler = "src/tools.ts#weather"

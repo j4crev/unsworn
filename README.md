@@ -250,6 +250,7 @@ unsworn dev         # serves it, reloads on changes, verifies handler names
 | `unsworn check` | Validate config, routes and handler files; `--deep` asks workers whether every handler exists; `--target <t>` checks a deployment target |
 | `unsworn routes` | Print the route table and each route's source, including MCP tools; `--policies` shows merged policies and each tool's arguments |
 | `unsworn openapi` | Print the OpenAPI document for what Unsworn serves |
+| `unsworn build` | Bundle the project for a deployment target: `--target cloudflare` makes a Cloudflare Worker |
 | `unsworn conformance` | Test a runtime's workers against the protocol |
 | `unsworn schema` | Print the config's JSON Schema (also at [`schema/unsworn.schema.json`](schema/unsworn.schema.json)) |
 
@@ -288,7 +289,7 @@ different way. See [`docs/architecture.md`](docs/architecture.md).
 | Platform type | Examples | How Unsworn runs | Version |
 |---|---|---|---|
 | **Servers and containers** | Any VPS or bare metal, Docker, Kubernetes, Fly.io, Railway, Render, Google Cloud Run, AWS ECS/Fargate, Cloudflare Containers | The `unsworn` binary plus worker processes, from an official base image | v1 (available) |
-| **Edge isolates** | Cloudflare Workers and similar V8-isolate platforms | Core compiled to WASM inside the isolate; JS/TS and WASM handlers bundled in and called directly | v2 (planned) |
+| **Edge isolates** | Cloudflare Workers | `unsworn build --target cloudflare`: the core runs as WebAssembly in the Worker, and JS/TS handlers are bundled in and called directly ([guide](docs/cloudflare.md)) | v2 (built, next release) |
 | **Serverless functions** | Vercel Functions, AWS Lambda, Netlify Functions | `unsworn build --target <platform>` turns declarative routes into the platform's own routing config and each handler into a native function with a thin shim | v3 (planned) |
 
 Some features need shared state on stateless platforms, such as rate limits
@@ -300,13 +301,12 @@ that target before you deploy.
 | Version | Runs on | Status |
 |---|---|---|
 | v1 | Servers and containers | Available |
-| v2 | Adds edge isolates | Planned |
+| v2 | Adds edge isolates (Cloudflare Workers) | Built, next release |
 | v3 | Adds serverless functions | Planned |
 
 MCP support was first planned across these versions too. All of it is now
-built for servers and containers. The MCP endpoint needs no shared state,
-so it's designed to come to edge isolates and serverless functions along
-with them.
+built for servers, containers and Cloudflare Workers. The MCP endpoint needs
+no shared state, so it will come to serverless functions along with them.
 
 What's left to build for each version, and what isn't scheduled yet, is in
 [`docs/roadmap.md`](docs/roadmap.md).
