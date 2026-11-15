@@ -995,9 +995,15 @@ async fn store_in_cache(
         stored: std::time::SystemTime::now(),
         ttl,
     };
-    // Written in the background, so a slow store never delays the response.
+    // A local write is immediate, so the next request sees it. A remote one
+    // is written in the background, so a slow store never delays the
+    // response.
     let store = shared.store.load_full();
-    tokio::spawn(async move { store.cache_put(key, entry).await });
+    if store.is_local() {
+        store.cache_put(key, entry).await;
+    } else {
+        tokio::spawn(async move { store.cache_put(key, entry).await });
+    }
     let mut resp = Response::from_parts(parts, full(bytes));
     if shared.dev {
         resp.headers_mut()
