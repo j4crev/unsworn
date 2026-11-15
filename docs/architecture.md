@@ -1,9 +1,5 @@
 # Unsworn architecture
 
-> Describes the server (v1), Cloudflare Workers (v2) and serverless
-> function (v3) hosts as built. See the [roadmap](roadmap.md) for what's
-> still open.
-
 ## Goals
 
 - **Sealed router.** Users configure Unsworn; they never write or modify Rust in
@@ -103,7 +99,7 @@ A host combines an ingress, a dispatcher and a store around the core.
 
 ## Request lifecycle (binary host)
 
-The binary does steps 1 and 10. Steps 2 to 9 run in the core's `Router`,
+The binary does steps 1 and 12. Steps 2 to 11 run in the core's `Router`,
 which calls back into the binary for I/O.
 
 1. **Accept.** hyper accepts the connection, terminates TLS and parses HTTP.
@@ -111,21 +107,29 @@ which calls back into the binary for I/O.
    a radix tree built at load time from every route source: `[[route]]`
    entries, the routes directory and the OpenAPI spec (see
    [`config.md`](config.md#route-sources)).
-3. **Policies.** CORS, IP rules, body size limit, rate limit.
+3. **Access rules.** CORS preflights are answered, then `origin` and IP
+   rules are checked.
 4. **Authenticate.** JWT/JWKS or API key verification (against listed keys,
    or by calling a remote verifier). Claims go into the request context.
-5. **Validate.** Path params, query, headers and body are checked against the
-   route's schemas and converted to typed values (`"42"` becomes `42`).
-6. **Cache lookup.** A hit is returned directly.
-7. **Before handlers.** Each one may add to the context or reject the request.
-8. **Dispatch.** The handler runs in a worker. The response is validated
-   against the response schema if one is declared (configurable: off, log, or
-   enforce).
-9. **Transform and respond.** Header rules apply, the cache is filled and the
-   response is sent.
-10. **Observe.** Access log, metrics and trace spans for every step.
+5. **Rate limit.** It comes after authentication, so its key can be a claim
+   such as `auth.sub`.
+6. **Validate.** Path params, query and headers are checked against the
+   route's rules and converted to typed values (`"42"` becomes `42`).
+7. **Cache lookup.** A hit is returned directly.
+8. **Body.** The body size limit is applied, then the body is read and
+   checked against the route's schema, unless the route streams it to the
+   handler.
+9. **Before handlers.** Each one may add to the context or reject the request.
+10. **Dispatch.** The handler runs in a worker. The response is validated
+    against the response schema if one is declared (configurable: off, log, or
+    enforce).
+11. **Transform and respond.** Header rules apply, the cache is filled and the
+    response is sent.
+12. **Observe.** The access log and metrics record the request.
 
-Declarative routes stop at step 2, 3, 5 or 6, so they never touch a worker.
+A rejected request stops at the step that rejects it, and a cache hit stops
+at step 7. Routes with a `respond`, `redirect`, `static` or `proxy` action
+are answered at step 10 without a worker.
 
 ## Workers
 
@@ -172,8 +176,9 @@ workers    = 2
   worker a `cancel` message.
 - **Logs.** Worker stderr is captured line by line into Unsworn's structured
   logs, tagged with runtime and worker id.
-- **Reload.** On config or handler changes, Unsworn starts new workers, moves
-  new requests to them and lets old workers finish their in-flight requests.
+- **Reload.** On a reload (file changes in `unsworn dev`, `SIGHUP` for
+  `unsworn serve`), Unsworn starts new workers, moves new requests to them
+  and lets old workers finish their in-flight requests.
 
 ## Protocol tiers
 
@@ -247,7 +252,7 @@ from a per-target capability table (`unsworn-core/src/targets.rs`).
 | `crates/unsworn-proto` | The message model and both encodings, shared by the server and the Rust SDK. |
 | `crates/unsworn` | The binary: the `Host` for servers (hyper, worker pools, proxying, static files, the memory and Redis stores), compression, metrics, CLI. |
 | `crates/unsworn-wasm` | The core as a WebAssembly module for JavaScript hosts, with the `Bridge` interface they implement. Built into `sdk/js/wasm`. |
-| `sdk/js` | JS/TS SDK for Bun, Node and Deno, and the Cloudflare Worker runtime (`@unswornjs/sdk/cloudflare`). |
+| `sdk/js` | JS/TS SDK for Bun, Node and Deno, plus the runtimes for built targets: the Cloudflare Worker (`@unswornjs/sdk/cloudflare`), and Node functions (`@unswornjs/sdk/node`, with `vercel`, `netlify` and `lambda` entries). |
 | `sdk/python` | Python SDK (asyncio). |
 | `sdk/go` | Go SDK, including an `http.Handler` adapter. |
 | `sdk/rust` | Rust SDK (`unsworn-sdk`, Tokio). |
@@ -262,7 +267,7 @@ from a per-target capability table (`unsworn-core/src/targets.rs`).
 | `unsworn routes [--policies]` | Print the resolved route table and the source of each route. `--policies` adds each route's merged policies and where each value came from. |
 | `unsworn openapi` | Emit the OpenAPI document. |
 | `unsworn gen <lang>` | Planned: generate typed request and response models for handlers. |
-| `unsworn conformance --runtime <r>` | Run the protocol conformance suite against a runtime. |
+| `unsworn conformance --runtime <r> --handlers <file>` | Run the protocol conformance suite against a runtime. |
 | `unsworn build --target <t>` | Bundle the project into a Cloudflare Worker (`cloudflare`) or a serverless function (`vercel`, `netlify`, `lambda`). |
 | `unsworn schema` | Print the config's JSON Schema. |
 | `unsworn init` | Write a starter config. |

@@ -1,8 +1,5 @@
 # Unsworn configuration
 
-> Describes what's built. For what's still open, see the
-> [roadmap](roadmap.md).
-
 An Unsworn project is a config file plus handlers. Routes can come from any
 mix of these [route sources](#route-sources):
 
@@ -400,7 +397,7 @@ cors       = { origins = ["https://app.example.com"], credentials = true }
 origin     = { allow = ["https://app.example.com"] }   # reject other Origin headers with 403
 ip         = { allow = ["10.0.0.0/8"], deny = ["10.0.0.5"] }  # IPs or CIDRs; deny wins
 rate_limit = { requests = 100, per = "1m", key = "auth.sub" }   # or "ip", "header.<name>"
-cache      = { ttl = "30s", vary = ["Authorization"] }
+cache      = { ttl = "30s", vary = ["Authorization"] }  # one entry per value of these request headers
 timeout    = "5s"
 max_body   = "10MB"
 stream_body = true                    # handler reads the body as it arrives
@@ -496,6 +493,17 @@ cache = { ttl = "10s" }        # the entry's own values override its sets
 - Naming a set that doesn't exist is an error from `unsworn check`.
 
 ### Caching rules
+
+A cached response is stored under a cache key made from the route, method,
+path and query string. Two settings add to that key:
+
+- **`vary`** lists request headers, named as in HTTP's `Vary` header.
+  Requests with different values for any of them get separate entries, so
+  `vary = ["Accept-Language"]` caches each language apart.
+- **`key`** adds one value, with the same sources as `rate_limit`'s `key`:
+  `"auth.sub"` (or another claim), `"ip"` or `"header.<name>"`.
+
+They can be used together.
 
 Caching the wrong response can serve one user's data to another, so `cache`
 follows these rules wherever it is set, including in `[defaults]`:
@@ -782,7 +790,7 @@ MCP support is described in [`mcp.md`](mcp.md). In config it adds:
 $ unsworn check --target vercel
 ✗ unsworn.toml:20 [[route]].rate_limit: needs a shared store on this target: each instance of the function would count on its own
   → set [store] backend = "redis" with a REST API's `url` and `token`, or remove it
-✓ 12 routes OK
+✗ 1 error(s)
 ```
 
 The capability table for each target is part of Unsworn's source, so a config

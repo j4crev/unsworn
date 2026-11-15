@@ -208,6 +208,8 @@ verdicts) is kept in each instance's memory, which is fine.
 - **TLS, HTTP versions and compression** are the platform's job.
   `[server.tls]` is ignored.
 - **The client IP** comes from the platform; `trusted_proxies` is ignored.
+- **Request ids** come from an incoming `X-Request-Id`, else the platform's
+  id for the request.
 - **There's no `/_unsworn/health`, metrics endpoint or admin listener.** Use
   the platform's logs and metrics.
 - **Logs** go to the console, which the platform collects. Handler logs,

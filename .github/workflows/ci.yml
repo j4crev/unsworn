@@ -9,7 +9,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  # The `unsworn` binary for servers and containers: lint, the Rust tests
+  # (including the conformance suite, which runs every SDK's worker against
+  # the binary, so it needs Bun, Node, Deno, Python and Go), and the Go SDK.
+  server:
     runs-on: ubuntu-latest
     services:
       redis:

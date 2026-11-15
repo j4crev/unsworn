@@ -2,9 +2,7 @@
 
 An API router with allegiance to no language.
 
-Declare your API once. Unsworn enforces it in front of handlers written in
-any language, by you or your AI agents. Start by putting it in front of the
-app you already have.
+That means your endpoint handlers can be written in virtually anything.
 
 Unsworn is a single compiled binary that handles the HTTP side of an API:
 routing, validation, auth, CORS, rate limiting, caching, proxying, logging
@@ -18,13 +16,12 @@ MCP tools.
 ### Your API's rules live outside your code
 
 In most frameworks, auth checks, input validation and rate limits are code,
-and code can be wrong. One forgotten middleware or one unvalidated field is enough to get you rekt.
+but code can be wrong. One forgotten middleware or an unvalidated field is enough to get you rekt.
 
 With Unsworn, the security-critical part of your API is a short file of rules someone can review in a minute.
 Those rules are declared in `unsworn.toml` and enforced by a
 binary that handler code can't change. A handler only runs after its request
-has been authenticated, rate-limited and validated, so it can't forget to do
-any of that.
+has been tested against those rules.
 
 ### Built for MCP servers
 
@@ -74,8 +71,7 @@ with no code changes, and you can immediately:
 - validate requests against an OpenAPI spec before they reach your app
 - serve health checks, redirects and static files without touching the app
 
-Then move routes out of the old app one at a time, at your own pace. Moving
-back out of Unsworn is just as easy, so trying it is low risk.
+Then move routes out of the old app one at a time, at your own pace.
 
 ### The right language for each endpoint
 
@@ -91,17 +87,16 @@ needs raw speed.
 ### Speed where it matters
 
 - **Declarative endpoints run entirely in Rust.** Static responses,
-  redirects, proxies, cached responses and rejected requests (failed auth,
-  invalid input, rate limits) never reach a handler.
+  redirects, proxies, cached responses and rejected requests never reach a handler.
 - **Handlers run in worker pools across all CPU cores,** without any
   clustering setup in your code.
 - **A slow endpoint can move to a faster language** without changing the API.
   Replace `get.ts` with `get.rs`, and clients notice nothing except the
-  speed, which Unsworn's metrics will show.
+  increased speed.
 
 A handler call does cross a process boundary, so a trivial endpoint won't
 beat the same code running directly on Bun, for example. The gains come from the points
-above. Benchmarks will be published before any speed claims are made.
+above.
 
 ## A quick look
 
@@ -143,7 +138,7 @@ path    = "/api/users/{id}"
 method  = "GET"
 auth    = "jwt"
 params  = { id = { type = "integer", min = 1 } }
-cache   = { ttl = "30s", vary = ["Authorization"] }
+cache   = { ttl = "30s", key = "auth.sub" }  # one cache entry per user
 handler = "src/users.ts#getUser"
 ```
 
@@ -219,6 +214,35 @@ Details: [architecture](docs/architecture.md), [config](docs/config.md),
 [protocol](docs/protocol.md), [conformance](docs/conformance.md),
 [MCP](docs/mcp.md) and [roadmap](docs/roadmap.md).
 
+## Where Unsworn sits
+
+| Tool | What it is | Where custom logic lives |
+|---|---|---|
+| nginx, Caddy, Envoy | Config-driven proxies and web servers | C or Go modules compiled in, Lua, or WASM filters |
+| Kong and similar API gateways | Gateways in front of separate services | Plugins written for the gateway |
+| Fermyon Spin | Config-driven WASM app host | WASM components only |
+| Express, axum, Hono, Go `net/http` | Frameworks | The app itself, in one language |
+| **Unsworn** | An API layer that sits in front of your app and also hosts your handlers | Plain functions in any language |
+
+Unsworn is **not** a service mesh, a full API-management product (developer
+portals, billing, key issuance) or a web framework.
+
+## Where Unsworn runs
+
+Unsworn is designed to run on three kinds of platforms. The router core does no
+I/O and compiles to WebAssembly, so each target hosts the same core in a
+different way. See [`docs/architecture.md`](docs/architecture.md).
+
+| Platform type | Examples | How Unsworn runs | Version |
+|---|---|---|---|
+| **Servers and containers** | Any VPS or bare metal, Docker, Kubernetes, Fly.io, Railway, Render, Google Cloud Run, AWS ECS/Fargate, Cloudflare Containers | The `unsworn` binary plus worker processes, from an official base image | v1 (available) |
+| **Edge isolates** | Cloudflare Workers | `unsworn build --target cloudflare`: the core runs as WebAssembly in the Worker, and JS/TS handlers are bundled in and called directly ([guide](docs/cloudflare.md)) | v2 (built, next release) |
+| **Serverless functions** | Vercel Functions, AWS Lambda, Netlify Functions | `unsworn build --target vercel`, `netlify` or `lambda`: one function runs the whole project, with the core as WebAssembly and JS/TS handlers bundled in and called directly ([guide](docs/serverless.md)) | v3 (built, next release) |
+
+Some features need shared state on stateless platforms, such as rate limits
+and caches. `unsworn check --target <platform>` reports what a config needs on
+that target before you deploy.
+
 ## Getting started
 
 Unsworn runs on Linux (x86_64 and arm64). Install the latest release:
@@ -231,7 +255,6 @@ For containers, extend the `ghcr.io/j4crev/unsworn` base image with the
 runtimes your handlers need. With Rust 1.88 or newer, `cargo install unsworn`
 works too.
 
-The latest release is [v0.2.0](https://github.com/j4crev/unsworn/releases/tag/v0.2.0).
 To try unreleased changes, build from `main`:
 
 ```sh
@@ -267,46 +290,7 @@ Handler SDKs:
 front of an existing app, and [`examples/raw-python`](examples/raw-python)
 is a worker written without an SDK.
 
-## Where Unsworn sits
-
-| Tool | What it is | Where custom logic lives |
-|---|---|---|
-| nginx, Caddy, Envoy | Config-driven proxies and web servers | C or Go modules compiled in, Lua, or WASM filters |
-| Kong and similar API gateways | Gateways in front of separate services | Plugins written for the gateway |
-| Fermyon Spin | Config-driven WASM app host | WASM components only |
-| Express, axum, Hono, Go `net/http` | Frameworks | The app itself, in one language |
-| **Unsworn** | An API layer that sits in front of your app and also hosts your handlers | Plain functions in any language |
-
-Unsworn is **not** a service mesh, a full API-management product (developer
-portals, billing, key issuance) or a web framework.
-
-## Where Unsworn runs
-
-Unsworn is designed to run on three kinds of platforms. The router core does no
-I/O and compiles to WebAssembly, so each target hosts the same core in a
-different way. See [`docs/architecture.md`](docs/architecture.md).
-
-| Platform type | Examples | How Unsworn runs | Version |
-|---|---|---|---|
-| **Servers and containers** | Any VPS or bare metal, Docker, Kubernetes, Fly.io, Railway, Render, Google Cloud Run, AWS ECS/Fargate, Cloudflare Containers | The `unsworn` binary plus worker processes, from an official base image | v1 (available) |
-| **Edge isolates** | Cloudflare Workers | `unsworn build --target cloudflare`: the core runs as WebAssembly in the Worker, and JS/TS handlers are bundled in and called directly ([guide](docs/cloudflare.md)) | v2 (built, next release) |
-| **Serverless functions** | Vercel Functions, AWS Lambda, Netlify Functions | `unsworn build --target vercel`, `netlify` or `lambda`: one function runs the whole project, with the core as WebAssembly and JS/TS handlers bundled in and called directly ([guide](docs/serverless.md)) | v3 (built, next release) |
-
-Some features need shared state on stateless platforms, such as rate limits
-and caches. `unsworn check --target <platform>` reports what a config needs on
-that target before you deploy.
-
 ## Roadmap
-
-| Version | Runs on | Status |
-|---|---|---|
-| v1 | Servers and containers | Available |
-| v2 | Adds edge isolates (Cloudflare Workers) | Built, next release |
-| v3 | Adds serverless functions (Vercel, Netlify, AWS Lambda) | Built, next release |
-
-MCP support was first planned across these versions too. All of it is now
-built for every target: the MCP endpoint needs no shared state, so it runs
-in a Worker or a function as it does on a server.
 
 What's left to build for each version, and what isn't scheduled yet, is in
 [`docs/roadmap.md`](docs/roadmap.md).
