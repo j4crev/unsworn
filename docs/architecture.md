@@ -28,10 +28,10 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ unsworn-core   pure Rust, no I/O, compiles to native and wasm32    │
+│ unsworn-core   pure Rust, no I/O, compiles to native and wasm32  │
 │   config parsing and validation · route matching                 │
-│   request validation · auth verification · transforms            │
-│   policies (CORS, headers) · dispatch decision                   │
+│   the request pipeline: policies, auth, validation, caching,     │
+│   before handlers, actions, MCP · store rules                    │
 ├──────────────────────────────────────────────────────────────────┤
 │ ingress      hyper (server/container) │ Worker fetch │ fn shim   │
 ├──────────────────────────────────────────────────────────────────┤
@@ -43,22 +43,52 @@
 
 ### `unsworn-core`
 
-The core takes a request and the loaded config and returns a **decision**:
+The core runs every request from matching to the final headers. A host
+builds a `Router` (`unsworn_core::pipeline`) for each loaded project and
+calls `Router::handle` with the request, the client's IP and a value that
+implements the `Host` trait. `Host` is the I/O the core needs and never does
+itself:
 
-- `Respond(response)`: a static response, redirect, CORS preflight, cached
-  response or validation error.
-- `Proxy(upstream, request)`: forward to an HTTP service.
-- `Serve(file)`: a static file.
-- `Call(handler, validated_request, context)`: run a handler, optionally after
-  one or more `before` handlers.
+- reading a request body, or passing it on unread with a size limit
+- calling a handler (or a `before` handler) by a deadline
+- proxying to an upstream, and serving a static file
+- outgoing requests, for JWKS documents and API-key verifiers
+- timeouts, and work that shouldn't delay the response, such as a write to
+  a remote store
+- the wall clock and a monotonic clock
+- the store
+
+Everything else happens in the core, the same way on every host: matching,
+CORS, origin and IP rules, authentication (including JWKS refresh and the
+verdict cache for remote API keys), rate limits, validation, cache lookups
+and fills, `before` handlers, every route action, response validation,
+header rules and the MCP endpoint. Bodies the core doesn't need to read,
+such as streamed handler replies and proxied responses, pass through it as
+the host's own body type.
 
 The core never opens sockets, spawns processes, reads files or reads the
-clock. Hosts pass in whatever it needs (config text, current time, store
-lookups). This keeps it testable and lets it compile to `wasm32`, which is
-what makes the edge and serverless targets possible without a rewrite.
+clock. Config files come through a separate `Host` trait for loading
+(`unsworn_core::project::Host`). This keeps it testable (its pipeline tests
+run against an in-memory host) and lets it compile to `wasm32`, which is
+what makes the edge and serverless targets possible without a rewrite. CI
+builds it for `wasm32-unknown-unknown`, and its `clippy.toml` rejects clock,
+file and socket calls, which compile for `wasm32` but panic there.
+`Host`'s futures are `Send` on native targets only, so a JavaScript host can
+hold platform values that aren't.
 
-Anything stateful, such as rate-limit counters and cache entries, goes
-through a small `Store` trait that each host implements.
+#### Store
+
+Rate-limit counters and cached responses go through two traits in
+`unsworn_core::store`, because platforms back them differently:
+
+- `RateLimiter::take` needs consistent increments: a Redis script, or a
+  Durable Object on Cloudflare.
+- `ResponseCache::get` and `put` suit an eventually consistent cache: Redis,
+  the Cache API or KV.
+
+The core owns the rules every backend shares: the token bucket
+(`take_token`), the cache entry and its byte encoding, freshness, and what a
+failure means (`[store].on_error`). Backends only store and report errors.
 
 ### Hosts
 
@@ -71,6 +101,9 @@ A host combines an ingress, a dispatcher and a store around the core.
 | Serverless (v3) | the platform's function event, via a generated shim | the handler runs in the same function | external store |
 
 ## Request lifecycle (binary host)
+
+The binary does steps 1 and 10. Steps 2 to 9 run in the core's `Router`,
+which calls back into the binary for I/O.
 
 1. **Accept.** hyper accepts the connection, terminates TLS and parses HTTP.
 2. **Match.** The core matches the method and path against the route table,
@@ -204,9 +237,9 @@ per-target capability table.
 
 | Path | Role |
 |---|---|
-| `crates/unsworn-core` | Pure core: config, route sources, matching, policies, validation, auth checks. No I/O, no tokio. |
+| `crates/unsworn-core` | Pure core: config, route sources, matching, and the request pipeline (policies, auth, validation, caching, MCP) behind the `Host` and store traits. No I/O, no tokio. |
 | `crates/unsworn-proto` | The message model and both encodings, shared by the server and the Rust SDK. |
-| `crates/unsworn` | The binary: HTTP ingress (hyper), worker pools, proxying, static files, compression, CLI. |
+| `crates/unsworn` | The binary: the `Host` for servers (hyper, worker pools, proxying, static files, the memory and Redis stores), compression, metrics, CLI. |
 | `sdk/js` | JS/TS SDK for Bun, Node and Deno. |
 | `sdk/python` | Python SDK (asyncio). |
 | `sdk/go` | Go SDK, including an `http.Handler` adapter. |
