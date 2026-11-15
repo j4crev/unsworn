@@ -1719,12 +1719,21 @@ impl<'h> Compiler<'h> {
             OrOff::Off => OrOff::Off,
             OrOff::On(c) => {
                 let origins = c.origins.to_vec();
+                let any_origin = origins.iter().any(|o| o == "*");
+                // Browsers refuse `*` with credentials. Answering every
+                // origin by name instead would let any website read
+                // responses meant for a signed-in user.
+                if any_origin && c.credentials {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!("{loc}.cors"),
+                            "`credentials = true` can't be used with the origin \"*\"",
+                        )
+                        .hint("list the origins that may send credentials, such as [\"https://app.example.com\"]"),
+                    );
+                }
                 OrOff::On(Cors {
-                    origins: if origins.iter().any(|o| o == "*") {
-                        None
-                    } else {
-                        Some(origins)
-                    },
+                    origins: if any_origin { None } else { Some(origins) },
                     credentials: c.credentials,
                     methods: c.methods.clone(),
                     headers: c.headers.clone(),
@@ -3260,6 +3269,47 @@ impl<'h> Compiler<'h> {
                         )
                         .hint("add `vary = [\"Authorization\"]` or `key = \"auth.sub\"` to cache per user"),
                     );
+            }
+            // Static API keys verify as `{type, key}` claims only, so a cache
+            // keyed on any other claim never caches their callers' responses.
+            if let (
+                Some(CacheRule {
+                    key: Some(KeySource::Claim(claim)),
+                    ..
+                }),
+                AuthReq::AnyOf(alts),
+            ) = (&eff.cache, &eff.auth)
+                && !matches!(claim.as_str(), "type" | "key")
+            {
+                let keyless: Vec<&str> = alts
+                    .iter()
+                    .filter(|a| {
+                        self.schemes.get(&a.scheme).is_some_and(|s| {
+                            matches!(
+                                s.as_ref(),
+                                Scheme::ApiKey(ApiKeyScheme {
+                                    keys: ApiKeys::Static(_),
+                                    ..
+                                })
+                            )
+                        })
+                    })
+                    .map(|a| a.scheme.as_str())
+                    .collect();
+                if !keyless.is_empty() {
+                    self.diags.push(
+                        Diagnostic::warning(
+                            format!("{}", r.source),
+                            format!(
+                                "{} {} caches by `auth.{claim}`, which the API keys of `{}` don't have, so their callers' responses won't be cached",
+                                r.method_label(),
+                                r.path,
+                                keyless.join("`, `"),
+                            ),
+                        )
+                        .hint("add the header those keys are sent in to `vary` to cache per key (e.g. `vary = [\"X-API-Key\"]`)"),
+                    );
+                }
             }
             // A header the route's auth doesn't read is whatever the client
             // says it is. (`Mcp-Param-*` headers are checked against the

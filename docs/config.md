@@ -258,8 +258,9 @@ a key the verifier stops accepting keeps working until its cached answer
 expires, so pick the longest delay you can accept. Answers that include
 `exp` are cached no longer than that. Outages aren't cached. The
 store holds SHA-256 hashes of keys, never the keys themselves. With the
-`memory` store, verdicts share the response cache's limit of 10,000 entries
-per instance; with many active keys, use `redis`.
+`memory` store, each instance remembers up to 10,000 verdicts (8 MB), apart
+from cached responses, so made-up keys can't push responses out; with many
+active keys, use `redis`.
 
 Requests to the verifier carry the key, so use `https://` unless the
 verifier runs on the same host or private network. A verifier with a
@@ -324,6 +325,13 @@ With several instances, each would count its own rate limits and fill its
 own cache, so use `redis` (or anything that speaks its protocol, such as
 Valkey, Dragonfly or a managed Redis) to share them.
 
+Clients choose the keys (each query string is a new cache entry, each
+address a new bucket), so the `memory` store is bounded: up to 10,000
+cached responses and 64 MB of them, 10,000 remembered API-key verdicts, and
+200,000 rate-limit buckets. When one fills up, the cache entry that expires
+soonest, or the bucket that refills soonest, makes way. To cache more, use
+`redis`, and set a `maxmemory` limit and eviction policy on it.
+
 - **`url` and `token`:** the server speaks the Redis protocol, so it takes a
   `redis://` or `rediss://` URL. [Serverless functions](serverless.md#the-store)
   can't keep connections open, so they reach Redis through a REST API
@@ -343,6 +351,8 @@ Valkey, Dragonfly or a managed Redis) to share them.
 - **Treat the store as part of your auth.** It holds remembered API-key
   verdicts (`cache` on an `api_key` scheme) and cached responses, so anyone
   who can write to it can make a key valid or change what a route answers.
+  Its key names don't give credentials away: cache keys, verdict keys and
+  the values of `header.<name>` rate-limit keys are SHA-256 hashes.
   Give Redis a password, reach it over `rediss://` unless it's on a network
   you control, and don't share it with software you trust less.
 
@@ -479,12 +489,23 @@ file. Invalid requests get a `400` (or `422` for bodies) with a standard
 error body and never reach the handler. Validated values are converted to
 their declared types before the handler sees them.
 
+Requests that programs read in different ways are turned away with `400`,
+because a `proxy` route forwards the request as it was sent, and its
+upstream could act on a value that wasn't checked:
+
+- **A declared parameter or header that isn't an array may appear once.**
+  With `?limit=10&limit=999999`, Unsworn would check one value, while Go's
+  `Query().Get` and Flask's `args.get` read the first. Declare it as an
+  array (`type = "array"`) to accept repeats.
+- **A JSON body may not have two members with the same name** in one
+  object, such as `{"role": "user", "role": "admin"}`.
+
 ### Policies
 
 ```toml
 auth       = "jwt"                       # or ["jwt", "service"] = either one; "none" = public
                                          # or { scheme = "jwt", scopes = ["billing:write"] }
-cors       = { origins = ["https://app.example.com"], credentials = true }
+cors       = { origins = ["https://app.example.com"], credentials = true }  # credentials need listed origins
 origin     = { allow = ["https://app.example.com"] }   # reject other Origin headers with 403
 ip         = { allow = ["10.0.0.0/8"], deny = ["10.0.0.5"] }  # IPs or CIDRs; deny wins
 rate_limit = { requests = 100, per = "1m", key = "auth.sub" }   # or "ip", "header.<name>"
@@ -499,6 +520,12 @@ use        = ["public_cached"]        # named policy sets, applied in order
 
 Any inherited policy except `auth` can be switched off for a route with
 `"off"`, for example `cache = "off"`. For `auth`, use `"none"`.
+
+`cors` with `origins = "*"` answers any site, but never with credentials:
+`credentials = true` needs the origins listed, and `unsworn check` rejects
+the two together. Browsers refuse `*` with credentials, and answering each
+site by name instead would let any website read what a signed-in user's
+browser fetches.
 
 Most keys replace what broader layers set. `before` is different: lists from
 every layer are joined, broadest first, so a folder's `_before` handler and a
@@ -606,9 +633,12 @@ path and query string. Two settings add to that key:
   Requests with different values for any of them get separate entries, so
   `vary = ["Accept-Language"]` caches each language apart.
 - **`key`** adds one value, with the same sources as `rate_limit`'s `key`:
-  `"auth.sub"` (or another claim), `"ip"` or `"header.<name>"`.
+  `"auth.sub"` (or another claim), `"ip"` or `"header.<name>"`. A claim is
+  taken from the scheme that verified the caller, so two schemes' users
+  with the same `sub` get separate entries.
 
-They can be used together.
+They can be used together. The key is stored as a SHA-256 hash, so a store
+never holds the credentials a `vary` on `Authorization` puts in it.
 
 Caching the wrong response can serve one user's data to another, so `cache`
 follows these rules wherever it is set, including in `[defaults]`:
@@ -621,10 +651,27 @@ follows these rules wherever it is set, including in `[defaults]`:
   includes `Authorization` or the header an API-key scheme reads, or the
   `key` setting puts the user in the cache key (`key = "auth.sub"`). `unsworn check` warns about routes where `cache`
   and `auth` are both set but neither is true, so the gap is visible.
-- **A request with an `Authorization` header isn't cached on a public
-  route** unless `vary` includes `Authorization`. Unsworn didn't check that
-  credential, but the upstream or handler behind the route may have, and
-  its answer may be one user's.
+- **A caller without the claim the key names isn't cached.** Keyed on
+  `auth.sub`, a request whose credentials have no `sub` is neither answered
+  from the cache nor stored, rather than sharing one entry with every other
+  such caller. API keys listed in `keys` verify as `{type, key}` only, so
+  `unsworn check` warns when a route they can call is keyed on another
+  claim; vary on the header they're sent in instead.
+- **A request with credentials Unsworn didn't check isn't cached on a
+  public route:** an `Authorization` header unless `vary` includes
+  `Authorization`, and cookies unless it includes `Cookie`. The upstream or
+  handler behind the route may have checked them (an app with sessions
+  keeps them in a cookie), and its answer may be one user's.
+- **A response is only stored if the key covers its `Vary`.** A response
+  that varies on a request header the rule's `vary` doesn't list, such as
+  `Vary: Cookie` from an app with sessions, could be another user's, so it
+  isn't stored. An upstream that compresses its responses sends
+  `Vary: Accept-Encoding`; add `"Accept-Encoding"` to `vary` to cache them.
+- **`before` handlers run before the cache is read,** so one that turns a
+  caller away does so even when a response is cached. That costs a handler
+  call on every hit; what the handler adds to the context isn't part of the
+  key, so a response that depends on it needs the same request header in
+  `vary`.
 - **Handlers can always opt out** by returning `Cache-Control: no-store`,
   `no-cache` or `private`, and a response with `Set-Cookie` or `Vary: *` is
   never cached.

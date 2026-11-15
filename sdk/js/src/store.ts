@@ -72,8 +72,46 @@ export function redisRestStore(url: string, token: string, prefix = ""): Store {
   };
 }
 
-/** As many cached responses as the server's memory store keeps. */
+/** As many cached responses, and bytes of them, as the server's memory store keeps. */
 const MAX_ENTRIES = 10_000;
+const MAX_BYTES = 64 * 1024 * 1024;
+/** Remembered API-key verdicts get a space of their own, so made-up keys can't push responses out. */
+const MAX_VERDICTS = 10_000;
+const MAX_VERDICT_BYTES = 8 * 1024 * 1024;
+const MAX_BUCKETS = 200_000;
+
+/** Entries within a count and a byte budget; the oldest written go first. */
+function boundedCache(maxEntries: number, maxBytes: number) {
+  const entries = new Map<string, { value: Uint8Array; until: number; size: number }>();
+  let bytes = 0;
+  const remove = (key: string) => {
+    const entry = entries.get(key);
+    if (!entry) return;
+    entries.delete(key);
+    bytes -= entry.size;
+  };
+  return {
+    get(key: string): Uint8Array | null {
+      const entry = entries.get(key);
+      if (!entry) return null;
+      if (entry.until > Date.now()) return entry.value;
+      remove(key);
+      return null;
+    },
+    put(key: string, value: Uint8Array, ttlMs: number) {
+      remove(key);
+      const size = key.length * 2 + value.byteLength + 128;
+      if (size > maxBytes) return;
+      while (entries.size >= maxEntries || bytes + size > maxBytes) {
+        const oldest = entries.keys().next().value as string | undefined;
+        if (oldest === undefined) break;
+        remove(oldest);
+      }
+      entries.set(key, { value, until: Date.now() + ttlMs, size });
+      bytes += size;
+    },
+  };
+}
 
 /**
  * This process's memory. Each instance of a function has its own, so rate
@@ -82,32 +120,25 @@ const MAX_ENTRIES = 10_000;
  */
 export function memoryStore(): Store {
   const buckets = new Map<string, [number, number]>();
-  const cache = new Map<string, { value: Uint8Array; until: number }>();
-  const trim = (map: Map<string, unknown>) => {
-    while (map.size > MAX_ENTRIES) map.delete(map.keys().next().value as string);
-  };
+  const responses = boundedCache(MAX_ENTRIES, MAX_BYTES);
+  const verdicts = boundedCache(MAX_VERDICTS, MAX_VERDICT_BYTES);
+  const cacheFor = (key: string) => (key.startsWith("auth|") ? verdicts : responses);
   return {
     async rateLimit(key, requests, perMs) {
       const saved = buckets.get(key);
       const [tokens, lastMs, waitMs] = takeToken(saved?.[0], saved?.[1], Date.now(), requests, perMs);
       buckets.delete(key);
       buckets.set(key, [tokens, lastMs]);
-      trim(buckets);
+      while (buckets.size > MAX_BUCKETS) buckets.delete(buckets.keys().next().value as string);
       return waitMs < 0 ? null : waitMs;
     },
 
     async cacheGet(key) {
-      const entry = cache.get(key);
-      if (!entry) return null;
-      if (entry.until > Date.now()) return entry.value;
-      cache.delete(key);
-      return null;
+      return cacheFor(key).get(key);
     },
 
     async cachePut(key, value, ttlMs) {
-      cache.delete(key);
-      cache.set(key, { value, until: Date.now() + ttlMs });
-      trim(cache);
+      cacheFor(key).put(key, value, ttlMs);
     },
   };
 }

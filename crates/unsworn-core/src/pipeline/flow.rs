@@ -20,7 +20,7 @@ use super::{
     redirect_location, response_head, validate_inputs,
 };
 use crate::config::{ResponseValidation, TrailingSlash};
-use crate::policy::{Effective, HandlerRef, KeySource, RateLimit as RateLimitRule};
+use crate::policy::{CacheRule, Effective, HandlerRef, KeySource, RateLimit as RateLimitRule};
 use crate::project::{Action, MatchResult, Project, RespondBody, Route};
 use crate::rules;
 use crate::store::{
@@ -380,6 +380,14 @@ async fn serve_route<H: Host>(
         Ok(context) => prepared.context = context,
         Err(resp) => return resp,
     }
+    // The cache is read after `before` handlers, so one that turns a caller
+    // away does so even when a response is cached.
+    if let Some(key) = &prepared.cache_key
+        && let Some(hit) = cache_get(&ctx.host.store(), key, ctx.host.now_ms()).await
+    {
+        let method = &prepared.template.method;
+        return cached_response(ctx, &hit, method, &prepared.parts.headers);
+    }
     // A `HEAD` request may be answered from the cache, but its response
     // has no body to answer a later `GET` with, so it's never stored.
     let cache_key = prepared
@@ -388,7 +396,7 @@ async fn serve_route<H: Host>(
         .filter(|_| prepared.template.method == "GET");
     let resp = run_action(ctx, route, prepared, deadline).await;
     if let (Some(key), Some(rule)) = (cache_key, eff.cache.as_ref()) {
-        return store_in_cache(ctx, key, rule.ttl, resp).await;
+        return store_in_cache(ctx, key, rule, resp).await;
     }
     resp
 }
@@ -448,6 +456,10 @@ async fn prepare<H: Host>(
     let (params, query) = validate_inputs(route, &raw_params, &query_pairs, req.headers())
         .map_err(problem_response)?;
 
+    let scheme = context
+        .get("auth")
+        .and_then(|a| a.get("scheme"))
+        .and_then(Value::as_str);
     let cache_key = eff.cache.as_ref().and_then(|rule| {
         cache_key(
             rule,
@@ -457,14 +469,10 @@ async fn prepare<H: Host>(
             req.uri(),
             req.headers(),
             claims.as_ref(),
+            scheme,
             ctx.client_ip,
         )
     });
-    if let Some(key) = &cache_key
-        && let Some(hit) = cache_get(&ctx.host.store(), key, ctx.host.now_ms()).await
-    {
-        return Err(cached_response(ctx, &hit, &method, req.headers()));
-    }
 
     // A handler with `stream_body` reads the body as it arrives instead.
     let needs_body = (matches!(route.action, Action::Handler(_)) && !eff.stream_body)
@@ -770,9 +778,10 @@ fn for_handler(
 async fn store_in_cache<H: Host>(
     ctx: &Ctx<'_, H>,
     key: String,
-    ttl: Duration,
+    rule: &CacheRule,
     resp: Resp<H>,
 ) -> Resp<H> {
+    let ttl = rule.ttl;
     let status = resp.status().as_u16();
     let (storable, lifetime) = {
         let header = |name: &str| -> Vec<String> {
@@ -783,7 +792,7 @@ async fn store_in_cache<H: Host>(
                 .collect()
         };
         (
-            rules::cache_storable(status, &header),
+            rules::cache_storable(status, &rule.vary, &header),
             rules::cache_lifetime(ttl, ctx.host.now_ms(), &header),
         )
     };

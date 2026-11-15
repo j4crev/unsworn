@@ -225,6 +225,16 @@ pub fn check_body(
                 ));
             }
         }
+        // Parsers disagree about which of two members with one name
+        // counts. This one keeps the last, and an upstream behind a `proxy`
+        // route gets the body as it was sent, so it could act on a value
+        // the body schema never saw.
+        if let Some(key) = crate::mcp::rpc::duplicate_key(bytes) {
+            return Err(Problem::new(
+                StatusCode::BAD_REQUEST,
+                format!("the member \"{key}\" appears more than once in an object in the body"),
+            ));
+        }
     }
     if let Some(rule) = &route.validation.body {
         if empty_body {
@@ -303,7 +313,9 @@ pub fn rate_limit_ip(client_ip: IpAddr) -> String {
 
 /// The rate-limit bucket a request counts against. `route_id` keeps each
 /// route's (and each MCP tool's) counts separate. A key the request lacks
-/// falls back to the client's IP.
+/// falls back to the client's IP. A header's value is hashed, since the
+/// header may well carry a credential (`header.x-api-key`), and the store
+/// shouldn't hold one.
 pub fn rate_limit_bucket(
     route_id: usize,
     limit: &RateLimit,
@@ -313,6 +325,14 @@ pub fn rate_limit_bucket(
 ) -> String {
     let key = match &limit.key {
         KeySource::Ip => None,
+        key @ KeySource::Header(_) => key_value(key, client_ip, headers, claims).map(|v| {
+            use sha2::{Digest, Sha256};
+            let hex: String = Sha256::digest(v.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            format!("sha256:{hex}")
+        }),
         key => key_value(key, client_ip, headers, claims),
     }
     .unwrap_or_else(|| rate_limit_ip(client_ip));
@@ -322,8 +342,11 @@ pub fn rate_limit_bucket(
 /// The cache key for a request, or `None` when it mustn't be cached: a
 /// method other than `GET` or `HEAD`, a protocol upgrade such as a
 /// WebSocket, an authenticated request whose key doesn't separate users,
-/// or a request with an `Authorization` header Unsworn didn't check (the
-/// upstream may have) that the rule doesn't vary on (RFC 9111 section 3.5).
+/// one keyed on a claim the caller's credentials don't have, or a request
+/// with credentials Unsworn didn't check (an `Authorization` header or
+/// cookies, which the upstream may have checked) that the rule doesn't vary
+/// on (RFC 9111 section 3.5). `scheme` is the auth scheme that verified
+/// the caller, when one did.
 #[allow(clippy::too_many_arguments)]
 pub fn cache_key(
     rule: &CacheRule,
@@ -333,6 +356,7 @@ pub fn cache_key(
     uri: &Uri,
     headers: &HeaderMap,
     claims: Option<&Map<String, Value>>,
+    scheme: Option<&str>,
     client_ip: IpAddr,
 ) -> Option<String> {
     if !rules::cache_method(method) || super::proxy::is_upgrade(headers) {
@@ -342,8 +366,9 @@ pub fn cache_key(
         return None;
     }
     if claims.is_none()
-        && headers.contains_key(header::AUTHORIZATION)
-        && !rule.vary.iter().any(|h| h == "authorization")
+        && [header::AUTHORIZATION, header::COOKIE]
+            .iter()
+            .any(|h| headers.contains_key(h) && !rule.vary.iter().any(|v| v == h.as_str()))
     {
         return None;
     }
@@ -351,17 +376,17 @@ pub fn cache_key(
         .vary
         .iter()
         .map(|h| {
-            let value = headers
-                .get(h.as_str())
-                .and_then(|v| v.to_str().ok())
-                .map(String::from);
+            let value = joined_values(headers, h);
             (h.clone(), value)
         })
         .collect();
-    let key = rule
-        .key
-        .as_ref()
-        .map(|k| key_value(k, client_ip, headers, claims).unwrap_or_default());
+    let key = match &rule.key {
+        None => None,
+        // A caller without the claim can't be told apart from another
+        // one without it, so their responses aren't cached at all.
+        Some(k @ KeySource::Claim(_)) => Some(key_value(k, client_ip, headers, claims)?),
+        Some(k) => Some(key_value(k, client_ip, headers, claims).unwrap_or_default()),
+    };
     Some(rules::cache_key(
         route_id,
         method,
@@ -369,7 +394,20 @@ pub fn cache_key(
         uri.query(),
         &vary,
         key.as_deref(),
+        claims.and(scheme),
     ))
+}
+
+/// Every value of a request header, joined, or `None` when it's absent.
+/// Joined rather than the first, so two requests that differ only in a
+/// repeated header's later values don't share an entry.
+fn joined_values(headers: &HeaderMap, name: &str) -> Option<String> {
+    let values: Vec<&str> = headers
+        .get_all(name)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect();
+    (!values.is_empty()).then(|| values.join(", "))
 }
 
 fn append(headers: &mut HeaderMap, name: &str, value: &str) {
@@ -575,7 +613,8 @@ mod tests {
                 &headers,
                 None
             ),
-            "3|header.x-tenant|acme"
+            // sha256("acme"): the store never holds a header's value.
+            "3|header.x-tenant|sha256:822b33ad87c148a0a20a5ba7cd5ebcaa68d36a18e7aad165554903f52ca82757"
         );
         // Missing keys fall back to the IP.
         assert_eq!(
@@ -604,41 +643,98 @@ mod tests {
             key: None,
         };
         let uri: Uri = "/a?b=1".parse().unwrap();
+        let key = |rule: &CacheRule,
+                   method: &str,
+                   uri: &Uri,
+                   headers: &HeaderMap,
+                   claims: Option<&Map<String, Value>>,
+                   scheme: Option<&str>| {
+            cache_key(rule, &[], 1, method, uri, headers, claims, scheme, client)
+        };
+        let anon = key(&rule, "GET", &uri, &headers, None, None).unwrap();
+        // Hashed: the key holds none of the request's values.
+        assert!(anon.starts_with("resp|") && anon.len() == 5 + 64, "{anon}");
         assert_eq!(
-            cache_key(&rule, &[], 1, "HEAD", &uri, &headers, None, client).as_deref(),
-            Some("1|GET|/a?b=1|accept=")
+            key(&rule, "HEAD", &uri, &headers, None, None).as_ref(),
+            Some(&anon)
         );
-        assert_eq!(
-            cache_key(&rule, &[], 1, "POST", &uri, &headers, None, client),
-            None
+        assert_eq!(key(&rule, "POST", &uri, &headers, None, None), None);
+        let other: Uri = "/a?b=2".parse().unwrap();
+        assert_ne!(
+            key(&rule, "GET", &other, &headers, None, None).unwrap(),
+            anon
         );
         // Authenticated, and the key doesn't separate users.
         assert_eq!(
-            cache_key(&rule, &[], 1, "GET", &uri, &headers, Some(&claims), client),
+            key(&rule, "GET", &uri, &headers, Some(&claims), Some("jwt")),
             None
         );
         // Credentials Unsworn didn't check: cached only per credential.
         let mut bearer = headers.clone();
         bearer.insert("authorization", "Bearer a".parse().unwrap());
-        assert_eq!(
-            cache_key(&rule, &[], 1, "GET", &uri, &bearer, None, client),
-            None
-        );
+        assert_eq!(key(&rule, "GET", &uri, &bearer, None, None), None);
         let per_user = CacheRule {
             vary: vec!["authorization".into()],
             ..rule.clone()
         };
-        assert_eq!(
-            cache_key(&per_user, &[], 1, "GET", &uri, &bearer, None, client).as_deref(),
-            Some("1|GET|/a?b=1|authorization=Bearer a")
-        );
+        let a = key(&per_user, "GET", &uri, &bearer, None, None).unwrap();
+        assert!(!a.contains("Bearer"));
+        bearer.insert("authorization", "Bearer b".parse().unwrap());
+        assert_ne!(key(&per_user, "GET", &uri, &bearer, None, None).unwrap(), a);
+        // Cookies are credentials too: an app behind a proxy route may keep
+        // its sessions in them.
+        let mut session = headers.clone();
+        session.insert("cookie", "sid=1".parse().unwrap());
+        assert_eq!(key(&rule, "GET", &uri, &session, None, None), None);
+        let per_session = CacheRule {
+            vary: vec!["cookie".into()],
+            ..rule.clone()
+        };
+        assert!(key(&per_session, "GET", &uri, &session, None, None).is_some());
         // A WebSocket upgrade never gets a cached response.
         let mut upgrade = headers.clone();
         upgrade.insert("connection", "Upgrade".parse().unwrap());
         upgrade.insert("upgrade", "websocket".parse().unwrap());
+        assert_eq!(key(&rule, "GET", &uri, &upgrade, None, None), None);
+
+        // Keyed on a claim: one entry per user, per scheme. A caller without
+        // the claim (an API key has no `sub`) isn't cached at all, rather
+        // than sharing one entry with every other such caller.
+        let by_sub = CacheRule {
+            key: Some(KeySource::Claim("sub".into())),
+            ..rule.clone()
+        };
+        let u1 = key(&by_sub, "GET", &uri, &headers, Some(&claims), Some("jwt")).unwrap();
+        let other_scheme = key(
+            &by_sub,
+            "GET",
+            &uri,
+            &headers,
+            Some(&claims),
+            Some("partner"),
+        );
+        assert_ne!(Some(u1), other_scheme);
+        let api_key: Map<String, Value> =
+            serde_json::from_value(serde_json::json!({ "type": "api_key", "key": 0 })).unwrap();
         assert_eq!(
-            cache_key(&rule, &[], 1, "GET", &uri, &upgrade, None, client),
+            key(&by_sub, "GET", &uri, &headers, Some(&api_key), Some("keys")),
             None
+        );
+
+        // Parts are length-prefixed, so a query can't spell out the
+        // `vary` part of another request's key.
+        let two = CacheRule {
+            vary: vec!["x-a".into(), "x-b".into()],
+            ..rule.clone()
+        };
+        let mut h1 = HeaderMap::new();
+        h1.insert("x-a", "1|x-b=2".parse().unwrap());
+        let mut h2 = HeaderMap::new();
+        h2.insert("x-a", "1".parse().unwrap());
+        h2.insert("x-b", "2".parse().unwrap());
+        assert_ne!(
+            key(&two, "GET", &uri, &h1, None, None),
+            key(&two, "GET", &uri, &h2, None, None)
         );
     }
 

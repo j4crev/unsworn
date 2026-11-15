@@ -389,6 +389,30 @@ auth = { scheme = "oauth", scopes = ["tools:read"] }
 }
 
 #[test]
+fn cors_any_origin_with_credentials_is_an_error() {
+    let cfg = r#"
+[[route]]
+path = "/me"
+respond = { status = 200 }
+cors = { origins = "*", credentials = true }
+"#;
+    let errs = errors(&[("unsworn.toml", cfg)]).join("\n");
+    assert!(
+        errs.contains("can't be used with the origin \"*\""),
+        "{errs}"
+    );
+    // A listed origin may send credentials, and `*` alone is fine.
+    for cors in [
+        r#"{ origins = ["https://app.example.com"], credentials = true }"#,
+        r#"{ origins = "*" }"#,
+    ] {
+        let cfg =
+            format!("[[route]]\npath = \"/me\"\nrespond = {{ status = 200 }}\ncors = {cors}\n");
+        project(&[("unsworn.toml", &cfg)]);
+    }
+}
+
+#[test]
 fn cache_with_auth_warns() {
     let cfg = r#"
 [auth.jwt]
@@ -405,6 +429,40 @@ cache = { ttl = "1m" }
     let compiled = compile(&host, "unsworn.toml");
     assert!(compiled.project.is_some());
     assert!(compiled.diagnostics[0].message.contains("won't be cached"));
+}
+
+#[test]
+fn cache_keyed_on_a_claim_api_keys_lack_warns() {
+    let cfg = r#"
+[auth.jwt]
+type = "jwt"
+secret = "0123456789abcdef0123456789abcdef"
+
+[auth.keys]
+type = "api_key"
+keys = ["k1"]
+
+[[route]]
+path = "/me"
+respond = { status = 200 }
+auth = ["jwt", "keys"]
+cache = { ttl = "1m", key = "auth.sub" }
+
+[[route]]
+path = "/jwt-only"
+respond = { status = 200 }
+auth = "jwt"
+cache = { ttl = "1m", key = "auth.sub" }
+"#;
+    let host = MemHost::with(&[("unsworn.toml", cfg)]);
+    let compiled = compile(&host, "unsworn.toml");
+    assert!(compiled.project.is_some());
+    let warnings: Vec<String> = compiled.diagnostics.iter().map(|d| d.to_string()).collect();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("/me caches by `auth.sub`, which the API keys of `keys` don't have"),
+        "{warnings:?}"
+    );
 }
 
 #[test]
