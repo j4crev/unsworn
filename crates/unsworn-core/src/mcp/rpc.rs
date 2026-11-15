@@ -233,6 +233,20 @@ pub fn read(body: &[u8], headers: &Headers) -> Result<Message, Rejected> {
             RpcError::new(PARSE_ERROR, format!("Parse error: {e}")),
         )
     })?;
+    // Parsers disagree about which of two members with one name counts.
+    // A proxied server gets these bytes as they are, so it could run a
+    // different tool, with different arguments, than the one checked here.
+    if let Some(key) = duplicate_key(body) {
+        return Err(reject(
+            None,
+            RpcError::new(
+                INVALID_REQUEST,
+                format!(
+                    "Invalid request: the member \"{key}\" appears more than once in an object"
+                ),
+            ),
+        ));
+    }
     let Some(obj) = value.as_object() else {
         let what = if value.is_array() {
             "batches aren't supported; send one message per request"
@@ -408,6 +422,72 @@ pub fn read(body: &[u8], headers: &Headers) -> Result<Message, Rejected> {
         params,
         protocol_version,
     })
+}
+
+/// The first member name that appears twice in one object, anywhere in a
+/// JSON document. `None` for a document without one, or one that isn't
+/// JSON.
+pub fn duplicate_key(json: &[u8]) -> Option<String> {
+    use serde::de::{Deserializer as _, Error, IgnoredAny, MapAccess, SeqAccess, Visitor};
+    use std::cell::RefCell;
+
+    /// Walks a value, noting the first repeated member name in `found`.
+    struct Walk<'a>(&'a RefCell<Option<String>>);
+
+    impl<'de> serde::de::DeserializeSeed<'de> for Walk<'_> {
+        type Value = ();
+        fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+            d.deserialize_any(self)
+        }
+    }
+
+    impl<'de> Visitor<'de> for Walk<'_> {
+        type Value = ();
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a JSON value")
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_str<E>(self, _: &str) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_unit<E>(self) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+            while seq.next_element_seed(Walk(self.0))?.is_some() {}
+            Ok(())
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+            let mut seen = std::collections::HashSet::new();
+            while let Some(key) = map.next_key::<String>()? {
+                if seen.contains(&key) {
+                    *self.0.borrow_mut() = Some(key);
+                    // Nothing after the first one matters.
+                    map.next_value::<IgnoredAny>()?;
+                    return Err(A::Error::custom("duplicate member"));
+                }
+                seen.insert(key);
+                map.next_value_seed(Walk(self.0))?;
+            }
+            Ok(())
+        }
+    }
+
+    let found = RefCell::new(None);
+    let mut de = serde_json::Deserializer::from_slice(json);
+    let _ = de.deserialize_any(Walk(&found));
+    found.into_inner()
 }
 
 /// Checks the `Mcp-Param-*` headers a tool declares against its arguments.
@@ -716,6 +796,36 @@ mod tests {
             code(br#"{"jsonrpc":"2.0","id":1,"method":"x","params":[]}"#, &h),
             INVALID_PARAMS
         );
+    }
+
+    #[test]
+    fn rejects_repeated_members() {
+        // Which `name` counts depends on the parser, so a server behind
+        // the proxy could run a tool other than the one checked.
+        let twice = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","name":"delete","arguments":{}}}"#;
+        let h = headers("tools/call", Some("delete"));
+        let rejected = read(twice, &h).unwrap_err().error;
+        assert_eq!(rejected.code, INVALID_REQUEST);
+        assert!(
+            rejected.message.contains("\"name\""),
+            "{}",
+            rejected.message
+        );
+
+        assert_eq!(duplicate_key(br#"{"a":1,"b":{"a":2},"c":[{"a":3}]}"#), None);
+        for (doc, key) in [
+            (&br#"{"method":"a","method":"b"}"#[..], "method"),
+            (br#"{"params":{"arguments":{"id":1,"id":2}}}"#, "id"),
+            (br#"[{"x":[{"k":null,"k":null}]}]"#, "k"),
+            // An escape spells the same name.
+            (br#"{"name":1,"n\u0061me":2}"#, "name"),
+        ] {
+            assert_eq!(duplicate_key(doc).as_deref(), Some(key));
+        }
+        assert_eq!(duplicate_key(b"{"), None);
+        // A well-formed call is unaffected.
+        let ok = call("get_forecast", json!({"city": "Lisbon", "days": [1, 2]}));
+        assert_eq!(duplicate_key(&ok), None);
     }
 
     #[test]

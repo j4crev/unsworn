@@ -393,7 +393,7 @@ fn cache_with_auth_warns() {
     let cfg = r#"
 [auth.jwt]
 type = "jwt"
-secret = "s"
+secret = "0123456789abcdef0123456789abcdef"
 
 [[route]]
 path = "/me"
@@ -414,7 +414,7 @@ fn warns_about_policies_a_catch_all_app_can_sidestep() {
             r#"
 [auth.jwt]
 type = "jwt"
-secret = "s"
+secret = "0123456789abcdef0123456789abcdef"
 {routes}"#
         );
         let host = MemHost::with(&[("unsworn.toml", &cfg)]);
@@ -617,6 +617,7 @@ fn auth_url_sources() {
 [auth.users]
 type = "jwt"
 url = "https://auth.example.com/.well-known/jwks.json"
+audience = "api"
 
 [auth.customers]
 type = "api_key"
@@ -735,11 +736,80 @@ fn auth_url_errors() {
 }
 
 #[test]
+fn warns_about_weak_jwt_schemes() {
+    let diagnostics = |scheme: &str, env: &[(&str, &str)]| -> Vec<String> {
+        let cfg = format!("[auth.users]\ntype = \"jwt\"\n{scheme}\n");
+        let mut host = MemHost::with(&[("unsworn.toml", &cfg)]);
+        for (k, v) in env {
+            host.env.insert(k.to_string(), v.to_string());
+        }
+        compile(&host, "unsworn.toml")
+            .diagnostics
+            .iter()
+            .map(|d| {
+                let level = if d.is_error() { "error" } else { "warning" };
+                format!("{level} {}: {}", d.location, d.message)
+            })
+            .collect()
+    };
+    let one = |scheme: &str, env: &[(&str, &str)], want: &str| {
+        let got = diagnostics(scheme, env);
+        assert!(
+            got.len() == 1 && got[0].contains(want),
+            "{scheme}: {got:#?}"
+        );
+    };
+    // A variable that's set, but to nothing, would let anyone sign tokens.
+    one(
+        "secret = \"{env.JWT_SECRET}\"",
+        &[("JWT_SECRET", "")],
+        "error [auth.users].secret: the secret is empty",
+    );
+    one("secret = \"{env.JWT_SECRET}\"", &[], "JWT_SECRET isn't set");
+    one(
+        "secret = \"hunter2\"",
+        &[],
+        "warning [auth.users].secret: the secret is shorter than 32 bytes",
+    );
+    assert!(diagnostics("secret = \"0123456789abcdef0123456789abcdef\"", &[]).is_empty());
+
+    // A shared key set signs tokens for other people's projects too.
+    one(
+        "url = \"https://keys.example/jwks\"",
+        &[],
+        "warning [auth.users]: without `issuer` or `audience`",
+    );
+    // Keys fetched in the clear can be swapped on the way.
+    one(
+        "url = \"http://keys.example/jwks\"\naudience = \"api\"",
+        &[],
+        "warning [auth.users].url: \"http://keys.example/jwks\" isn't encrypted",
+    );
+    for local in [
+        "http://localhost:8081/jwks",
+        "http://127.0.0.1/jwks",
+        "http://[::1]:9/jwks",
+    ] {
+        let scheme = format!("url = \"{local}\"\naudience = \"api\"");
+        assert!(diagnostics(&scheme, &[]).is_empty(), "{local}");
+    }
+    let cfg = "[auth.keys]\ntype = \"api_key\"\nurl = \"http://verify.internal/v\"\n";
+    let host = MemHost::with(&[("unsworn.toml", cfg)]);
+    let compiled = compile(&host, "unsworn.toml");
+    assert!(
+        compiled.diagnostics[0]
+            .message
+            .contains("every API key sent to it")
+    );
+}
+
+#[test]
 fn jwks_url_is_an_alias_for_url() {
     let cfg = r#"
 [auth.users]
 type = "jwt"
 jwks_url = "https://auth.example.com/jwks"
+issuer = "https://auth.example.com/"
 "#;
     let host = MemHost::with(&[("unsworn.toml", cfg)]);
     let compiled = compile(&host, "unsworn.toml");

@@ -30,6 +30,7 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 rustls-pki-types = "1.16.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["full"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
 tokio-stream = "0.1.19"
@@ -46,4 +47,3 @@ workspace = true
 
 [dev-dependencies]
 jsonwebtoken = { version = "12.0.0", default-features = false, features = ["rust_crypto"] }
-tempfile = "3.27.0"

@@ -93,6 +93,7 @@ fn make_generation(
             build,
             socket_dir: dir,
             log_tap: None,
+            withheld_env: Vec::new(),
         },
     );
     let project = Arc::new(project);
