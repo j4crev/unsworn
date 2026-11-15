@@ -1,0 +1,38 @@
+# Keeps dependencies, pinned actions and base-image digests current.
+# Grouped per ecosystem, so a week's updates arrive as one pull request each.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  # The workflows pin actions to commits; this moves the pins.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The Dockerfile pins its base images by digest.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  # The SDKs have no dependencies of their own; these are the test
+  # projects' (wrangler, esbuild).
+  - package-ecosystem: npm
+    directories:
+      - /tests/cloudflare
+      - /tests/functions
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        patterns: ["*"]

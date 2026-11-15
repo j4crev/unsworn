@@ -255,8 +255,11 @@ Unsworn runs on Linux (x86_64 and arm64). Install the latest release:
 curl -fsSL https://raw.githubusercontent.com/j4crev/unsworn/main/install.sh | sh
 ```
 
+Add `UNSWORN_VERIFY=1` (and the GitHub CLI) to check that the release was
+built by this repository's release workflow; see [`SECURITY.md`](SECURITY.md).
+
 For containers, extend the `ghcr.io/j4crev/unsworn` base image with the
-runtimes your handlers need. With Rust 1.88 or newer, `cargo install unsworn`
+runtimes your handlers need. It runs as the unprivileged user `unsworn`. With Rust 1.88 or newer, `cargo install unsworn`
 works too.
 
 To try unreleased changes, build from `main`:

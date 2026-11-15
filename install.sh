@@ -6,6 +6,12 @@
 # Options (environment variables):
 #   UNSWORN_VERSION      a release tag such as v0.1.0 (default: latest)
 #   UNSWORN_INSTALL_DIR  where to put the binary (default: ~/.local/bin)
+#   UNSWORN_VERIFY       1 to check the release's build attestation, which
+#                        needs the GitHub CLI (`gh`), signed in
+#
+# The checksum below guards against a broken download. It comes from the
+# same release as the archive, so it can't tell whether the release itself
+# was tampered with; the attestation can.
 set -eu
 
 repo="j4crev/unsworn"
@@ -44,6 +50,18 @@ actual=$(sha256sum "${tmp}/${asset}" | cut -d ' ' -f 1)
 if [ "$expected" != "$actual" ]; then
   echo "unsworn: checksum mismatch for ${asset}" >&2
   exit 1
+fi
+
+if [ "${UNSWORN_VERIFY:-0}" = "1" ]; then
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "unsworn: UNSWORN_VERIFY=1 needs the GitHub CLI (https://cli.github.com)" >&2
+    exit 1
+  fi
+  echo "unsworn: verifying the build attestation"
+  if ! gh attestation verify "${tmp}/${asset}" --repo "$repo" >/dev/null; then
+    echo "unsworn: ${asset} has no valid build attestation from ${repo}" >&2
+    exit 1
+  fi
 fi
 
 tar -xzf "${tmp}/${asset}" -C "$tmp"
