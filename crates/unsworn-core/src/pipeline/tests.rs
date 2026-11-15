@@ -423,7 +423,7 @@ proxy = "http://old-api:8080"
 
     let r = t.send("DELETE", "/health", &[], b"");
     assert_eq!(r.status, StatusCode::METHOD_NOT_ALLOWED);
-    assert_eq!(r.header("allow"), Some("GET"));
+    assert_eq!(r.header("allow"), Some("GET, HEAD"));
 
     // Static files and proxies go to the host.
     let r = t.get("/files/css/site.css");
@@ -433,6 +433,87 @@ proxy = "http://old-api:8080"
     assert_eq!(r.json()["upstream"], json!(["http://old-api:8080"]));
     assert_eq!(r.json()["body"], "payload");
     assert_eq!(r.json()["client_ip"], IP);
+}
+
+#[test]
+fn paths_are_normalized_before_matching() {
+    let t = Test::new(
+        r#"
+[auth.keys]
+type = "api_key"
+keys = ["k1"]
+
+[[route]]
+path = "/public/{*rest}"
+proxy = "http://up:8080"
+
+[[route]]
+path = "/admin/{*rest}"
+proxy = "http://up:8080"
+auth = "keys"
+"#,
+        &[],
+        TestHost::new(),
+    );
+    let r = t.get("/public/a/./b");
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["path"], "/public/a/b");
+    // A path that only looks public gets the policies of what it resolves
+    // to, and the upstream is sent the resolved path.
+    for path in [
+        "/public/../admin/x",
+        "/public/%2e%2e/admin/x",
+        "/%61dmin/x",
+        "/public/..//../admin/x",
+    ] {
+        let r = t.get(path);
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{path}");
+        assert_eq!(r.route, "/admin/{*rest}", "{path}");
+    }
+    let r = t.send(
+        "GET",
+        "/public/../admin/x?a=..",
+        &[("x-api-key", "k1")],
+        b"",
+    );
+    assert_eq!(r.json()["path"], "/admin/x");
+    // An encoded slash isn't a separator, so it can't form a dot segment.
+    let r = t.get("/public/a%2f..%2fb");
+    assert_eq!(r.json()["path"], "/public/a%2F..%2Fb");
+}
+
+#[test]
+fn hosts_are_matched_by_name() {
+    let t = Test::new(
+        r#"
+[[route]]
+path = "/"
+host = "api.example.com"
+respond = { text = "api" }
+
+[[route]]
+path = "/"
+host = "[::1]"
+respond = { text = "v6" }
+
+[[route]]
+path = "/"
+respond = { text = "any" }
+"#,
+        &[],
+        TestHost::new(),
+    );
+    let body = |uri: &str, host: &str| {
+        let r = t.send("GET", uri, &[("host", host)], b"");
+        String::from_utf8(r.body.to_vec()).unwrap()
+    };
+    assert_eq!(body("/", "API.example.com:8443"), "api");
+    assert_eq!(body("/", "[::1]:8080"), "v6");
+    assert_eq!(body("/", "[::1]"), "v6");
+    assert_eq!(body("/", "other.example.com"), "any");
+    // An absolute request target outranks `Host`.
+    assert_eq!(body("http://api.example.com/", "other.example.com"), "api");
+    assert_eq!(body("http://other.example.com/", "api.example.com"), "any");
 }
 
 #[test]
@@ -572,6 +653,28 @@ body = {{ type = "object", required = ["name"], properties = {{ name = {{ type =
     assert_eq!(r.json()["errors"][0]["location"], "body.name");
     let r = t.send("POST", "/users", &json, b"{");
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
+
+    // JSON is `application/json` or a `+json` type, whatever its
+    // parameters; a type that merely contains those words isn't.
+    let post = |content_type: &str| {
+        let headers = [("content-type", content_type)];
+        t.send("POST", "/users", &headers, br#"{"name":"Ada"}"#)
+            .status
+    };
+    for json in [
+        "Application/JSON; charset=utf-8",
+        "application/merge-patch+json",
+        "application/vnd.api+json ; ext=x",
+    ] {
+        assert_eq!(post(json), StatusCode::OK, "{json}");
+    }
+    for other in [
+        "application/json-seq",
+        "application/jsonp",
+        "text/plain; note=+json",
+    ] {
+        assert_eq!(post(other), StatusCode::UNSUPPORTED_MEDIA_TYPE, "{other}");
+    }
     let r = t.send("POST", "/users", &[("content-type", "text/plain")], b"x");
     assert_eq!(r.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
@@ -762,6 +865,24 @@ path = "/private"
 method = "GET"
 handler = "src/h.ts#private"
 cache = {{ ttl = "30s" }}
+
+[[route]]
+path = "/head-first"
+method = "GET"
+handler = "src/h.ts#count"
+cache = {{ ttl = "30s" }}
+
+[[route]]
+path = "/upstream-auth"
+method = "GET"
+handler = "src/h.ts#count"
+cache = {{ ttl = "30s" }}
+
+[[route]]
+path = "/upstream-auth-varied"
+method = "GET"
+handler = "src/h.ts#count"
+cache = {{ ttl = "30s", vary = ["Authorization"] }}
 "#
         ),
         &["src/h.ts"],
@@ -794,6 +915,34 @@ cache = {{ ttl = "30s" }}
     assert_eq!(key("/per-key", "k1").json(), a);
     assert_ne!(key("/per-key", "k2").json(), a);
 
+    // A `HEAD` response is never stored: it has no body for a later `GET`.
+    let head = t.send("HEAD", "/head-first", &[], b"");
+    assert_eq!(head.header("x-unsworn-cache"), None);
+    assert_eq!(t.get("/head-first").header("x-unsworn-cache"), Some("miss"));
+    assert_eq!(
+        t.send("HEAD", "/head-first", &[], b"")
+            .header("x-unsworn-cache"),
+        Some("hit")
+    );
+
+    // A public route may front an upstream that checks `Authorization`
+    // itself, so such requests share nothing unless the rule varies on it.
+    let bearer = |path, token: &str| {
+        let value = format!("Bearer {token}");
+        t.send("GET", path, &[("authorization", &value)], b"")
+    };
+    let a = bearer("/upstream-auth", "a");
+    assert_eq!(a.header("x-unsworn-cache"), None);
+    assert_ne!(bearer("/upstream-auth", "a").json(), a.json());
+    assert_eq!(
+        t.get("/upstream-auth").header("x-unsworn-cache"),
+        Some("miss"),
+        "anonymous requests still cache"
+    );
+    let a = bearer("/upstream-auth-varied", "a").json();
+    assert_eq!(bearer("/upstream-auth-varied", "a").json(), a);
+    assert_ne!(bearer("/upstream-auth-varied", "b").json(), a);
+
     // Too large or private: passed through whole, never stored.
     for _ in 0..2 {
         let r = t.get("/huge");
@@ -802,6 +951,116 @@ cache = {{ ttl = "30s" }}
     }
     t.get("/private");
     assert_eq!(t.get("/private").header("x-unsworn-cache"), None);
+}
+
+#[test]
+fn cache_freshness_and_conditional_requests() {
+    // A handler whose response carries the headers its name lists, and a
+    // count of the calls so far as its body.
+    let counter = Arc::new(AtomicU64::new(0));
+    let answering = |headers: &'static [(&'static str, &'static str)]| {
+        let n = counter.clone();
+        move |_: &ProtoRequest, _: &Body<Bytes>| {
+            let mut response = unsworn_proto::Response::new("", 200);
+            for (k, v) in headers {
+                let value = unsworn_proto::HeaderValues::One(v.to_string());
+                response.headers.insert(k.to_string(), value);
+            }
+            response.text = Some(n.fetch_add(1, Ordering::SeqCst).to_string());
+            Ok(Reply::Response {
+                response,
+                body: Body::Empty,
+            })
+        }
+    };
+    let mut host = TestHost::new()
+        .handler(
+            "src/h.ts#short",
+            answering(&[("cache-control", "max-age=5"), ("etag", "\"v1\"")]),
+        )
+        .handler(
+            "src/h.ts#long",
+            answering(&[("cache-control", "max-age=3600")]),
+        )
+        .handler(
+            "src/h.ts#stale",
+            answering(&[("cache-control", "max-age=0")]),
+        )
+        .handler(
+            "src/h.ts#aged",
+            answering(&[
+                ("age", "10"),
+                ("last-modified", "Tue, 14 Nov 2023 22:00:00 GMT"),
+            ]),
+        );
+    host.dev = true;
+    let route = |name: &str| {
+        format!(
+            "[[route]]\npath = \"/{name}\"\nmethod = \"GET\"\nhandler = \"src/h.ts#{name}\"\ncache = {{ ttl = \"30s\" }}\n"
+        )
+    };
+    let config: String = ["short", "long", "stale", "aged"].map(route).concat();
+    let t = Test::new(&format!("{TS}\n{config}"), &["src/h.ts"], host);
+    let cache = |path| t.get(path).header("x-unsworn-cache").map(String::from);
+    let (hit, miss) = (Some("hit".to_string()), Some("miss".to_string()));
+
+    // The response's own lifetime is shorter than the rule's `ttl`: it wins.
+    assert_eq!(cache("/short"), miss);
+    t.host.clock.advance(Duration::from_secs(4));
+    assert_eq!(cache("/short"), hit);
+    t.host.clock.advance(Duration::from_secs(1));
+    assert_eq!(cache("/short"), miss, "stale after its max-age");
+    // A longer one doesn't: `ttl` is the most any response gets.
+    assert_eq!(cache("/long"), miss);
+    t.host.clock.advance(Duration::from_secs(29));
+    assert_eq!(cache("/long"), hit);
+    t.host.clock.advance(Duration::from_secs(1));
+    assert_eq!(cache("/long"), miss);
+    // Stale on arrival: never stored.
+    assert_eq!(cache("/stale"), None);
+    assert_eq!(cache("/stale"), None);
+    // Ten seconds old on arrival: twenty left, and `Age` keeps counting.
+    assert_eq!(cache("/aged"), miss);
+    t.host.clock.advance(Duration::from_secs(19));
+    let r = t.get("/aged");
+    assert_eq!(r.header("x-unsworn-cache"), Some("hit"));
+    assert_eq!(r.header("age"), Some("29"));
+    t.host.clock.advance(Duration::from_secs(1));
+    assert_eq!(cache("/aged"), miss);
+
+    // A client that already has the cached response gets `304`, no body.
+    let fresh = t.get("/short");
+    assert_eq!(fresh.header("x-unsworn-cache"), Some("miss"));
+    let conditional = |path, name, value| t.send("GET", path, &[(name, value)], b"");
+    let r = conditional("/short", "if-none-match", "\"v0\", W/\"v1\"");
+    assert_eq!(r.status, StatusCode::NOT_MODIFIED);
+    assert!(r.body.is_empty());
+    assert_eq!(r.header("etag"), Some("\"v1\""));
+    assert_eq!(r.header("cache-control"), Some("max-age=5"));
+    assert_eq!(r.header("content-type"), None);
+    assert_eq!(r.header("age"), Some("0"));
+    let r = conditional("/short", "if-none-match", "\"v2\"");
+    assert_eq!((r.status, &r.body), (StatusCode::OK, &fresh.body));
+    let r = t.send("HEAD", "/short", &[("if-none-match", "*")], b"");
+    assert_eq!(r.status, StatusCode::NOT_MODIFIED);
+
+    let r = conditional(
+        "/aged",
+        "if-modified-since",
+        "Tue, 14 Nov 2023 22:00:00 GMT",
+    );
+    assert_eq!(r.status, StatusCode::NOT_MODIFIED);
+    assert_eq!(r.header("age"), Some("10"));
+    let r = conditional(
+        "/aged",
+        "if-modified-since",
+        "Tue, 14 Nov 2023 21:59:59 GMT",
+    );
+    assert_eq!(r.status, StatusCode::OK);
+    // Only a cache hit is answered this way: a miss goes to the handler.
+    t.host.clock.advance(Duration::from_secs(60));
+    let r = conditional("/short", "if-none-match", "\"v1\"");
+    assert_eq!(r.status, StatusCode::OK);
 }
 
 fn jwt(secret: &[u8], kid: Option<&str>, claims: Value) -> String {
@@ -886,7 +1145,7 @@ fn remote_api_keys_with_a_verdict_cache() {
         .fetch_answer(
             "https://keys.example/verify",
             200,
-            json!({ "active": true, "claims": { "sub": "acct_1" } }).to_string(),
+            json!({ "active": true, "sub": "acct_1" }).to_string(),
         );
     let t = Test::new(
         &format!(

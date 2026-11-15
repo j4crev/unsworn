@@ -245,15 +245,7 @@ fn text(v: &Value) -> String {
 
 /// Percent-encodes everything but unreserved characters (RFC 3986).
 fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
+    percent_encoding::utf8_percent_encode(s, crate::pipeline::NOT_UNRESERVED).to_string()
 }
 
 impl McpTool {
@@ -433,8 +425,8 @@ fn header_param(
     if name.is_empty() {
         return Err("the name can't be empty".into());
     }
-    if let Some(c) = name.chars().find(|c| !is_tchar(*c)) {
-        return Err(format!("{c:?} isn't allowed in a header name"));
+    if !crate::project::valid_header_name(name) {
+        return Err(format!("\"{name}\" can't be part of a header name"));
     }
     let types: Vec<&str> = match schema.get("type") {
         Some(Value::String(t)) => vec![t.as_str()],
@@ -459,11 +451,6 @@ fn header_param(
         path: path.to_vec(),
         kind,
     })
-}
-
-/// RFC 9110 `tchar`.
-fn is_tchar(c: char) -> bool {
-    c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c)
 }
 
 #[cfg(test)]

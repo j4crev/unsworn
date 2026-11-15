@@ -137,6 +137,20 @@ test("static files, with index, fallback, ranges and dates", async () => {
 
   const since = { "if-modified-since": css.headers.get("last-modified") };
   assert.equal((await get("/site/style.css", { headers: since })).status, 304);
+  // An ETag, which outranks the date and decides whether a range applies.
+  const etag = css.headers.get("etag");
+  assert.match(etag, /^"[0-9a-f]+-[0-9a-f]+"$/);
+  const conditional = (headers) => get("/site/style.css", { headers });
+  assert.equal((await conditional({ "if-none-match": `"x", W/${etag}` })).status, 304);
+  assert.equal((await conditional({ "if-none-match": '"stale"', ...since })).status, 200);
+  const ranged = async (ifRange) => {
+    const r = await conditional({ range: "bytes=0-3", "if-range": ifRange });
+    return [r.status, await r.text()];
+  };
+  assert.deepEqual(await ranged(etag), [206, "body"]);
+  assert.deepEqual(await ranged(css.headers.get("last-modified")), [206, "body"]);
+  assert.deepEqual(await ranged('"stale"'), [200, "body { color: red }\n"]);
+  assert.deepEqual(await ranged(`W/${etag}`), [200, "body { color: red }\n"]);
   const head = await get("/site/style.css", { method: "HEAD" });
   assert.equal(head.headers.get("content-length"), "20");
   assert.equal(await head.text(), "");

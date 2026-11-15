@@ -108,7 +108,7 @@ params = {{ id = {{ type = "integer", min = 1 }} }}
 
     assert!(matches!(
         p.match_request(None, "POST", "/users/1"),
-        MatchResult::MethodNotAllowed(m) if m == vec!["GET".to_string()]
+        MatchResult::MethodNotAllowed(m) if m == ["GET", "HEAD"]
     ));
     // HEAD falls back to GET.
     found(&p, "HEAD", "/users/1");

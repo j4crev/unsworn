@@ -21,6 +21,10 @@ fn needs_python() -> bool {
     }
 }
 
+fn r_etag(r: &common::Response) -> String {
+    r.header("etag").expect("an ETag").to_string()
+}
+
 #[test]
 fn declarative_routes_and_errors() {
     let p = Project::new(&[
@@ -47,6 +51,7 @@ static = { dir = "public", spa_fallback = "index.html", cache_control = "max-age
         ),
         ("public/index.html", "<h1>app</h1>"),
         ("public/app.css", "body{}"),
+        ("public/big.txt", &"unsworn ".repeat(400)),
     ]);
     let s = p.serve();
 
@@ -61,7 +66,7 @@ static = { dir = "public", spa_fallback = "index.html", cache_control = "max-age
 
     let r = s.request("POST", "/hello", &[], b"");
     assert_eq!(r.status, 405);
-    assert_eq!(r.header("allow"), Some("GET"));
+    assert_eq!(r.header("allow"), Some("GET, HEAD"));
     assert_eq!(r.header("content-type"), Some("application/problem+json"));
 
     let r = s.get("/nope");
@@ -77,6 +82,39 @@ static = { dir = "public", spa_fallback = "index.html", cache_control = "max-age
     let r = s.get("/assets/app.css");
     assert_eq!((r.status, r.text().as_str()), (200, "body{}"));
     assert_eq!(r.header("cache-control"), Some("max-age=60"));
+    let r = s.request("POST", "/assets/app.css", &[], b"");
+    assert_eq!((r.status, r.header("allow")), (405, Some("GET, HEAD")));
+
+    // A range applies only while `If-Range` still names the file.
+    let etag = r_etag(&s.get("/assets/app.css"));
+    assert!(etag.starts_with('"'), "a strong ETag: {etag}");
+    let range = |condition: &[(&str, &str)]| {
+        let mut headers = vec![("range", "bytes=0-3")];
+        headers.extend_from_slice(condition);
+        let r = s.request("GET", "/assets/app.css", &headers, b"");
+        (r.status, r.text())
+    };
+    assert_eq!(range(&[]), (206, "body".into()));
+    assert_eq!(range(&[("if-range", &etag)]), (206, "body".into()));
+    assert_eq!(range(&[("if-range", "\"stale\"")]), (200, "body{}".into()));
+    let weak = format!("W/{etag}");
+    assert_eq!(range(&[("if-range", &weak)]), (200, "body{}".into()));
+    assert_eq!(
+        range(&[("if-range", "Thu, 01 Jan 1970 00:00:00 GMT")]),
+        (200, "body{}".into())
+    );
+
+    // Compressed on the way out, a file no longer has its strong ETag.
+    let plain = r_etag(&s.get("/assets/big.txt"));
+    let r = s.request(
+        "GET",
+        "/assets/big.txt",
+        &[("accept-encoding", "gzip")],
+        b"",
+    );
+    assert_eq!(r.header("content-encoding"), Some("gzip"));
+    assert_eq!(r_etag(&r), format!("W/{plain}"));
+
     let r = s.get("/assets/some/client/route");
     assert_eq!((r.status, r.text().as_str()), (200, "<h1>app</h1>"));
     for path in ["/assets/../unsworn.toml", "/assets/%2e%2e/unsworn.toml"] {
@@ -1111,14 +1149,16 @@ fn mock_verifier() -> (
                 let mut body = vec![0; len];
                 reader.read_exact(&mut body).unwrap();
                 log.lock().unwrap().push(auth);
-                let key = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["key"]
-                    .as_str()
-                    .unwrap_or_default()
+                // An RFC 7662 introspection request: `token=<key>`.
+                let key = String::from_utf8(body)
+                    .unwrap()
+                    .strip_prefix("token=")
+                    .expect("a form-encoded token")
                     .to_string();
                 let (status, reply) = match key.as_str() {
                     "good" => (
                         "200 OK",
-                        r#"{"active":true,"claims":{"sub":"cust_1","scope":"reports:read"}}"#,
+                        r#"{"active":true,"sub":"cust_1","scope":"reports:read"}"#,
                     ),
                     "boom" => ("500 Internal Server Error", "{}"),
                     "slow" => {

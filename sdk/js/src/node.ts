@@ -142,15 +142,30 @@ async function serveFile(
   const header = (name: string) => headers.find(([k]) => k.toLowerCase() === name)?.[1];
   // HTTP dates have whole seconds.
   const modified = Math.floor(info.mtimeMs / 1000) * 1000;
+  const lastModified = new Date(modified).toUTCString();
+  // A strong validator: it changes whenever the file's bytes may have.
+  const etag = `"${info.size.toString(16)}-${Math.floor(info.mtimeMs).toString(16)}"`;
   const out: HeaderPairs = [
     ["content-type", TYPES[extname(file).toLowerCase()] ?? "application/octet-stream"],
-    ["last-modified", new Date(modified).toUTCString()],
+    ["last-modified", lastModified],
+    ["etag", etag],
     ["accept-ranges", "bytes"],
   ];
-  const since = Date.parse(header("if-modified-since") ?? "");
-  if (!Number.isNaN(since) && modified <= since) return { status: 304, headers: out, body: null };
+  // `If-None-Match` outranks `If-Modified-Since` (RFC 9110 section 13.2.2).
+  const noneMatch = header("if-none-match");
+  if (noneMatch !== undefined) {
+    const tags = noneMatch.split(",").map((t) => t.trim().replace(/^W\//, ""));
+    if (tags.includes("*") || tags.includes(etag)) return { status: 304, headers: out, body: null };
+  } else {
+    const since = Date.parse(header("if-modified-since") ?? "");
+    if (!Number.isNaN(since) && modified <= since) return { status: 304, headers: out, body: null };
+  }
 
-  const range = byteRange(header("range"), info.size);
+  // A range applies only while `If-Range` still names this file: its ETag
+  // or its exact date. Otherwise the file goes out whole (section 13.1.5).
+  const ifRange = header("if-range")?.trim();
+  const current = ifRange === undefined || ifRange === etag || ifRange === lastModified;
+  const range = current ? byteRange(header("range"), info.size) : null;
   if (range === "bad") {
     return { status: 416, headers: [...out, ["content-range", `bytes */${info.size}`]], body: null };
   }

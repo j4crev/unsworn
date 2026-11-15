@@ -43,22 +43,38 @@ impl ClientIp {
         if !self.trusted(ip) {
             return ip;
         }
-        let forwarded: Vec<IpAddr> = headers
+        let forwarded: Vec<&str> = headers
             .get_all("x-forwarded-for")
             .iter()
             .filter_map(|v| v.to_str().ok())
             .flat_map(|v| v.split(','))
-            .filter_map(|s| s.trim().parse().ok())
             .collect();
-        // Walk from the closest hop back, stopping at the first untrusted one.
+        // Walk from the closest hop back, stopping at the first untrusted
+        // one. An entry that isn't an address ends the walk too: whatever
+        // is beyond it can't be vouched for.
         for hop in forwarded.iter().rev() {
-            ip = *hop;
-            if !self.trusted(*hop) {
+            let Some(hop) = parse_hop(hop) else {
+                break;
+            };
+            ip = hop;
+            if !self.trusted(hop) {
                 break;
             }
         }
         ip
     }
+}
+
+/// An `X-Forwarded-For` entry: an address, which some proxies follow with
+/// a port.
+fn parse_hop(entry: &str) -> Option<IpAddr> {
+    let entry = entry.trim();
+    entry.parse().ok().or_else(|| {
+        entry
+            .parse::<std::net::SocketAddr>()
+            .ok()
+            .map(|addr| addr.ip())
+    })
 }
 
 #[cfg(test)]
@@ -78,5 +94,27 @@ mod tests {
             "203.0.113.9".parse::<IpAddr>().unwrap()
         );
         assert!(ClientIp::new(&["nope".into()]).is_err());
+
+        // An entry that isn't an address stops the walk: the spoofable
+        // entries left of it are never reached.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "198.51.100.1, unknown, 10.0.0.7".parse().unwrap(),
+        );
+        assert_eq!(
+            trusted.resolve(peer, &headers),
+            "10.0.0.7".parse::<IpAddr>().unwrap()
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "203.0.113.9:4711, [2001:db8::1]:80".parse().unwrap(),
+        );
+        let all = ClientIp::new(&["all".into()]).unwrap();
+        assert_eq!(
+            all.resolve(peer, &headers),
+            "203.0.113.9".parse::<IpAddr>().unwrap()
+        );
     }
 }

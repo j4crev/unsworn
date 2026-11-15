@@ -7,7 +7,9 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 use tower_http::services::ServeDir;
 
-use super::support::{Body, BoxError, problem};
+use unsworn_core::pipeline::Problem;
+
+use super::support::{Body, BoxError, problem, problem_response};
 
 pub struct StaticRequest {
     pub base: PathBuf,
@@ -36,9 +38,12 @@ async fn serve_inner(r: StaticRequest) -> Response<Body> {
         headers,
     } = r;
     if method != "GET" && method != "HEAD" {
-        return problem(
-            StatusCode::METHOD_NOT_ALLOWED,
-            "static files only accept GET and HEAD",
+        return problem_response(
+            Problem::new(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "static files only accept GET and HEAD",
+            )
+            .header(header::ALLOW, "GET, HEAD"),
         );
     }
     let mut file = rest.clone();
@@ -64,7 +69,47 @@ async fn serve_inner(r: StaticRequest) -> Response<Body> {
     resp
 }
 
-async fn fetch(base: PathBuf, file: String, method: String, headers: HeaderMap) -> Response<Body> {
+/// Fetches a file, honoring `If-Range`: a `Range` only applies when the
+/// file is still the one the client has part of. Otherwise it's sent whole
+/// (RFC 9110 section 13.1.5).
+async fn fetch(
+    base: PathBuf,
+    file: String,
+    method: String,
+    mut headers: HeaderMap,
+) -> Response<Body> {
+    let resp = fetch_once(base.clone(), file.clone(), method.clone(), &headers).await;
+    match headers.get(header::IF_RANGE) {
+        Some(condition)
+            if resp.status() == StatusCode::PARTIAL_CONTENT
+                && !if_range_holds(condition, resp.headers()) =>
+        {
+            headers.remove(header::RANGE);
+            fetch_once(base, file, method, &headers).await
+        }
+        _ => resp,
+    }
+}
+
+/// Whether an `If-Range` condition matches the file a response describes:
+/// its strong `ETag`, or its exact `Last-Modified` date.
+fn if_range_holds(condition: &HeaderValue, file: &HeaderMap) -> bool {
+    let validator = if condition.as_bytes().starts_with(b"\"") {
+        file.get(header::ETAG)
+    } else if condition.as_bytes().starts_with(b"W/") {
+        None // a weak ETag never matches
+    } else {
+        file.get(header::LAST_MODIFIED)
+    };
+    validator.is_some_and(|v| v == condition)
+}
+
+async fn fetch_once(
+    base: PathBuf,
+    file: String,
+    method: String,
+    headers: &HeaderMap,
+) -> Response<Body> {
     let uri = format!(
         "/{}",
         percent_encoding::utf8_percent_encode(file.trim_start_matches('/'), PATH)

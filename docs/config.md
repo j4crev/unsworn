@@ -158,36 +158,42 @@ keys   = "{env.SERVICE_KEYS}"     # a list, or a comma-separated string
 Matching keys get the claims `{ "type": "api_key", "key": <index> }`.
 
 When keys live somewhere else, such as a database, a key-management service
-or an API gateway, point `url` at an endpoint that verifies them instead:
+or an OAuth authorization server, point `url` at an endpoint that verifies
+them instead. Unsworn asks it with OAuth 2.0 token introspection
+([RFC 7662](https://www.rfc-editor.org/rfc/rfc7662)), so an authorization
+server's introspection endpoint works as it is:
 
 ```toml
 [auth.customers]
 type    = "api_key"
 header  = "X-API-Key"
-url     = "https://auth.example.com/verify-key"
+url     = "https://auth.example.com/oauth/introspect"
 timeout = "500ms"                 # default: 2s
 cache   = "30s"                   # default: ask on every request
 headers = { Authorization = "Bearer {env.AUTH_SERVICE_TOKEN}", "X-Service" = "unsworn" }
 ```
 
 Set exactly one of `keys` or `url`. `header` and `query` say where the
-**client's** key is; `headers` are sent **to the verifier**, typically its
-own credentials, and only apply with `url`.
+**client's** key is; `headers` are sent **to the verifier**, typically
+Unsworn's own credentials for it (a bearer token, or `Basic` client
+credentials), and only apply with `url`.
 
-For each request that carries a key, Unsworn calls the verifier:
+For each request that carries a key, Unsworn calls the verifier with the
+key as the form field `token`:
 
 ```http
-POST /verify-key
-Content-Type: application/json
+POST /oauth/introspect
+Content-Type: application/x-www-form-urlencoded
+Accept: application/json
 Authorization: Bearer <AUTH_SERVICE_TOKEN>
 
-{"key": "the-client-supplied-key"}
+token=the-client-supplied-key
 ```
 
-It answers `200` with JSON. A valid key:
+It answers `200` with a JSON object. A valid key:
 
 ```json
-{"active": true, "claims": {"sub": "customer_123", "key_id": "key_456", "scope": "reports:read"}}
+{"active": true, "sub": "customer_123", "scope": "reports:read", "exp": 1767225600}
 ```
 
 An invalid one:
@@ -196,27 +202,28 @@ An invalid one:
 {"active": false}
 ```
 
-`claims` is optional, and becomes `ctx.auth` as is, so it works with
-`scopes`, `rate_limit = { key = "auth.sub" }` and handlers like JWT claims
-do. An invalid key gets `401`. If the verifier can't be reached, takes
-longer than `timeout`, or answers anything else (another status, or JSON
-without a boolean `active`), the request gets `503` and the error is
-logged, so an outage or a wrong URL doesn't look like a bad key. A request
-with no key never reaches the verifier.
+Everything beside `active` is optional, and becomes `ctx.auth` as is, so it
+works with `scopes`, `rate_limit = { key = "auth.sub" }` and handlers like
+JWT claims do. An invalid key gets `401`. If the verifier can't be reached,
+takes longer than `timeout`, or answers anything else (another status,
+including a `401` for Unsworn's own credentials, or JSON without a boolean
+`active`), the request gets `503` and the error is logged, so an outage or
+a wrong URL doesn't look like a bad key. A request with no key never
+reaches the verifier.
 
 Without `cache`, every request with a key waits for the verifier. With it,
 Unsworn remembers each answer, valid or invalid, in [`[store]`](#store), so
 instances sharing a Redis share answers too. The trade-off is revocation:
 a key the verifier stops accepting keeps working until its cached answer
-expires, so pick the longest delay you can accept. Answers whose claims
-include `exp` are cached no longer than that. Outages aren't cached. The
+expires, so pick the longest delay you can accept. Answers that include
+`exp` are cached no longer than that. Outages aren't cached. The
 store holds SHA-256 hashes of keys, never the keys themselves. With the
 `memory` store, verdicts share the response cache's limit of 10,000 entries
 per instance; with many active keys, use `redis`.
 
 Requests to the verifier carry the key, so use `https://` unless the
 verifier runs on the same host or private network. A verifier with a
-different API needs a small adapter that speaks this contract.
+different API needs a small adapter that speaks introspection.
 
 In YAML, write `headers` as an indented mapping:
 
@@ -225,7 +232,7 @@ auth:
   customers:
     type: api_key
     header: X-API-Key
-    url: https://auth.example.com/verify-key
+    url: https://auth.example.com/oauth/introspect
     headers:
       Authorization: "Bearer {env.AUTH_SERVICE_TOKEN}"
       X-Service: unsworn
@@ -245,7 +252,13 @@ auth = "none"                                     # public
 
 Scopes are read from the token's `scope` (space-separated) or `scp` claim.
 A missing or invalid credential gets `401`; a valid one without the scopes
-gets `403`; one whose verifier is unavailable gets `503`.
+gets `403`; one whose verifier is unavailable gets `503`. A `401` names the
+scheme to use in `WWW-Authenticate`: `Bearer` for a `jwt` scheme, and
+`ApiKey` for an `api_key` scheme (HTTP has no registered scheme for API
+keys, and clients ignore challenges they don't know).
+
+A token must have an `exp` claim: one without it, or with an `exp` (or
+`nbf`) that isn't a number, is rejected.
 
 A `jwt` scheme can also describe the OAuth resource it protects, with
 `[auth.<name>].protected_resource`. Unsworn then serves the OAuth
@@ -307,6 +320,13 @@ method = "GET"                    # or ["GET", "HEAD"]; omitted = all methods
 host   = "api.example.com"        # optional
 ```
 
+Unsworn normalizes a request's path before matching it, as RFC 3986
+describes: `.` and `..` segments are resolved and percent-encoded letters,
+digits, `-`, `.`, `_` and `~` are decoded. `/public/../admin` and `/%61dmin`
+are both `/admin`, for routes, policies, handlers and upstreams alike, so a
+request can't reach one route's upstream under another route's policies. An
+encoded slash (`%2F`) stays encoded and never separates segments.
+
 ### Actions
 
 | Action | Example | Runs a worker? |
@@ -316,6 +336,15 @@ host   = "api.example.com"        # optional
 | `static` | `static = { dir = "public", spa_fallback = "index.html" }` | No |
 | `proxy` | `proxy = "http://old-api:8080"` or `{ upstreams = [...], strip_prefix = "/legacy", sticky = "header:x-tenant-id" }` | No |
 | `handler` | `handler = "src/users.ts#getUser"` | Yes |
+
+A `proxy` route tells its upstream about the request it forwards: it adds
+this hop to `Forwarded` (RFC 7239), `X-Forwarded-For` and `Via`, and sets
+`X-Forwarded-Proto`, `X-Forwarded-Host` and `X-Request-Id`. Hop-by-hop
+headers stop at Unsworn, in both directions, and the response gets a `Via`
+entry too.
+
+A `static` route sends `ETag` and `Last-Modified`, and honors
+`If-None-Match`, `If-Modified-Since`, `Range` and `If-Range`.
 
 ### Handler references
 
@@ -508,15 +537,43 @@ They can be used together.
 Caching the wrong response can serve one user's data to another, so `cache`
 follows these rules wherever it is set, including in `[defaults]`:
 
-- **Only `GET` and `HEAD` responses are cached,** and only with status
-  `200`, `203`, `204`, `301`, `404` or `410`. WebSocket upgrades are never
-  answered from the cache.
+- **Only `GET` responses are cached,** and only with status `200`, `203`,
+  `204`, `301`, `404` or `410`. A `HEAD` request is answered from a cached
+  `GET` response, but its own response is never stored. WebSocket upgrades
+  are never answered from the cache.
 - **Responses to authenticated requests aren't cached** unless `vary`
   includes `Authorization` or the header an API-key scheme reads, or the
   `key` setting puts the user in the cache key (`key = "auth.sub"`). `unsworn check` warns about routes where `cache`
   and `auth` are both set but neither is true, so the gap is visible.
-- **Handlers can always opt out** by returning `Cache-Control: no-store` or
-  `private`, and a response with `Set-Cookie` is never cached.
+- **A request with an `Authorization` header isn't cached on a public
+  route** unless `vary` includes `Authorization`. Unsworn didn't check that
+  credential, but the upstream or handler behind the route may have, and
+  its answer may be one user's.
+- **Handlers can always opt out** by returning `Cache-Control: no-store`,
+  `no-cache` or `private`, and a response with `Set-Cookie` or `Vary: *` is
+  never cached.
+- **The response decides how long it stays fresh; `ttl` is the fallback
+  and the ceiling.** Unsworn follows RFC 9111 as a shared cache: it reads
+  `Cache-Control: s-maxage`, then `max-age`, then `Expires`. A response
+  that states none of them is cached for `ttl`. One that states a shorter
+  time is cached for that time, and one that states a longer time still
+  gets only `ttl`. Time the response already spent in a cache upstream (its
+  `Age`) comes off.
+
+  The caveat: **`ttl` can't make a response cacheable for longer than it
+  says.** A handler or upstream that sends `Cache-Control: max-age=0` (many
+  frameworks do by default) or an `Expires` in the past is never cached,
+  whatever `ttl` is. If a route isn't caching, look at its response headers
+  first; `unsworn dev` shows no `X-Unsworn-Cache` header on a response that
+  wasn't stored. To cache such a response, change what the handler or
+  upstream sends.
+  `Cache-Control` in a *request* doesn't change what Unsworn serves, so a
+  client can't force its way past the cache.
+- **A client that already has the cached response gets `304 Not
+  Modified`** with no body, when its `If-None-Match` matches the cached
+  response's `ETag`, or its `If-Modified-Since` isn't before the cached
+  `Last-Modified`. Unsworn doesn't make up validators: a response gets
+  this only if the handler or upstream sent an `ETag` or `Last-Modified`.
 - **Unsworn adds an `Age` header** to responses served from its cache, and
   `unsworn dev` adds `X-Unsworn-Cache: hit` or `miss` for debugging.
 
