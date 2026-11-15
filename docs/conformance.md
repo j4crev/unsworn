@@ -12,7 +12,7 @@ conformance: [runtimes.ts] (Framed)
   ✓ verify reports missing handlers
   ✓ params, query, headers, context and JSON body arrive with their types
   ...
-16 passed, 0 failed
+20 passed, 0 failed
 ```
 
 Implementations in this repository:

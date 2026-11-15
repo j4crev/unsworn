@@ -1,7 +1,5 @@
 # Unsworn handler protocol
 
-> Protocol version **1**, implemented in `crates/unsworn-proto` and the SDKs.
-
 Unsworn talks to handler workers over one **message model** with two
 **encodings**:
 
@@ -24,6 +22,7 @@ variables:
 | `UNSWORN_TRANSPORT` | `stdio` or `unix:/run/unsworn/ts-0.sock` | Where to talk |
 | `UNSWORN_ROOT` | `/app` | Project root; handler paths are relative to it |
 | `UNSWORN_WORKER_ID` | `ts-0` | Worker id, for logs |
+| `UNSWORN_DEV` | `1` | Set only under `unsworn dev` and `unsworn check --deep`. SDKs then include stack traces in `error` messages |
 | `UNSWORN_LOG_LEVEL` | `info` | The most verbose [`log`](#log-worker--unsworn) level Unsworn keeps: `error`, `warn`, `info`, `debug`, `trace` or `off` |
 
 **The worker speaks first** by sending `ready`. Unsworn sends nothing until it
@@ -327,23 +326,16 @@ input closes. Workers that don't exit within two seconds are killed.
 
 ## Conformance suite
 
-`unsworn conformance --runtime <name>` starts the runtime's workers against a
-built-in set of test handlers and checks:
+`unsworn conformance --runtime <name> --handlers <file>` starts a worker
+for the runtime and checks that it speaks this protocol correctly: the
+`ready` message, `verify`, typed inputs, every body form in both directions,
+`before` handlers, streaming, logs, concurrency, errors, timeouts and
+crashes.
 
-- the `ready` handshake and version negotiation
-- params, query, headers and context arrive with the right types
-- `json`, `text` and raw `body_len` bodies in both directions
-- `before` handlers: `continue` with context, and rejection
-- concurrency up to the declared `max_in_flight`, with out-of-order responses
-- `verify`, if the worker declares support: found and missing handlers are
-  reported correctly
-- streaming with `chunk` and `end`
-- `error` messages, crashes mid-request and `cancel` on timeout
-- stdout noise on Tier 1 is logged without breaking the worker
-
-Each test handler is defined by behavior ("echo the params as JSON"), so the
-suite ships a short spec that an SDK author, or an AI agent, implements in
-the target language before running it.
+Each test handler is defined by behavior ("echo the params as JSON"). An SDK
+author, or an AI agent, implements them in one file in the target language
+and passes it with `--handlers`. The handlers and the checks are listed in
+[`conformance.md`](conformance.md).
 
 ## Open questions
 
