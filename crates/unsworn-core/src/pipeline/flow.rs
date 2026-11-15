@@ -67,6 +67,8 @@ impl Router {
         client_ip: IpAddr,
     ) -> Handled<H::ResponseBody> {
         let req = normalized(req);
+        // Whatever the host passed, IPv4 is IPv4 (see `ClientIp::resolve`).
+        let client_ip = client_ip.to_canonical();
         let ctx = Ctx {
             host,
             project: &self.project,
@@ -683,6 +685,11 @@ async fn run_action<H: Host>(
                 .and_then(|name| raw_params.iter().find(|(k, _)| k == name))
                 .map(|(_, v)| v.clone())
                 .unwrap_or_default();
+            // Dotfiles in a served directory are rarely meant for visitors:
+            // `.env`, `.git`, `.htpasswd`. `.well-known` is the exception.
+            if super::checks::hidden_path(&rest) {
+                return problem(StatusCode::NOT_FOUND, format!("/{rest} not found"));
+            }
             ctx.host
                 .serve_static(StaticRequest {
                     dir: dir.clone(),

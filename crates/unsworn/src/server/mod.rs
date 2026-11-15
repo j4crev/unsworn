@@ -195,7 +195,9 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         let listener = TcpListener::bind(admin)
             .await
             .map_err(|e| format!("can't listen on {admin}: {e}"))?;
-        tracing::info!("metrics on http://{admin}/_unsworn/metrics");
+        tracing::info!(
+            "metrics on http://{admin}/_unsworn/metrics, health details on http://{admin}/_unsworn/health"
+        );
         tokio::spawn(admin_server(listener, shared.clone()));
     }
 
@@ -517,7 +519,9 @@ async fn admin_server(listener: TcpListener, shared: Arc<Shared>) {
             let svc = hyper::service::service_fn(move |req: Request<Incoming>| {
                 let shared = shared.clone();
                 async move {
-                    let resp: Response<Body> = if req.uri().path() == "/_unsworn/metrics" {
+                    let resp: Response<Body> = if req.uri().path() == "/_unsworn/health" {
+                        host::health(&shared, &shared.generation.load(), true)
+                    } else if req.uri().path() == "/_unsworn/metrics" {
                         let runtimes = shared.generation.load().pools.health();
                         let store = shared.store.load();
                         let mut r =

@@ -38,8 +38,12 @@ impl ClientIp {
     }
 
     /// The client's address, given the address of the connection's peer.
+    ///
+    /// Addresses come out in canonical form: an IPv4 client that reached an
+    /// IPv6 socket (`::ffff:203.0.113.9`) is `203.0.113.9`, so IPv4 rules
+    /// and trusted proxies match it.
     pub fn resolve(&self, peer: IpAddr, headers: &HeaderMap) -> IpAddr {
-        let mut ip = peer;
+        let mut ip = peer.to_canonical();
         if !self.trusted(ip) {
             return ip;
         }
@@ -69,12 +73,13 @@ impl ClientIp {
 /// a port.
 fn parse_hop(entry: &str) -> Option<IpAddr> {
     let entry = entry.trim();
-    entry.parse().ok().or_else(|| {
+    let ip: Option<IpAddr> = entry.parse().ok().or_else(|| {
         entry
             .parse::<std::net::SocketAddr>()
             .ok()
             .map(|addr| addr.ip())
-    })
+    });
+    ip.map(|ip| ip.to_canonical())
 }
 
 #[cfg(test)]
@@ -106,6 +111,17 @@ mod tests {
             trusted.resolve(peer, &headers),
             "10.0.0.7".parse::<IpAddr>().unwrap()
         );
+        // IPv4 through an IPv6 socket is still IPv4, for the peer and for
+        // forwarded entries.
+        let mapped: IpAddr = "::ffff:10.0.0.2".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "::ffff:203.0.113.9".parse().unwrap());
+        assert_eq!(
+            trusted.resolve(mapped, &headers),
+            "203.0.113.9".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(none.resolve(mapped, &headers), peer);
+
         let mut headers = HeaderMap::new();
         headers.insert(
             "x-forwarded-for",

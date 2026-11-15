@@ -65,7 +65,9 @@ async fn handle_inner(
     let client_ip = generation.client_ip.resolve(peer.ip(), req.headers());
 
     let (mut resp, route_label) = if path == "/_unsworn/health" {
-        (health(&shared, &generation), path.clone())
+        // Anyone can ask here, so outside dev mode the answer is only
+        // whether the instance is healthy. The admin listener says why.
+        (health(&shared, &generation, shared.dev), path.clone())
     } else {
         let host = ServerHost {
             shared: shared.clone(),
@@ -329,13 +331,25 @@ impl Host for ServerHost {
     }
 }
 
-fn health(shared: &Shared, generation: &Generation) -> Response<Body> {
+/// The health report: `200` when healthy, `503` when degraded. With
+/// `details`, it also names the version, the store and each runtime, which
+/// is more than a stranger should learn about a deployment.
+pub fn health(shared: &Shared, generation: &Generation, details: bool) -> Response<Body> {
     let runtimes = generation.pools.health();
     let degraded = runtimes
         .iter()
         .any(|(_, started, alive, crashes)| (*started && *alive == 0) || *crashes >= 5);
     // A store outage doesn't make the instance unhealthy: every instance
     // shares the store, so they'd all be pulled at once.
+    let status = if degraded {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    if !details {
+        let body = json!({ "status": if degraded { "degraded" } else { "ok" } });
+        return json_response(status, &body);
+    }
     let store = shared.store.load();
     let body = json!({
         "status": if degraded { "degraded" } else { "ok" },
@@ -348,12 +362,5 @@ fn health(shared: &Shared, generation: &Generation) -> Response<Body> {
             "recent_crashes": crashes,
         })).collect::<Vec<_>>(),
     });
-    json_response(
-        if degraded {
-            StatusCode::SERVICE_UNAVAILABLE
-        } else {
-            StatusCode::OK
-        },
-        &body,
-    )
+    json_response(status, &body)
 }

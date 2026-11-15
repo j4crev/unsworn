@@ -87,6 +87,13 @@ pub fn normalize_path(path: &str) -> Cow<'_, str> {
     }
 }
 
+/// Whether a path under a `static` route names a dotfile, or something in
+/// a dot directory. `.well-known` is public by definition (RFC 8615).
+pub fn hidden_path(rest: &str) -> bool {
+    rest.split('/')
+        .any(|segment| segment.starts_with('.') && segment != ".well-known")
+}
+
 fn ip_matches(entry: &str, ip: IpAddr) -> bool {
     if let Ok(net) = entry.parse::<ipnet::IpNet>() {
         return net.contains(&ip);
@@ -112,8 +119,10 @@ pub fn access(eff: &Effective, origin: Option<&str>, client_ip: IpAddr) -> Resul
             format!("requests from origin {origin} aren't allowed"),
         ));
     }
+    // A host that doesn't know the client's address passes `0.0.0.0`,
+    // which no client has. It can't be shown to be allowed, or not denied.
     if let Some(rules) = &eff.ip
-        && !ip_allowed(rules, client_ip)
+        && (client_ip.is_unspecified() || !ip_allowed(rules, client_ip))
     {
         return Err(Problem::new(
             StatusCode::FORBIDDEN,
@@ -509,6 +518,30 @@ mod tests {
         assert!(!ip_allowed(&rules, ip("10.0.0.9")));
         assert!(!ip_allowed(&rules, ip("192.0.2.1")));
         assert!(ip_allowed(&IpRules::default(), ip("192.0.2.1")));
+
+        // An unknown client fails any `ip` rule, even one it would pass.
+        let mut eff = crate::policy::Layer::default().finalize(Duration::from_secs(1), 1);
+        assert!(access(&eff, None, ip("0.0.0.0")).is_ok());
+        eff.ip = Some(IpRules {
+            allow: vec!["0.0.0.0/0".into()],
+            deny: vec![],
+        });
+        assert!(access(&eff, None, ip("192.0.2.1")).is_ok());
+        assert!(access(&eff, None, ip("0.0.0.0")).is_err());
+        assert!(access(&eff, None, ip("::")).is_err());
+
+        for hidden in [".env", ".git/config", "docs/.htpasswd", "a/.b/c.txt"] {
+            assert!(hidden_path(hidden), "{hidden}");
+        }
+        for shown in [
+            "",
+            "index.html",
+            "a/b.c",
+            ".well-known/security.txt",
+            "a..b",
+        ] {
+            assert!(!hidden_path(shown), "{shown}");
+        }
     }
 
     #[test]

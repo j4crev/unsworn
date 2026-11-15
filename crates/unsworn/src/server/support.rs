@@ -68,6 +68,11 @@ pub fn build_client() -> HttpClient {
         .build(https)
 }
 
+/// The methods metrics name. Any other is counted as `OTHER`.
+const KNOWN_METHODS: &[&str] = &[
+    "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE",
+];
+
 /// Request counts and durations, exposed in Prometheus format.
 #[derive(Default)]
 pub struct Metrics {
@@ -76,6 +81,13 @@ pub struct Metrics {
 
 impl Metrics {
     pub fn record(&self, method: &str, route: &str, status: u16, elapsed: Duration) {
+        // A client can send any token as a method. Each one would be a new
+        // series, kept for the life of the process.
+        let method = if KNOWN_METHODS.contains(&method) {
+            method
+        } else {
+            "OTHER"
+        };
         let mut m = self.requests.lock().unwrap();
         let entry = m
             .entry((method.to_string(), route.to_string(), status))
@@ -138,4 +150,20 @@ impl Metrics {
 
 fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_methods_share_one_series() {
+        let metrics = Metrics::default();
+        for method in ["GET", "PROPFIND", "AAAA", "AAAB"] {
+            metrics.record(method, "(none)", 404, Duration::ZERO);
+        }
+        let series = metrics.requests.lock().unwrap();
+        assert_eq!(series.len(), 2);
+        assert_eq!(series[&("OTHER".into(), "(none)".into(), 404)].0, 3);
+    }
 }

@@ -69,7 +69,7 @@ timeout             = "30s"          # default for every route
 trailing_slash      = "redirect"     # "redirect" | "strict" | "ignore"
 compression         = true           # br, zstd or gzip, from Accept-Encoding
 trusted_proxies     = ["10.0.0.0/8"] # trust X-Forwarded-For from these ("all" trusts any)
-admin_listen        = "127.0.0.1:9090"  # optional: /_unsworn/metrics (Prometheus)
+admin_listen        = "127.0.0.1:9090"  # optional: /_unsworn/metrics (Prometheus) and health details
 response_validation = "log"          # "off" | "log" | "enforce", for `response` schemas
 shutdown_timeout    = "10s"          # how long to wait for open requests on shutdown
 max_connections     = 10000          # the most connections open at once (the default)
@@ -81,7 +81,11 @@ key  = "certs/privkey.pem"
 ```
 
 `unsworn serve --listen <addr>` overrides `listen`. Every server also answers
-`/_unsworn/health` with the state of each runtime.
+`/_unsworn/health`: `200` and `{"status": "ok"}` when it's healthy, `503`
+and `"degraded"` when a runtime has no workers or keeps crashing. That's
+all it says, since anyone can ask. The same path on `admin_listen` adds the
+version, the store and the state of each runtime. Keep `admin_listen` on an
+address only you can reach: nothing on it asks for credentials.
 
 Connections are limited, so clients that open them and then stall can't
 tie the server up:
@@ -333,8 +337,14 @@ Valkey, Dragonfly or a managed Redis) to share them.
 - **`on_error`:** if Redis can't be reached, rate-limited routes let requests
   through uncounted (`"open"`), or answer `503` (`"closed"`). Caching is
   skipped either way. Unsworn reconnects on its own, logs the outage, and
-  reports it in `/_unsworn/health` and the `unsworn_store_up` metric without
-  marking the instance unhealthy, since every instance shares the store.
+  reports it in the admin listener's `/_unsworn/health` and the
+  `unsworn_store_up` metric without marking the instance unhealthy, since
+  every instance shares the store.
+- **Treat the store as part of your auth.** It holds remembered API-key
+  verdicts (`cache` on an `api_key` scheme) and cached responses, so anyone
+  who can write to it can make a key valid or change what a route answers.
+  Give Redis a password, reach it over `rediss://` unless it's on a network
+  you control, and don't share it with software you trust less.
 
 ### `{env.NAME}`
 
@@ -391,6 +401,9 @@ this hop to `Forwarded` (RFC 7239), `X-Forwarded-For` and `Via`, and sets
 `X-Forwarded-Proto`, `X-Forwarded-Host` and `X-Request-Id`. Hop-by-hop
 headers stop at Unsworn, in both directions, and the response gets a `Via`
 entry too.
+
+A `static` route never serves a dotfile or anything inside a dot directory
+(`.env`, `.git/config`): those answer `404`. `.well-known` is the exception.
 
 A `static` route sends `ETag` and `Last-Modified`, and honors
 `If-None-Match`, `If-Modified-Since`, `Range` and `If-Range`.
