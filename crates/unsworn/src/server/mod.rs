@@ -1,12 +1,11 @@
 //! The HTTP server: listeners, reloads and shutdown.
 
 mod compress;
-mod pipeline;
+mod host;
 mod proxy;
 mod static_files;
 pub mod support;
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,23 +17,22 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use hyper_util::server::graceful::GracefulShutdown;
-use serde_json::Value;
 use tokio::net::TcpListener;
 use unsworn_core::Project;
 
 use crate::load;
 use crate::workers::{PoolOptions, Pools, SocketDir};
-use support::{Body, HttpClient, KeyCache, Metrics};
-use unsworn_core::pipeline::ClientIp;
+use support::{Body, HttpClient, Metrics};
+use unsworn_core::pipeline::{ClientIp, KeyCache, Router};
 
 use crate::store::Store;
 
 /// One loaded version of the project. Replaced on reload.
 pub struct Generation {
     pub project: Arc<Project>,
+    pub router: Router,
     pub pools: Arc<Pools>,
     pub client_ip: ClientIp,
-    pub well_known: HashMap<String, Value>,
 }
 
 /// State that lives for the whole process.
@@ -45,7 +43,8 @@ pub struct Shared {
     /// in-memory rate limits and cache entries.
     pub store: ArcSwap<Store>,
     pub metrics: Metrics,
-    pub keys: KeyCache,
+    /// JWT keys, kept across reloads.
+    pub keys: Arc<KeyCache>,
     pub dev: bool,
     build: bool,
     pub root: PathBuf,
@@ -76,6 +75,7 @@ pub struct ServeOptions {
 
 fn make_generation(
     project: Project,
+    keys: &Arc<KeyCache>,
     root: &Path,
     dev: bool,
     build: bool,
@@ -83,7 +83,6 @@ fn make_generation(
     generation: u64,
 ) -> Result<Generation, String> {
     let client_ip = ClientIp::new(&project.server.trusted_proxies)?;
-    let well_known = project.protected_resource_docs().into_iter().collect();
     let dir = socket_dir.join(format!("g{generation}"));
     std::fs::create_dir_all(&dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
     let pools = Pools::new(
@@ -96,11 +95,12 @@ fn make_generation(
             log_tap: None,
         },
     );
+    let project = Arc::new(project);
     Ok(Generation {
-        project: Arc::new(project),
+        router: Router::new(project.clone(), keys.clone()),
+        project,
         pools,
         client_ip,
-        well_known,
     })
 }
 
@@ -141,7 +141,16 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         project.server.listen = listen.clone();
     }
     let sockets = SocketDir::create().map_err(|e| format!("can't create socket directory: {e}"))?;
-    let generation = make_generation(project, &opts.root, opts.dev, opts.build, sockets.path(), 0)?;
+    let keys = Arc::new(KeyCache::default());
+    let generation = make_generation(
+        project,
+        &keys,
+        &opts.root,
+        opts.dev,
+        opts.build,
+        sockets.path(),
+        0,
+    )?;
     if let Err(errors) = warm_up(&generation, opts.dev).await {
         for e in &errors {
             eprintln!("✗ {e}");
@@ -160,7 +169,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         client: support::build_client(),
         store: ArcSwap::from_pointee(store),
         metrics: Metrics::default(),
-        keys: KeyCache::new(),
+        keys,
         dev: opts.dev,
         build: opts.build,
         root: opts.root.clone(),
@@ -242,7 +251,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
                         async move {
                             let accept = req.headers().get(http::header::ACCEPT_ENCODING).cloned();
                             let method = req.method().clone();
-                            let resp = pipeline::handle(shared, req, peer, is_tls).await;
+                            let resp = host::handle(shared, req, peer, is_tls).await;
                             let resp = if compression {
                                 compress::maybe_compress(&method, accept.as_ref(), resp)
                             } else {
@@ -315,6 +324,7 @@ async fn reload(shared: &Arc<Shared>, config: &str) {
     let n = shared.generations.fetch_add(1, Ordering::Relaxed);
     let generation = match make_generation(
         project,
+        &shared.keys,
         &shared.root,
         shared.dev,
         shared.build,

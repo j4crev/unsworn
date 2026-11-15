@@ -4,6 +4,25 @@
 use bytes::Bytes;
 
 use super::*;
+use unsworn_core::store::{self as core_store, RateLimit};
+
+/// What the pipeline does with a store, as `Store` methods for the suite.
+impl Store {
+    /// Counts a request against the bucket `key`, applying `on_error`.
+    async fn rate_limit(&self, key: &str, requests: u32, per: Duration) -> RateLimit {
+        core_store::rate_limit(self, key, requests, per, self.config.on_error).await
+    }
+
+    /// A fresh cached response. Store errors count as a miss.
+    async fn cache_get(&self, key: &str) -> Option<CachedResponse> {
+        core_store::cache_get(self, key, now_ms()).await
+    }
+
+    /// Stores a response. Failures are logged and counted, never returned.
+    async fn cache_put(&self, key: String, value: CachedResponse) {
+        let _ = self.put(&key, value).await;
+    }
+}
 
 fn config(backend: StoreBackend, url: Option<String>, on_error: OnError) -> StoreConfig {
     StoreConfig {

@@ -16,8 +16,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use unsworn_core::config::{OnError, StoreBackend};
 use unsworn_core::project::StoreConfig;
-use unsworn_core::store::{self as core_store, RateLimiter, ResponseCache, StoreError};
-pub use unsworn_core::store::{CachedResponse, MAX_CACHED_BODY, RateLimit};
+pub use unsworn_core::store::CachedResponse;
+use unsworn_core::store::{RateLimiter, ResponseCache, StoreError};
 
 use memory::MemoryStore;
 use redis::RedisStore;
@@ -86,21 +86,6 @@ impl Store {
     /// Failed store operations since start.
     pub fn error_count(&self) -> u64 {
         self.errors.load(Ordering::Relaxed)
-    }
-
-    /// Counts a request against the bucket `key`, applying `on_error`.
-    pub async fn rate_limit(&self, key: &str, requests: u32, per: Duration) -> RateLimit {
-        core_store::rate_limit(self, key, requests, per, self.config.on_error).await
-    }
-
-    /// A fresh cached response. Store errors count as a miss.
-    pub async fn cache_get(&self, key: &str) -> Option<CachedResponse> {
-        core_store::cache_get(self, key, now_ms()).await
-    }
-
-    /// Stores a response. Failures are logged and counted, never returned.
-    pub async fn cache_put(&self, key: String, value: CachedResponse) {
-        let _ = self.put(&key, value).await;
     }
 
     /// Drops expired entries. Called periodically; only the memory store

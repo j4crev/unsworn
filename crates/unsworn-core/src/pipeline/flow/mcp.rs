@@ -8,27 +8,25 @@
 //! configured tool then gets the tool's own policies. See `docs/mcp.md`.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
-use http::{HeaderMap, Request, Response, StatusCode};
+use http::{HeaderMap, StatusCode};
 use serde_json::{Map, Value, json};
-use unsworn_core::Project;
-use unsworn_core::config::{OrOff, ResponseValidation};
-use unsworn_core::mcp::rpc::{self, Headers, Message, RpcError};
-use unsworn_core::mcp::{McpEndpoint, McpTool};
-use unsworn_core::pipeline::{self as checks, header_map, retry_secs};
-use unsworn_core::policy::{AuthReq, Effective};
-use unsworn_core::project::{Proxy, Route};
 use unsworn_proto::{Phase, Request as ProtoRequest};
 
-use super::super::proxy;
-use super::super::support::{Body, empty, full, json_response, problem, problem_response};
 use super::{
-    Ctx, Prepared, authenticate_request, check_rate_limit, collect_up_to, for_handler, run_befores,
+    Ctx, Prepared, Resp, empty_response, for_handler, json_response, problem, rate_limited,
+    run_befores,
 };
+use crate::config::{OrOff, ResponseValidation};
+use crate::mcp::rpc::{self, Headers, Message, RpcError};
+use crate::mcp::{McpEndpoint, McpTool};
+use crate::pipeline::host::{Body, CallError, Host, ProxyRequest, Reply};
+use crate::pipeline::{header_map, query_pairs, retry_secs};
+use crate::policy::{AuthReq, Effective};
+use crate::project::{Project, Proxy, Route};
 use crate::store::RateLimit;
-use crate::workers::{CallBody, CallError, Reply};
 
 /// The time a request to the endpoint may take: the longest of the
 /// endpoint's timeout and every tool's.
@@ -42,13 +40,13 @@ pub(super) fn longest_timeout(project: &Project, eff: &Effective) -> Duration {
 }
 
 /// Handles one request to the MCP endpoint.
-pub(super) async fn serve(
-    ctx: &Ctx,
+pub(super) async fn serve<H: Host>(
+    ctx: &Ctx<'_, H>,
     route: &Route,
     eff: &Effective,
-    prepared: Prepared,
-) -> Response<Body> {
-    let project = ctx.generation.project.clone();
+    prepared: Prepared<H>,
+) -> Resp<H> {
+    let project = ctx.project;
     let Some(mcp) = project.mcp.as_ref() else {
         return problem(StatusCode::INTERNAL_SERVER_ERROR, "no [mcp] endpoint");
     };
@@ -75,14 +73,13 @@ pub(super) async fn serve(
     }
     let trusted = rpc::trusted_headers(&parts.headers, call.as_ref().map(|(t, _)| *t));
 
-    if let Some(limit) = &eff.rate_limit {
-        match check_rate_limit(ctx, route.id, limit, &trusted, claims.as_ref()).await {
-            RateLimit::Allowed => {}
-            RateLimit::Limited { retry_after } => {
-                return problem_response(checks::too_many_requests(retry_after));
-            }
-            RateLimit::Unavailable => return problem_response(checks::rate_limit_unavailable()),
-        }
+    if let Some(limit) = &eff.rate_limit
+        && let Err(resp) = rate_limited(
+            ctx.rate_limit(route.id, limit, &trusted, claims.as_ref())
+                .await,
+        )
+    {
+        return resp;
     }
 
     let call = call.map(|(tool, args)| ToolCall {
@@ -93,22 +90,16 @@ pub(super) async fn serve(
         trusted,
     });
     match mcp.proxy.clone() {
-        Some(upstream) => {
-            proxied(
-                ctx, &project, eff, upstream, call, parts, body, context, claims,
-            )
-            .await
-        }
-        None => hosted(ctx, &project, mcp, &msg, call, parts, context, claims).await,
+        Some(upstream) => proxied(ctx, eff, upstream, call, parts, body, context, claims).await,
+        None => hosted(ctx, mcp, &msg, call, parts, context, claims).await,
     }
 }
 
 /// Forwards a request to the MCP server behind the proxy, after a
 /// configured tool's own policies.
 #[allow(clippy::too_many_arguments)]
-async fn proxied(
-    ctx: &Ctx,
-    project: &Project,
+async fn proxied<H: Host>(
+    ctx: &Ctx<'_, H>,
     eff: &Effective,
     upstream: Arc<Proxy>,
     call: Option<ToolCall<'_>>,
@@ -116,11 +107,12 @@ async fn proxied(
     body: Bytes,
     context: Map<String, Value>,
     claims: Option<Map<String, Value>>,
-) -> Response<Body> {
+) -> Resp<H> {
     let Some(call) = call else {
-        return match tokio::time::timeout(eff.timeout, forward(ctx, upstream, parts, body)).await {
-            Ok(resp) => resp,
-            Err(_) => problem(
+        let forward = forward(ctx, upstream, parts, body);
+        return match ctx.host.timeout(eff.timeout, forward).await {
+            Some(resp) => resp,
+            None => problem(
                 StatusCode::GATEWAY_TIMEOUT,
                 format!(
                     "the request took longer than {}s",
@@ -129,35 +121,35 @@ async fn proxied(
             ),
         };
     };
-    let checked = match call.check(ctx, project, &parts, context, claims).await {
+    let checked = match call.check(ctx, &parts, context, claims).await {
         Ok(c) => c,
         Err(resp) => return resp,
     };
     let timeout = checked.timeout;
-    match tokio::time::timeout(timeout, forward(ctx, upstream, parts, body)).await {
-        Ok(resp) => resp,
-        Err(_) => call.error(timed_out(timeout)),
+    match ctx
+        .host
+        .timeout(timeout, forward(ctx, upstream, parts, body))
+        .await
+    {
+        Some(resp) => resp,
+        None => call.error(timed_out(timeout)),
     }
 }
 
 /// Answers a request itself: Unsworn is the MCP server, and each tool is a
 /// handler.
-#[allow(clippy::too_many_arguments)]
-async fn hosted(
-    ctx: &Ctx,
-    project: &Project,
+async fn hosted<H: Host>(
+    ctx: &Ctx<'_, H>,
     mcp: &McpEndpoint,
     msg: &Message,
     call: Option<ToolCall<'_>>,
     parts: http::request::Parts,
     context: Map<String, Value>,
     claims: Option<Map<String, Value>>,
-) -> Response<Body> {
+) -> Resp<H> {
     let Some(id) = &msg.id else {
         // No client notifications need an answer in MCP 2026-07-28.
-        let mut resp = Response::new(empty());
-        *resp.status_mut() = StatusCode::ACCEPTED;
-        return resp;
+        return empty_response(StatusCode::ACCEPTED);
     };
     let ok = |result| json_response(StatusCode::OK, &rpc::result(id, result, Some(&mcp.server)));
     match msg.method.as_str() {
@@ -167,12 +159,12 @@ async fn hosted(
                 // The whole list fits in one page, so no cursor is valid.
                 return rpc_error(Some(id), &RpcError::invalid_params("unknown cursor"));
             }
-            let visible = visible_tools(ctx, project, mcp, &parts).await;
+            let visible = visible_tools(ctx, mcp, &parts).await;
             ok(rpc::list_tools(mcp, |t| visible.contains(&t.name)))
         }
         "tools/call" => match call {
-            Some(call) => match call.check(ctx, project, &parts, context, claims).await {
-                Ok(checked) => call.run(ctx, project, checked).await,
+            Some(call) => match call.check(ctx, &parts, context, claims).await {
+                Ok(checked) => call.run(ctx, checked).await,
                 Err(resp) => resp,
             },
             None => {
@@ -190,16 +182,15 @@ async fn hosted(
 /// The names of the tools `tools/list` shows this caller: with
 /// `list_tools = "permitted"`, only tools whose own `auth` the caller's
 /// credentials satisfy.
-async fn visible_tools(
-    ctx: &Ctx,
-    project: &Project,
+async fn visible_tools<H: Host>(
+    ctx: &Ctx<'_, H>,
     mcp: &McpEndpoint,
     parts: &http::request::Parts,
 ) -> Vec<String> {
     if !rpc::list_varies_by_caller(mcp) {
         return mcp.tools.iter().map(|t| t.name.clone()).collect();
     }
-    let query = query_pairs(parts);
+    let query = query_pairs(parts.uri.query());
     // Tools often share an `auth`; check each distinct one once.
     let mut verdicts: Vec<(AuthReq, bool)> = Vec::new();
     let mut out = Vec::new();
@@ -209,10 +200,8 @@ async fn visible_tools(
             Some(auth) => match verdicts.iter().find(|(a, _)| a == auth) {
                 Some((_, v)) => *v,
                 None => {
-                    let eff = project.tool_effective(tool);
-                    let v = authenticate_request(ctx, &parts.headers, &eff, &query)
-                        .await
-                        .is_ok();
+                    let eff = ctx.project.tool_effective(tool);
+                    let v = ctx.authenticate(&parts.headers, &eff, &query).await.is_ok();
                     verdicts.push((auth.clone(), v));
                     v
                 }
@@ -223,10 +212,6 @@ async fn visible_tools(
         }
     }
     out
-}
-
-fn query_pairs(parts: &http::request::Parts) -> Vec<(String, String)> {
-    checks::query_pairs(parts.uri.query())
 }
 
 fn timed_out(timeout: Duration) -> String {
@@ -255,23 +240,21 @@ struct ToolCall<'a> {
 impl ToolCall<'_> {
     /// Applies the tool's own policies. Returns what the call needs, or the
     /// response that ends it.
-    async fn check(
+    async fn check<H: Host>(
         &self,
-        ctx: &Ctx,
-        project: &Project,
+        ctx: &Ctx<'_, H>,
         parts: &http::request::Parts,
         mut context: Map<String, Value>,
         mut claims: Option<Map<String, Value>>,
-    ) -> Result<Checked, Response<Body>> {
+    ) -> Result<Checked, Resp<H>> {
         let tool = self.tool;
-        let eff = project.tool_effective(tool);
-        let route = &project.routes[tool.route];
+        let eff = ctx.project.tool_effective(tool);
+        let route = &ctx.project.routes[tool.route];
 
         // A missing scope is an HTTP error, so clients can ask for more access.
         if tool.own.auth.is_some() {
-            let query = query_pairs(parts);
-            let (more, tool_claims) =
-                authenticate_request(ctx, &parts.headers, &eff, &query).await?;
+            let query = query_pairs(parts.uri.query());
+            let (more, tool_claims) = ctx.authenticate(&parts.headers, &eff, &query).await?;
             if let Some(auth) = more.get("auth") {
                 context.insert("auth".into(), auth.clone());
             }
@@ -282,7 +265,10 @@ impl ToolCall<'_> {
 
         // The rest are reported to the model as tool errors.
         if let Some(OrOff::On(limit)) = &tool.own.rate_limit {
-            match check_rate_limit(ctx, tool.route, limit, &self.trusted, claims.as_ref()).await {
+            match ctx
+                .rate_limit(tool.route, limit, &self.trusted, claims.as_ref())
+                .await
+            {
                 RateLimit::Allowed => {}
                 RateLimit::Limited { retry_after } => {
                     return Err(self.error(format!(
@@ -336,10 +322,10 @@ impl ToolCall<'_> {
             },
         };
         if !eff.before.is_empty() {
-            let deadline = Instant::now() + eff.timeout;
+            let deadline = ctx.deadline(eff.timeout);
             match run_befores(ctx, &eff, &template, None, context, deadline).await {
                 Ok(c) => context = c,
-                Err(resp) => return Err(self.error(rejection_text(resp).await)),
+                Err(resp) => return Err(self.error(rejection_text(ctx, resp).await)),
             }
         }
         Ok(Checked {
@@ -350,19 +336,14 @@ impl ToolCall<'_> {
     }
 
     /// Calls the tool's handler and turns its reply into a tool result.
-    async fn run(&self, ctx: &Ctx, project: &Project, checked: Checked) -> Response<Body> {
-        let route = &project.routes[self.tool.route];
+    async fn run<H: Host>(&self, ctx: &Ctx<'_, H>, checked: Checked) -> Resp<H> {
+        let route = &ctx.project.routes[self.tool.route];
         let Some(handler) = route.handler() else {
             return self.error("The tool has no handler.");
         };
-        let Some(pool) = ctx.generation.pools.get(&handler.runtime).cloned() else {
-            return self.error("The tool's runtime isn't available.");
-        };
         let request = for_handler(&checked.template, handler, Phase::Handle, &checked.context);
-        let deadline = Instant::now() + checked.timeout;
-        let reply = pool
-            .call(request, CallBody::Empty, deadline, ctx.request_id.clone())
-            .await;
+        let deadline = ctx.deadline(checked.timeout);
+        let reply = ctx.host.call(handler, request, Body::Empty, deadline).await;
         let response = match reply {
             Ok(Reply::Response { response, .. }) => response,
             Ok(Reply::Continue(_)) => {
@@ -372,7 +353,7 @@ impl ToolCall<'_> {
             Err(CallError::Timeout) => return self.error(timed_out(checked.timeout)),
             Err(e) => {
                 tracing::error!(handler = %handler.raw, tool = %self.tool.name, "{e}");
-                return self.error(if ctx.shared.dev {
+                return self.error(if ctx.host.dev() {
                     format!("The tool failed: {e}")
                 } else {
                     "The tool failed.".to_string()
@@ -380,7 +361,7 @@ impl ToolCall<'_> {
             }
         };
         let ok = (200..300).contains(&response.status);
-        let mode = project.server.response_validation;
+        let mode = ctx.project.server.response_validation;
         if ok
             && mode != ResponseValidation::Off
             && let Some(rule) = &route.validation.response
@@ -417,7 +398,7 @@ impl ToolCall<'_> {
     }
 
     /// A tool result with `isError: true`, answered by Unsworn.
-    fn error(&self, text: impl Into<String>) -> Response<Body> {
+    fn error<B>(&self, text: impl Into<String>) -> crate::pipeline::host::Response<B> {
         let id = self.msg.id.clone().unwrap_or(Value::Null);
         // A proxied server's identity isn't ours to report.
         let server = self.mcp.hosted().then_some(&self.mcp.server);
@@ -428,32 +409,29 @@ impl ToolCall<'_> {
     }
 }
 
-fn rpc_error(id: Option<&Value>, error: &RpcError) -> Response<Body> {
+fn rpc_error<B>(id: Option<&Value>, error: &RpcError) -> crate::pipeline::host::Response<B> {
     let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_REQUEST);
     json_response(status, &error.to_json(id))
 }
 
-fn forward(
-    ctx: &Ctx,
+async fn forward<H: Host>(
+    ctx: &Ctx<'_, H>,
     upstream: Arc<Proxy>,
     parts: http::request::Parts,
     body: Bytes,
-) -> futures_util::future::BoxFuture<'static, Response<Body>> {
-    proxy::forward(
-        ctx.shared.client.clone(),
-        upstream,
-        Request::from_parts(parts, full(body)),
-        proxy::ForwardInfo {
+) -> Resp<H> {
+    ctx.host
+        .proxy(ProxyRequest {
+            proxy: upstream,
+            request: http::Request::from_parts(parts, Body::bytes(Some(body))),
             client_ip: ctx.client_ip,
-            tls: ctx.tls,
-            request_id: ctx.request_id.clone(),
-        },
-    )
+        })
+        .await
 }
 
 /// What a `before` handler's rejection says, for the model.
-async fn rejection_text(resp: Response<Body>) -> String {
+async fn rejection_text<H: Host>(ctx: &Ctx<'_, H>, resp: Resp<H>) -> String {
     let status = resp.status();
-    let (bytes, _) = collect_up_to(resp.into_body(), 16 * 1024).await;
+    let (bytes, _) = ctx.collect(resp.into_body(), 16 * 1024).await;
     rpc::rejection_text(status, &bytes)
 }
