@@ -4,7 +4,7 @@
 //! is described by a JSON Schema object; values are converted to their
 //! declared types (`"42"` becomes `42`) and then validated.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -18,19 +18,64 @@ pub struct FieldError {
     pub message: String,
 }
 
-fn compile(schema: &Value) -> Result<Arc<jsonschema::Validator>, String> {
-    jsonschema::options()
-        .should_validate_formats(true)
-        .build(schema)
-        .map(Arc::new)
-        .map_err(|e| format!("invalid JSON Schema: {e}"))
+/// When a rule builds its validator.
+///
+/// Building one takes a few milliseconds in WebAssembly, so a host that
+/// starts often (an isolate, a serverless function) builds each on first
+/// use. That's only safe for a config that was already checked with
+/// [`Build::Now`], as `unsworn build` does: a schema that turns out to be
+/// invalid fails the requests that need it instead of the load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Build {
+    #[default]
+    Now,
+    OnFirstUse,
+}
+
+/// A schema's validator, built once. Clones of a rule share it.
+#[derive(Default)]
+struct Validator(OnceLock<Result<jsonschema::Validator, String>>);
+
+impl Validator {
+    fn new(schema: &Value, build: Build) -> Result<Arc<Self>, String> {
+        let validator = Validator::default();
+        if build == Build::Now {
+            validator.get(schema)?;
+        }
+        Ok(Arc::new(validator))
+    }
+
+    fn get(&self, schema: &Value) -> Result<&jsonschema::Validator, String> {
+        self.0
+            .get_or_init(|| {
+                jsonschema::options()
+                    .should_validate_formats(true)
+                    .build(schema)
+                    .map_err(|e| format!("invalid JSON Schema: {e}"))
+            })
+            .as_ref()
+            .map_err(String::clone)
+    }
 }
 
 fn collect_errors(
-    validator: &jsonschema::Validator,
+    validator: &Validator,
+    schema: &Value,
     instance: &Value,
     prefix: &str,
 ) -> Vec<FieldError> {
+    let validator = match validator.get(schema) {
+        Ok(v) => v,
+        Err(e) => {
+            // Only with `Build::OnFirstUse`, for a config nothing checked.
+            tracing::error!("the schema for {prefix} can't be used: {e}");
+            return vec![FieldError {
+                location: prefix.to_string(),
+                message: "this route's schema is invalid, so nothing can be checked against it"
+                    .into(),
+            }];
+        }
+    };
     validator
         .iter_errors(instance)
         .map(|e| {
@@ -130,7 +175,7 @@ pub struct ParamSpec {
 pub struct LocationRules {
     pub prefix: &'static str,
     pub specs: Vec<ParamSpec>,
-    validator: Arc<jsonschema::Validator>,
+    validator: Arc<Validator>,
     /// The combined object schema, for OpenAPI output.
     pub schema: Value,
 }
@@ -145,7 +190,7 @@ impl std::fmt::Debug for LocationRules {
 }
 
 impl LocationRules {
-    pub fn new(prefix: &'static str, specs: Vec<ParamSpec>) -> Result<Self, String> {
+    pub fn new(prefix: &'static str, specs: Vec<ParamSpec>, build: Build) -> Result<Self, String> {
         let mut properties = Map::new();
         let mut required = Vec::new();
         for spec in &specs {
@@ -159,7 +204,7 @@ impl LocationRules {
             "properties": properties,
             "required": required,
         });
-        let validator = compile(&schema)?;
+        let validator = Validator::new(&schema, build)?;
         Ok(LocationRules {
             prefix,
             specs,
@@ -209,7 +254,7 @@ impl LocationRules {
             out.insert(spec.name.clone(), value);
         }
         let instance = Value::Object(out);
-        let errors = collect_errors(&self.validator, &instance, self.prefix);
+        let errors = collect_errors(&self.validator, &self.schema, &instance, self.prefix);
         if errors.is_empty() {
             let Value::Object(out) = instance else {
                 unreachable!()
@@ -264,7 +309,7 @@ fn coerce(raw: &str, types: &[String]) -> Value {
 pub struct BodyRule {
     pub schema: Value,
     pub required: bool,
-    validator: Arc<jsonschema::Validator>,
+    validator: Arc<Validator>,
 }
 
 impl std::fmt::Debug for BodyRule {
@@ -276,8 +321,8 @@ impl std::fmt::Debug for BodyRule {
 }
 
 impl BodyRule {
-    pub fn new(schema: Value, required: bool) -> Result<Self, String> {
-        let validator = compile(&schema)?;
+    pub fn new(schema: Value, required: bool, build: Build) -> Result<Self, String> {
+        let validator = Validator::new(&schema, build)?;
         Ok(BodyRule {
             schema,
             required,
@@ -286,7 +331,7 @@ impl BodyRule {
     }
 
     pub fn check(&self, value: &Value, prefix: &str) -> Result<(), Vec<FieldError>> {
-        let errors = collect_errors(&self.validator, value, prefix);
+        let errors = collect_errors(&self.validator, &self.schema, value, prefix);
         if errors.is_empty() {
             Ok(())
         } else {
@@ -339,6 +384,7 @@ mod tests {
                 schema: param_schema(&id).unwrap(),
                 required: true,
             }],
+            Build::Now,
         )
         .unwrap();
         let ok = rules.apply(&[("id".into(), "42".into())]).unwrap();
@@ -377,6 +423,7 @@ mod tests {
                     required: false,
                 },
             ],
+            Build::Now,
         )
         .unwrap();
         let out = rules
@@ -397,11 +444,28 @@ mod tests {
         let rule = BodyRule::new(
             json!({"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}}),
             true,
+            Build::Now,
         )
         .unwrap();
         assert!(rule.check(&json!({"name": "Ada"}), "body").is_ok());
         let errors = rule.check(&json!({"name": 3}), "body").unwrap_err();
         assert_eq!(errors[0].location, "body.name");
+    }
+
+    #[test]
+    fn builds_on_first_use() {
+        let bad = json!({"type": "object", "properties": {"name": {"pattern": "("}}});
+        assert!(BodyRule::new(bad.clone(), true, Build::Now).is_err());
+        // Not built yet, so not rejected; using it fails the check.
+        let rule = BodyRule::new(bad, true, Build::OnFirstUse).unwrap();
+        let errors = rule.check(&json!({"name": "Ada"}), "body").unwrap_err();
+        assert_eq!(errors[0].location, "body");
+
+        let rule = BodyRule::new(json!({"type": "integer"}), true, Build::OnFirstUse).unwrap();
+        let copy = rule.clone();
+        assert!(rule.check(&json!(1), "body").is_ok());
+        assert!(copy.check(&json!("x"), "body").is_err());
+        assert!(Arc::ptr_eq(&rule.validator, &copy.validator));
     }
 
     #[test]

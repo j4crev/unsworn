@@ -9,7 +9,8 @@ use http::{HeaderValue, Method, StatusCode, Uri, header};
 use js_sys::{Object, Promise};
 use unsworn_core::pipeline::{KeyCache, Problem, Router, problem_response};
 use unsworn_core::store::{Bucket, take_token as core_take_token};
-use unsworn_core::{Level, compile};
+use unsworn_core::validate::Build;
+use unsworn_core::{Level, compile_with};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
@@ -60,7 +61,11 @@ impl Unsworn {
                 .filter_map(|(k, v)| Some((k, v?)))
                 .collect(),
         };
-        let compiled = compile(&files, config_file);
+        // `unsworn build` compiled this config in full, so each schema's
+        // validator can wait for the first request that needs it. Building
+        // them all here would add milliseconds per route to every cold
+        // start.
+        let compiled = compile_with(&files, config_file, Build::OnFirstUse);
         let errors: Vec<String> = compiled
             .diagnostics
             .iter()

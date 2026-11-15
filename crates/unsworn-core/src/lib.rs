@@ -29,7 +29,7 @@ pub mod units;
 pub mod validate;
 
 pub use diag::{Diagnostic, Level};
-pub use project::{Compiled, Host, MatchResult, Matched, Project, Route, compile};
+pub use project::{Compiled, Host, MatchResult, Matched, Project, Route, compile, compile_with};
 
 /// The Unsworn version, shared by the core and every host.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
