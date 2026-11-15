@@ -1,6 +1,6 @@
 //! Handling one request, from matching to response.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -14,11 +14,10 @@ use hyper::body::{Frame, Incoming};
 use serde_json::{Map, Value, json};
 use tokio_stream::wrappers::ReceiverStream;
 use unsworn_core::MatchResult;
-use unsworn_core::auth::{
-    AuthFailure, CredentialSource, Scheme, Verdict, authenticate, www_authenticate,
-};
+use unsworn_core::auth::{CredentialSource, Scheme, Verdict, authenticate, token_kid};
 use unsworn_core::config::{ResponseValidation, TrailingSlash};
-use unsworn_core::policy::{AuthReq, Effective, HandlerRef, KeySource};
+use unsworn_core::pipeline as checks;
+use unsworn_core::policy::{AuthReq, Effective, HandlerRef};
 use unsworn_core::project::{Action, RespondBody, Route};
 use unsworn_core::rules;
 use unsworn_proto::{Phase, Request as ProtoRequest};
@@ -26,7 +25,9 @@ use unsworn_proto::{Phase, Request as ProtoRequest};
 mod mcp;
 
 use super::proxy;
-use super::support::{Body, check_key, empty, full, json_response, problem, problem_with};
+use super::support::{
+    Body, check_key, empty, full, json_response, problem, problem_response, problem_with,
+};
 use super::{Generation, Shared};
 use crate::store::{CachedResponse, MAX_CACHED_BODY, RateLimit};
 use crate::workers::{BodyError, CallBody, CallError, Reply, ReplyBody};
@@ -71,7 +72,7 @@ async fn handle_inner(
         shared: shared.clone(),
         generation: generation.clone(),
         request_id: request_id.clone(),
-        client_ip: generation.client_ip.resolve(peer, req.headers()),
+        client_ip: generation.client_ip.resolve(peer.ip(), req.headers()),
         tls,
         origin: req
             .headers()
@@ -145,13 +146,7 @@ fn route_request(ctx: &Ctx, req: Request<Incoming>) -> BoxFuture<'_, (Response<B
                     .and_then(|v| v.to_str().ok());
                 let mut resp = Response::new(empty());
                 *resp.status_mut() = StatusCode::NO_CONTENT;
-                if let Some(headers) =
-                    rules::cors_preflight_headers(cors, origin, requested, &methods)
-                {
-                    for (k, v) in headers {
-                        append(resp.headers_mut(), &k, &v);
-                    }
-                }
+                *resp.headers_mut() = checks::preflight_headers(cors, origin, requested, &methods);
                 return (resp, m.route.path.clone());
             }
         }
@@ -205,8 +200,11 @@ fn route_request(ctx: &Ctx, req: Request<Incoming>) -> BoxFuture<'_, (Response<B
                 let route = m.route;
                 let label = route.path.clone();
                 let eff = project.effective(route, &method, &path);
-                let params: Vec<(String, String)> =
-                    m.params.into_iter().map(|(k, v)| (k, decode(&v))).collect();
+                let params: Vec<(String, String)> = m
+                    .params
+                    .into_iter()
+                    .map(|(k, v)| (k, checks::decode_param(&v)))
+                    .collect();
                 let timeout = match route.action {
                     // Each tool call has its own timeout, applied inside.
                     Action::Mcp => mcp::longest_timeout(project, &eff),
@@ -220,44 +218,11 @@ fn route_request(ctx: &Ctx, req: Request<Incoming>) -> BoxFuture<'_, (Response<B
                         format!("the request took longer than {}s", timeout.as_secs_f64()),
                     ),
                 };
-                finish(ctx, &eff, &mut resp);
+                checks::finish_headers(&eff, ctx.origin.as_deref(), resp.headers_mut());
                 (resp, label)
             }
         }
     })
-}
-
-/// Header rules and CORS headers, applied to every routed response.
-fn finish(ctx: &Ctx, eff: &Effective, resp: &mut Response<Body>) {
-    let headers = resp.headers_mut();
-    for name in &eff.headers.remove {
-        headers.remove(name.as_str());
-    }
-    for (name, value) in &eff.headers.set {
-        if let (Ok(n), Ok(v)) = (
-            HeaderName::try_from(name.as_str()),
-            HeaderValue::from_str(value),
-        ) {
-            headers.insert(n, v);
-        }
-    }
-    if let (Some(cors), Some(origin)) = (&eff.cors, &ctx.origin) {
-        for (k, v) in rules::cors_response_headers(cors, origin) {
-            if k == "vary" {
-                append(headers, &k, &v);
-            } else if let (Ok(n), Ok(v)) =
-                (HeaderName::try_from(k.as_str()), HeaderValue::from_str(&v))
-            {
-                headers.insert(n, v);
-            }
-        }
-    }
-}
-
-fn append(headers: &mut HeaderMap, name: &str, value: &str) {
-    if let (Ok(n), Ok(v)) = (HeaderName::try_from(name), HeaderValue::from_str(value)) {
-        headers.append(n, v);
-    }
 }
 
 struct KeyLookup<'a>(&'a super::support::KeyCache);
@@ -356,29 +321,8 @@ fn prepare<'a>(
 ) -> BoxFuture<'a, Result<Prepared, Response<Body>>> {
     Box::pin(async move {
         let method = req.method().as_str().to_string();
-        let query_pairs: Vec<(String, String)> = req
-            .uri()
-            .query()
-            .map(|q| form_urlencoded::parse(q.as_bytes()).into_owned().collect())
-            .unwrap_or_default();
-
-        if let (Some(allow), Some(origin)) = (&eff.origin, &ctx.origin)
-            && !allow.iter().any(|a| a == origin)
-        {
-            return Err(problem(
-                StatusCode::FORBIDDEN,
-                format!("requests from origin {origin} aren't allowed"),
-            ));
-        }
-
-        if let Some(rules) = &eff.ip
-            && !ip_allowed(rules, ctx.client_ip)
-        {
-            return Err(problem(
-                StatusCode::FORBIDDEN,
-                "requests from this address aren't allowed",
-            ));
-        }
+        let query_pairs = checks::query_pairs(req.uri().query());
+        checks::access(eff, ctx.origin.as_deref(), ctx.client_ip).map_err(problem_response)?;
 
         let (context, claims) = authenticate_request(ctx, req.headers(), eff, &query_pairs).await?;
 
@@ -388,15 +332,21 @@ fn prepare<'a>(
         if let Some(limit) = eff.rate_limit.as_ref().filter(|_| !is_mcp) {
             match check_rate_limit(ctx, route.id, limit, req.headers(), claims.as_ref()).await {
                 RateLimit::Allowed => {}
-                RateLimit::Limited { retry_after } => return Err(too_many_requests(retry_after)),
-                RateLimit::Unavailable => return Err(rate_limit_unavailable()),
+                RateLimit::Limited { retry_after } => {
+                    return Err(problem_response(checks::too_many_requests(retry_after)));
+                }
+                RateLimit::Unavailable => {
+                    return Err(problem_response(checks::rate_limit_unavailable()));
+                }
             }
         }
 
-        let (params, query) = validate_inputs(route, &raw_params, &query_pairs, req.headers())?;
+        let (params, query) =
+            checks::validate_inputs(route, &raw_params, &query_pairs, req.headers())
+                .map_err(problem_response)?;
 
         let cache_key = match &eff.cache {
-            Some(rule) => compute_cache_key(
+            Some(rule) => checks::cache_key(
                 rule,
                 &ctx.generation.project.credential_headers(&eff.auth),
                 route.id,
@@ -419,18 +369,7 @@ fn prepare<'a>(
             || route.validation.body.is_some()
             || is_mcp;
         let (parts, incoming) = req.into_parts();
-        if let Some(len) = parts
-            .headers
-            .get(header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok())
-            && len > eff.max_body
-        {
-            return Err(problem(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("the body is larger than {} bytes", eff.max_body),
-            ));
-        }
+        checks::check_content_length(&parts.headers, eff.max_body).map_err(problem_response)?;
         let mut body_bytes: Option<Bytes> = None;
         let mut streaming_body: Option<Body> = None;
         if needs_body {
@@ -443,7 +382,8 @@ fn prepare<'a>(
         let json_body = if is_mcp {
             None
         } else {
-            check_body(route, &parts.headers, body_bytes.as_ref())?
+            checks::check_body(route, &parts.headers, body_bytes.as_deref())
+                .map_err(problem_response)?
         };
         let raw_body = if json_body.is_some() {
             None
@@ -460,7 +400,7 @@ fn prepare<'a>(
             params,
             query,
             raw_query: parts.uri.query().map(String::from),
-            headers: header_map(&parts.headers),
+            headers: checks::header_map(&parts.headers),
             context: Map::new(),
             json: json_body,
             ..Default::default()
@@ -489,32 +429,9 @@ async fn check_rate_limit(
     headers: &HeaderMap,
     claims: Option<&Map<String, Value>>,
 ) -> RateLimit {
-    let ip = ctx.client_ip;
-    let key = key_value(&limit.key, ip, headers, claims).unwrap_or_else(|| ip.to_string());
-    let bucket = format!("{route_id}|{}|{key}", limit.key.describe());
+    let bucket = checks::rate_limit_bucket(route_id, limit, ctx.client_ip, headers, claims);
     let store = ctx.shared.store.load_full();
     store.rate_limit(&bucket, limit.requests, limit.per).await
-}
-
-/// Whole seconds to wait, at least 1.
-fn retry_secs(retry_after: Duration) -> u64 {
-    retry_after.as_secs_f64().ceil().max(1.0) as u64
-}
-
-fn too_many_requests(retry_after: Duration) -> Response<Body> {
-    let mut resp = problem(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
-    resp.headers_mut().insert(
-        header::RETRY_AFTER,
-        HeaderValue::from(retry_secs(retry_after)),
-    );
-    resp
-}
-
-fn rate_limit_unavailable() -> Response<Body> {
-    problem(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "rate limiting is unavailable",
-    )
 }
 
 type AuthOutcome = (Map<String, Value>, Option<Map<String, Value>>);
@@ -530,11 +447,11 @@ fn authenticate_request<'a>(
         let AuthReq::AnyOf(alts) = &eff.auth else {
             return Ok((context, None));
         };
-        let kid = headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split_once(' ').map(|(_, t)| t.to_string()))
-            .and_then(|t| jsonwebtoken_kid(&t));
+        let kid = token_kid(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok()),
+        );
         let mut schemes = Vec::new();
         for alt in alts {
             if let Some(s) = ctx.generation.project.schemes.get(&alt.scheme) {
@@ -587,73 +504,12 @@ fn authenticate_request<'a>(
                 Ok((context, Some(ok.claims)))
             }
             Ok(None) => Ok((context, None)),
-            Err(failure) => Err(auth_failure(ctx, &failure)),
+            Err(failure) => Err(problem_response(checks::auth_failure(
+                &failure,
+                &ctx.generation.project.schemes,
+            ))),
         }
     })
-}
-
-type Inputs = (Map<String, Value>, Map<String, Value>);
-
-fn validate_inputs(
-    route: &Route,
-    raw_params: &[(String, String)],
-    query_pairs: &[(String, String)],
-    headers: &HeaderMap,
-) -> Result<Inputs, Response<Body>> {
-    let mut params = Map::new();
-    match &route.validation.params {
-        Some(rules) => match rules.apply(raw_params) {
-            Ok(p) => params = p,
-            Err(errors) => {
-                return Err(problem_with(
-                    StatusCode::BAD_REQUEST,
-                    "invalid path parameters",
-                    Some(&errors),
-                ));
-            }
-        },
-        None => {
-            for (k, v) in raw_params {
-                params.insert(k.clone(), Value::String(v.clone()));
-            }
-        }
-    }
-    let mut query = Map::new();
-    match &route.validation.query {
-        Some(rules) => match rules.apply(query_pairs) {
-            Ok(q) => query = q,
-            Err(errors) => {
-                return Err(problem_with(
-                    StatusCode::BAD_REQUEST,
-                    "invalid query parameters",
-                    Some(&errors),
-                ));
-            }
-        },
-        None => {
-            for (k, v) in query_pairs {
-                query.entry(k.clone()).or_insert(Value::String(v.clone()));
-            }
-        }
-    }
-    if let Some(rules) = &route.validation.headers {
-        let pairs: Vec<(String, String)> = headers
-            .iter()
-            .filter_map(|(k, v)| {
-                v.to_str()
-                    .ok()
-                    .map(|v| (k.as_str().to_string(), v.to_string()))
-            })
-            .collect();
-        if let Err(errors) = rules.apply(&pairs) {
-            return Err(problem_with(
-                StatusCode::BAD_REQUEST,
-                "invalid headers",
-                Some(&errors),
-            ));
-        }
-    }
-    Ok((params, query))
 }
 
 fn cached_response(hit: &CachedResponse, method: &str, dev: bool) -> Response<Body> {
@@ -687,60 +543,6 @@ async fn read_body(incoming: Incoming, max: u64) -> Result<Bytes, Response<Body>
             problem(StatusCode::BAD_REQUEST, "couldn't read the request body")
         }),
     }
-}
-
-/// Parses a JSON body and validates it against the route's body schema.
-fn check_body(
-    route: &Route,
-    headers: &HeaderMap,
-    body: Option<&Bytes>,
-) -> Result<Option<Value>, Response<Body>> {
-    let content_type = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let is_json = content_type.starts_with("application/json") || content_type.contains("+json");
-    let empty_body = body.is_none_or(|b| b.is_empty());
-    let mut json_body = None;
-    if let Some(bytes) = body
-        && !empty_body
-        && is_json
-    {
-        match serde_json::from_slice::<Value>(bytes) {
-            Ok(v) => json_body = Some(v),
-            Err(e) => {
-                return Err(problem(
-                    StatusCode::BAD_REQUEST,
-                    format!("the body isn't valid JSON: {e}"),
-                ));
-            }
-        }
-    }
-    if let Some(rule) = &route.validation.body {
-        if empty_body {
-            if rule.required {
-                return Err(problem(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "a JSON body is required",
-                ));
-            }
-        } else if !is_json {
-            return Err(problem(
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                "the body must be JSON (Content-Type: application/json)",
-            ));
-        } else if let Some(v) = &json_body
-            && let Err(errors) = rule.check(v, "body")
-        {
-            return Err(problem_with(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid body",
-                Some(&errors),
-            ));
-        }
-    }
-    Ok(json_body)
 }
 
 /// Runs `before` handlers. Returns the final context, or a response that
@@ -835,12 +637,7 @@ fn run_action<'a>(
                 resp
             }
             Action::Redirect { to, status } => {
-                let mut location = to.clone();
-                for (k, v) in &raw_params {
-                    location = location
-                        .replace(&format!("{{*{k}}}"), v)
-                        .replace(&format!("{{{k}}}"), v);
-                }
+                let location = checks::redirect_location(to, &raw_params);
                 let mut resp = Response::new(empty());
                 *resp.status_mut() =
                     StatusCode::from_u16(*status).unwrap_or(StatusCode::PERMANENT_REDIRECT);
@@ -1036,149 +833,6 @@ fn append_raw(headers: &mut HeaderMap, name: &str, value: HeaderValue) {
     }
 }
 
-fn header_map(headers: &HeaderMap) -> BTreeMap<String, String> {
-    let mut out: BTreeMap<String, String> = BTreeMap::new();
-    for (k, v) in headers {
-        let Ok(v) = v.to_str() else { continue };
-        let sep = if k == header::COOKIE { "; " } else { ", " };
-        out.entry(k.as_str().to_string())
-            .and_modify(|e| {
-                e.push_str(sep);
-                e.push_str(v);
-            })
-            .or_insert_with(|| v.to_string());
-    }
-    out
-}
-
-fn ip_matches(entry: &str, ip: IpAddr) -> bool {
-    if let Ok(net) = entry.parse::<ipnet::IpNet>() {
-        return net.contains(&ip);
-    }
-    entry.parse::<IpAddr>().is_ok_and(|e| e == ip)
-}
-
-fn ip_allowed(rules: &unsworn_core::policy::IpRules, ip: IpAddr) -> bool {
-    if rules.deny.iter().any(|d| ip_matches(d, ip)) {
-        return false;
-    }
-    rules.allow.is_empty() || rules.allow.iter().any(|a| ip_matches(a, ip))
-}
-
-fn compute_cache_key(
-    rule: &unsworn_core::policy::CacheRule,
-    credential_headers: &[String],
-    route_id: usize,
-    method: &str,
-    uri: &http::Uri,
-    headers: &HeaderMap,
-    claims: Option<&Map<String, Value>>,
-    client_ip: IpAddr,
-) -> Option<String> {
-    if !rules::cache_method(method) {
-        return None;
-    }
-    if claims.is_some() && !rules::cache_separates_users(rule, credential_headers) {
-        return None;
-    }
-    let mut vary = Vec::new();
-    for h in &rule.vary {
-        let value = headers
-            .get(h.as_str())
-            .and_then(|v| v.to_str().ok())
-            .map(String::from);
-        vary.push((h.clone(), value));
-    }
-    let key = rule
-        .key
-        .as_ref()
-        .map(|k| key_value(k, client_ip, headers, claims).unwrap_or_default());
-    Some(rules::cache_key(
-        route_id,
-        method,
-        uri.path(),
-        uri.query(),
-        &vary,
-        key.as_deref(),
-    ))
-}
-
-fn key_value(
-    key: &KeySource,
-    client_ip: IpAddr,
-    headers: &HeaderMap,
-    claims: Option<&Map<String, Value>>,
-) -> Option<String> {
-    match key {
-        KeySource::Ip => Some(client_ip.to_string()),
-        KeySource::Header(h) => headers
-            .get(h.as_str())
-            .and_then(|v| v.to_str().ok())
-            .map(String::from),
-        KeySource::Claim(c) => claims.and_then(|m| m.get(c)).map(|v| match v {
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        }),
-    }
-}
-
-fn jsonwebtoken_kid(token: &str) -> Option<String> {
-    use base64_lite::decode_segment;
-    let header = token.split('.').next()?;
-    let bytes = decode_segment(header)?;
-    let v: Value = serde_json::from_slice(&bytes).ok()?;
-    v.get("kid").and_then(Value::as_str).map(String::from)
-}
-
-/// Minimal base64url decoding for reading a JWT header's `kid`.
-mod base64_lite {
-    pub fn decode_segment(s: &str) -> Option<Vec<u8>> {
-        let mut out = Vec::with_capacity(s.len() * 3 / 4);
-        let mut buf = 0u32;
-        let mut bits = 0;
-        for c in s.bytes() {
-            let v = match c {
-                b'A'..=b'Z' => c - b'A',
-                b'a'..=b'z' => c - b'a' + 26,
-                b'0'..=b'9' => c - b'0' + 52,
-                b'-' | b'+' => 62,
-                b'_' | b'/' => 63,
-                b'=' => break,
-                _ => return None,
-            } as u32;
-            buf = (buf << 6) | v;
-            bits += 6;
-            if bits >= 8 {
-                bits -= 8;
-                out.push((buf >> bits) as u8);
-                buf &= (1 << bits) - 1;
-            }
-        }
-        Some(out)
-    }
-}
-
-fn auth_failure(ctx: &Ctx, failure: &AuthFailure) -> Response<Body> {
-    let (status, detail) = match failure {
-        AuthFailure::Unauthorized { reason, .. } => (StatusCode::UNAUTHORIZED, reason.clone()),
-        AuthFailure::InsufficientScope { scopes, .. } => (
-            StatusCode::FORBIDDEN,
-            format!("this requires the scopes: {}", scopes.join(" ")),
-        ),
-        AuthFailure::Unavailable { .. } => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "credentials can't be verified right now".to_string(),
-        ),
-    };
-    let mut resp = problem(status, detail);
-    if let Some(h) = www_authenticate(failure, &ctx.generation.project.schemes)
-        && let Ok(v) = HeaderValue::from_str(&h)
-    {
-        resp.headers_mut().insert(header::WWW_AUTHENTICATE, v);
-    }
-    resp
-}
-
 fn call_error(ctx: &Ctx, handler: &HandlerRef, e: CallError) -> Response<Body> {
     if matches!(e, CallError::Body(_)) {
         tracing::info!(handler = %handler.raw, "{e}");
@@ -1219,14 +873,9 @@ fn call_error(ctx: &Ctx, handler: &HandlerRef, e: CallError) -> Response<Body> {
 
 /// Converts a handler's response message into an HTTP response.
 fn to_http(response: unsworn_proto::Response, body: ReplyBody) -> Response<Body> {
-    let status = match StatusCode::from_u16(response.status) {
-        Ok(s) => s,
-        Err(_) => {
-            return problem(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("the handler returned an invalid status {}", response.status),
-            );
-        }
+    let (status, headers) = match checks::response_head(&response) {
+        Ok(head) => head,
+        Err(p) => return problem_response(p),
     };
     let http_body = match body {
         ReplyBody::Empty => empty(),
@@ -1237,34 +886,7 @@ fn to_http(response: unsworn_proto::Response, body: ReplyBody) -> Response<Body>
     };
     let mut resp = Response::new(http_body);
     *resp.status_mut() = status;
-    let headers = resp.headers_mut();
-    for (name, values) in &response.headers {
-        let Ok(n) = HeaderName::try_from(name.as_str()) else {
-            tracing::warn!(header = %name, "handler returned an invalid header name");
-            continue;
-        };
-        for v in values.iter() {
-            if let Ok(v) = HeaderValue::from_str(v) {
-                headers.append(n.clone(), v);
-            }
-        }
-    }
-    if !headers.contains_key(header::CONTENT_TYPE) {
-        let ct = if response.json.is_some() {
-            Some("application/json")
-        } else if response.text.is_some() {
-            Some("text/plain; charset=utf-8")
-        } else if response.stream {
-            None
-        } else if response.body_len.is_some() {
-            Some("application/octet-stream")
-        } else {
-            None
-        };
-        if let Some(ct) = ct {
-            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(ct));
-        }
-    }
+    *resp.headers_mut() = headers;
     resp
 }
 
@@ -1295,10 +917,4 @@ fn health(ctx: &Ctx) -> Response<Body> {
         },
         &body,
     )
-}
-
-fn decode(s: &str) -> String {
-    percent_encoding::percent_decode_str(s)
-        .decode_utf8_lossy()
-        .into_owned()
 }

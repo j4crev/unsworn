@@ -18,6 +18,7 @@ pub mod diag;
 pub mod export;
 pub mod mcp;
 pub mod openapi;
+pub mod pipeline;
 pub mod policy;
 pub mod project;
 pub mod routefiles;

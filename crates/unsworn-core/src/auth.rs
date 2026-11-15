@@ -125,6 +125,29 @@ pub struct KeyVerifier {
     pub cache: Option<Duration>,
 }
 
+impl KeyVerifier {
+    /// Where the verdict for `key` is cached. The key is hashed, so the
+    /// store never holds it, and the verifier URL is included, so changing
+    /// it starts afresh.
+    pub fn cache_key(&self, key: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(self.url.as_bytes());
+        hash.update([0]);
+        hash.update(key.as_bytes());
+        let hex: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        format!("auth|{hex}")
+    }
+}
+
+/// The key id (`kid`) in the header of a bearer token, used to notice a
+/// rotated JWKS. `None` when the request has no bearer token or the token's
+/// header can't be read.
+pub fn token_kid(authorization: Option<&str>) -> Option<String> {
+    let (_, token) = authorization?.split_once(' ')?;
+    jsonwebtoken::decode_header(token.trim()).ok()?.kid
+}
+
 impl ApiKeyScheme {
     /// The key the request carries, from the header or the query string.
     pub fn credential<'a>(&self, source: &'a dyn CredentialSource) -> Option<&'a str> {
@@ -867,5 +890,33 @@ mod tests {
                 "/.well-known/oauth-protected-resource/mcp"
             ]
         );
+    }
+
+    #[test]
+    fn kid_and_verdict_keys() {
+        let mut header = Header::new(Algorithm::HS256);
+        header.kid = Some("k1".into());
+        let token = encode(
+            &header,
+            &json!({ "sub": "a" }),
+            &EncodingKey::from_secret(b"secret").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            token_kid(Some(&format!("Bearer {token}"))).as_deref(),
+            Some("k1")
+        );
+        assert_eq!(token_kid(Some("Bearer nope")), None);
+        assert_eq!(token_kid(None), None);
+
+        let verifier = KeyVerifier {
+            url: "https://keys.example/verify".into(),
+            headers: vec![],
+            timeout: Duration::from_secs(1),
+            cache: None,
+        };
+        let key = verifier.cache_key("sk_live_1");
+        assert!(key.starts_with("auth|") && !key.contains("sk_live_1"));
+        assert_ne!(key, verifier.cache_key("sk_live_2"));
     }
 }

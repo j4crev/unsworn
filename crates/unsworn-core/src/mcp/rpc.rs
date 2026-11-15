@@ -110,11 +110,79 @@ pub struct Headers {
 }
 
 impl Headers {
+    /// Reads the MCP headers from a request.
+    pub fn from_http(headers: &http::HeaderMap) -> Headers {
+        let mut out = Headers::default();
+        let mut text = |name: &str, label: &str| match headers.get(name).map(|v| v.to_str()) {
+            None => None,
+            Some(Ok(v)) => Some(v.to_string()),
+            Some(Err(_)) => {
+                out.invalid.push(label.to_string());
+                None
+            }
+        };
+        let protocol_version = text("mcp-protocol-version", "MCP-Protocol-Version");
+        let method = text("mcp-method", "Mcp-Method");
+        let name = text("mcp-name", "Mcp-Name");
+        out.protocol_version = protocol_version;
+        out.method = method;
+        out.name = name;
+        for (k, v) in headers {
+            if k.as_str().starts_with("mcp-param-") {
+                match v.to_str() {
+                    Ok(v) => out.params.push((k.as_str().to_string(), v.to_string())),
+                    Err(_) => out.invalid.push(k.as_str().to_string()),
+                }
+            }
+        }
+        out
+    }
+
     fn param(&self, header: &str) -> Option<&str> {
         self.params
             .iter()
             .find(|(k, _)| k == header)
             .map(|(_, v)| v.as_str())
+    }
+}
+
+/// The headers policies may use as keys: `Mcp-Param-*` headers only when
+/// they were checked against this call's arguments.
+pub fn trusted_headers(headers: &http::HeaderMap, tool: Option<&McpTool>) -> http::HeaderMap {
+    let mut out = headers.clone();
+    let unchecked: Vec<_> = headers
+        .keys()
+        .filter(|k| {
+            k.as_str().starts_with("mcp-param-")
+                && !tool.is_some_and(|t| t.param_headers.iter().any(|p| p.header == k.as_str()))
+        })
+        .cloned()
+        .collect();
+    for k in unchecked {
+        out.remove(k);
+    }
+    out
+}
+
+/// What a `before` handler's rejection says, as text for the model.
+/// `body` is the start of the rejection's body.
+pub fn rejection_text(status: http::StatusCode, body: &[u8]) -> String {
+    let reason = match serde_json::from_slice::<Value>(body) {
+        Ok(v) => ["detail", "message", "error"]
+            .iter()
+            .find_map(|k| v.get(*k).and_then(Value::as_str).map(String::from))
+            .unwrap_or_else(|| v.to_string()),
+        Err(_) => String::from_utf8_lossy(body).trim().to_string(),
+    };
+    let label = format!(
+        "{} {}",
+        status.as_u16(),
+        status.canonical_reason().unwrap_or("")
+    );
+    if reason.is_empty() {
+        format!("The call was rejected ({}).", label.trim())
+    } else {
+        format!("The call was rejected ({}): {reason}", label.trim())
     }
 }
 
@@ -932,5 +1000,29 @@ mod tests {
             Some("Hello, 世界")
         );
         assert_eq!(decode_header_value("=?base64?!!?="), None);
+    }
+
+    #[test]
+    fn rejections_and_trusted_headers() {
+        use http::StatusCode;
+        assert_eq!(
+            rejection_text(StatusCode::FORBIDDEN, br#"{"detail":"no access"}"#),
+            "The call was rejected (403 Forbidden): no access"
+        );
+        assert_eq!(
+            rejection_text(StatusCode::FORBIDDEN, b""),
+            "The call was rejected (403 Forbidden)."
+        );
+        let mut headers = http::HeaderMap::new();
+        headers.insert("mcp-param-region", "eu".parse().unwrap());
+        headers.insert("x-other", "1".parse().unwrap());
+        let trusted = trusted_headers(&headers, None);
+        assert!(!trusted.contains_key("mcp-param-region"));
+        assert!(trusted.contains_key("x-other"));
+        let parsed = Headers::from_http(&headers);
+        assert_eq!(
+            parsed.params,
+            vec![("mcp-param-region".into(), "eu".into())]
+        );
     }
 }

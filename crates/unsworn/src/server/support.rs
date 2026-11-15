@@ -1,20 +1,19 @@
-//! Shared pieces for the server: bodies, problem responses, the memory
-//! store, metrics, JWT key caching, remote API-key checks and client IPs.
+//! Shared pieces for the server: bodies, problem responses, metrics, JWT
+//! key caching and remote API-key checks.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use http::{HeaderMap, HeaderValue, Response, StatusCode, header};
+use http::{HeaderValue, Response, StatusCode, header};
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
-use ipnet::IpNet;
-use serde_json::{Value, json};
+use serde_json::Value;
 use unsworn_core::auth::{JwtKeys, KeySet, KeyVerifier, Scheme, Verdict};
+use unsworn_core::pipeline::Problem;
 use unsworn_core::validate::FieldError;
 
 use crate::store::{CachedResponse, Store};
@@ -45,7 +44,7 @@ pub fn json_response(status: StatusCode, value: &Value) -> Response<Body> {
 
 /// An RFC 9457 problem response.
 pub fn problem(status: StatusCode, detail: impl Into<String>) -> Response<Body> {
-    problem_with(status, detail, None)
+    problem_response(Problem::new(status, detail))
 }
 
 pub fn problem_with(
@@ -53,19 +52,16 @@ pub fn problem_with(
     detail: impl Into<String>,
     errors: Option<&[FieldError]>,
 ) -> Response<Body> {
-    let mut body = json!({
-        "type": "about:blank",
-        "title": status.canonical_reason().unwrap_or("Error"),
-        "status": status.as_u16(),
-        "detail": detail.into(),
-    });
-    if let Some(errors) = errors {
-        body["errors"] = json!(errors);
-    }
-    let mut resp = json_response(status, &body);
+    problem_response(Problem::new(status, detail).with_errors(errors))
+}
+
+pub fn problem_response(problem: Problem) -> Response<Body> {
+    let mut resp = Response::new(full(problem.body_bytes()));
+    *resp.status_mut() = problem.status;
+    *resp.headers_mut() = problem.headers;
     resp.headers_mut().insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static("application/problem+json"),
+        HeaderValue::from_static(Problem::CONTENT_TYPE),
     );
     resp
 }
@@ -80,60 +76,6 @@ pub fn build_client() -> HttpClient {
     Client::builder(hyper_util::rt::TokioExecutor::new())
         .pool_idle_timeout(Duration::from_secs(60))
         .build(https)
-}
-
-/// Works out the client's IP, trusting `X-Forwarded-For` only from
-/// configured proxies.
-pub struct ClientIp {
-    trust_all: bool,
-    nets: Vec<IpNet>,
-}
-
-impl ClientIp {
-    pub fn new(trusted: &[String]) -> Result<ClientIp, String> {
-        let mut nets = Vec::new();
-        let mut trust_all = false;
-        for t in trusted {
-            if t == "all" {
-                trust_all = true;
-            } else if let Ok(net) = t.parse::<IpNet>() {
-                nets.push(net);
-            } else if let Ok(ip) = t.parse::<IpAddr>() {
-                nets.push(IpNet::from(ip));
-            } else {
-                return Err(format!(
-                    "[server].trusted_proxies: \"{t}\" isn't an IP or CIDR"
-                ));
-            }
-        }
-        Ok(ClientIp { trust_all, nets })
-    }
-
-    fn trusted(&self, ip: IpAddr) -> bool {
-        self.trust_all || self.nets.iter().any(|n| n.contains(&ip))
-    }
-
-    pub fn resolve(&self, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
-        let mut ip = peer.ip();
-        if !self.trusted(ip) {
-            return ip;
-        }
-        let forwarded: Vec<IpAddr> = headers
-            .get_all("x-forwarded-for")
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .flat_map(|v| v.split(','))
-            .filter_map(|s| s.trim().parse().ok())
-            .collect();
-        // Walk from the closest hop back, stopping at the first untrusted one.
-        for hop in forwarded.iter().rev() {
-            ip = *hop;
-            if !self.trusted(*hop) {
-                break;
-            }
-        }
-        ip
-    }
 }
 
 /// Request counts and durations, exposed in Prometheus format.
@@ -330,7 +272,7 @@ pub async fn check_key(
     let Some(max) = verifier.cache else {
         return verify_key(client, verifier, key).await;
     };
-    let cache_key = verdict_cache_key(verifier, key);
+    let cache_key = verifier.cache_key(key);
     if let Some(hit) = store.cache_get(&cache_key).await {
         match Verdict::from_response(hit.status, &hit.body) {
             Verdict::Unavailable(_) => {} // not ours; ask again
@@ -351,18 +293,6 @@ pub async fn check_key(
         tokio::spawn(async move { store.cache_put(cache_key, entry).await });
     }
     verdict
-}
-
-/// Where a verdict is cached. Keys are hashed, so the store never holds
-/// them, and the verifier URL is included, so changing it starts afresh.
-fn verdict_cache_key(verifier: &KeyVerifier, key: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hash = Sha256::new();
-    hash.update(verifier.url.as_bytes());
-    hash.update([0]);
-    hash.update(key.as_bytes());
-    let hex: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
-    format!("auth|{hex}")
 }
 
 async fn fetch_text(client: &HttpClient, url: &str) -> Result<String, String> {
@@ -388,23 +318,4 @@ async fn fetch_text(client: &HttpClient, url: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())?
         .to_bytes();
     String::from_utf8(body.to_vec()).map_err(|e| e.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn client_ip_trust() {
-        let peer: SocketAddr = "10.0.0.2:5000".parse().unwrap();
-        let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", "203.0.113.9, 10.0.0.7".parse().unwrap());
-        let none = ClientIp::new(&[]).unwrap();
-        assert_eq!(none.resolve(peer, &headers), peer.ip());
-        let trusted = ClientIp::new(&["10.0.0.0/8".into()]).unwrap();
-        assert_eq!(
-            trusted.resolve(peer, &headers),
-            "203.0.113.9".parse::<IpAddr>().unwrap()
-        );
-    }
 }
