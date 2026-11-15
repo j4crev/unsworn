@@ -8,7 +8,7 @@ deployment target is meant to look like, see
 |---|---|---|
 | v1 | Servers and containers | Available (v0.2.0) |
 | v2 | Adds edge isolates | Built: Cloudflare Workers, in the next release |
-| v3 | Adds serverless functions | Planned |
+| v3 | Adds serverless functions | Built: Vercel, Netlify and AWS Lambda, in the next release |
 
 ## v2: edge isolates
 
@@ -54,14 +54,41 @@ Still open for the edge:
 
 ## v3: serverless functions
 
-Vercel, AWS Lambda and Netlify (`--target vercel`, `--target lambda`,
-`--target netlify`). Builds on the v2 work:
+Vercel, Netlify and AWS Lambda (`unsworn build --target vercel`,
+`--target netlify`, `--target lambda`). See [`serverless.md`](serverless.md).
+The first plan was a function per handler, with declarative routes turned
+into each platform's routing config. That would have meant re-expressing
+matching, CORS and header rules per platform, and MCP tools need every
+handler in one place anyway, so each target is one function that runs the
+whole project, as a Worker does. Work needed:
 
-- Turn declarative routes into the platform's routing config, such as
-  Vercel's Build Output API.
-- Wrap each handler in a native function with a shim that runs the WASM
-  core for validation and auth before calling it.
-- Store backends reachable from functions, such as Redis over HTTP.
+- ~~**Build schemas on first use.**~~ Done: the wasm core compiles a
+  route's validation schemas when a request first needs them. Compiling
+  them all at load took 2 to 4 ms per route, on every cold start.
+- ~~**A Node host.**~~ Done: `@unswornjs/sdk/node` is the bridge for Node,
+  sharing handler calls, bodies and logging with the Cloudflare one.
+- ~~**A store functions can reach.**~~ Done: `[store]` takes the URL and
+  token of a Redis REST API (Upstash's protocol). Rate limits run the same
+  script on the same keys as the server's Redis store.
+- ~~**`unsworn build --target vercel`, `netlify` and `lambda`.**~~ Done:
+  each bundles the project and its handlers with esbuild into the
+  platform's own layout.
+- ~~**Fill in the target capability table.**~~ Done: `unsworn check
+  --target` reports a `rate_limit` or `cache` without a shared store, a
+  `redis://` URL, and handlers that aren't JS or TS.
+
+Still open for serverless:
+
+- **Running on the platforms themselves.** The tests run the built
+  functions in Node, called the way each platform calls them.
+- **More than one function per project,** for routes that need their own
+  memory, duration or permissions: named groups, each a function running
+  the same router with some of the handlers. Only if someone needs it.
+- **Other stores,** such as DynamoDB on Lambda, and Redis over TCP for
+  functions inside a VPC.
+- **Handlers in other languages.** The wasm core talks to a JavaScript
+  bridge, so a Python or Go function would need another interface to it.
+  Until then, those run on the server in a container.
 
 ## Not scheduled yet
 

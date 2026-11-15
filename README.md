@@ -202,8 +202,8 @@ All of this is configured in `unsworn.toml`, with no code:
   nested or flat routes directory (`routes/users.[id].get.ts`), an OpenAPI
   spec, or a catch-all to an existing app.
 - **Handlers are plain functions.** Language SDKs give each one a typed
-  request and hide everything else. The same handler code is meant to run on
-  a server, at the edge and in serverless functions.
+  request and hide everything else. The same handler code runs on a server,
+  at the edge and in serverless functions.
 - **Any language can join.** The universal protocol is JSON lines over
   stdin/stdout, so a language with no SDK, even one that doesn't exist yet,
   works on day one. Official SDKs use a faster framed protocol over a Unix
@@ -250,7 +250,7 @@ unsworn dev         # serves it, reloads on changes, verifies handler names
 | `unsworn check` | Validate config, routes and handler files; `--deep` asks workers whether every handler exists; `--target <t>` checks a deployment target |
 | `unsworn routes` | Print the route table and each route's source, including MCP tools; `--policies` shows merged policies and each tool's arguments |
 | `unsworn openapi` | Print the OpenAPI document for what Unsworn serves |
-| `unsworn build` | Bundle the project for a deployment target: `--target cloudflare` makes a Cloudflare Worker |
+| `unsworn build` | Bundle the project for a deployment target: `--target cloudflare` makes a Cloudflare Worker, and `vercel`, `netlify` and `lambda` make a function for each |
 | `unsworn conformance` | Test a runtime's workers against the protocol |
 | `unsworn schema` | Print the config's JSON Schema (also at [`schema/unsworn.schema.json`](schema/unsworn.schema.json)) |
 
@@ -290,7 +290,7 @@ different way. See [`docs/architecture.md`](docs/architecture.md).
 |---|---|---|---|
 | **Servers and containers** | Any VPS or bare metal, Docker, Kubernetes, Fly.io, Railway, Render, Google Cloud Run, AWS ECS/Fargate, Cloudflare Containers | The `unsworn` binary plus worker processes, from an official base image | v1 (available) |
 | **Edge isolates** | Cloudflare Workers | `unsworn build --target cloudflare`: the core runs as WebAssembly in the Worker, and JS/TS handlers are bundled in and called directly ([guide](docs/cloudflare.md)) | v2 (built, next release) |
-| **Serverless functions** | Vercel Functions, AWS Lambda, Netlify Functions | `unsworn build --target <platform>` turns declarative routes into the platform's own routing config and each handler into a native function with a thin shim | v3 (planned) |
+| **Serverless functions** | Vercel Functions, AWS Lambda, Netlify Functions | `unsworn build --target vercel`, `netlify` or `lambda`: one function runs the whole project, with the core as WebAssembly and JS/TS handlers bundled in and called directly ([guide](docs/serverless.md)) | v3 (built, next release) |
 
 Some features need shared state on stateless platforms, such as rate limits
 and caches. `unsworn check --target <platform>` reports what a config needs on
@@ -302,11 +302,11 @@ that target before you deploy.
 |---|---|---|
 | v1 | Servers and containers | Available |
 | v2 | Adds edge isolates (Cloudflare Workers) | Built, next release |
-| v3 | Adds serverless functions | Planned |
+| v3 | Adds serverless functions (Vercel, Netlify, AWS Lambda) | Built, next release |
 
 MCP support was first planned across these versions too. All of it is now
-built for servers, containers and Cloudflare Workers. The MCP endpoint needs
-no shared state, so it will come to serverless functions along with them.
+built for every target: the MCP endpoint needs no shared state, so it runs
+in a Worker or a function as it does on a server.
 
 What's left to build for each version, and what isn't scheduled yet, is in
 [`docs/roadmap.md`](docs/roadmap.md).

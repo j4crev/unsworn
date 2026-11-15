@@ -1,7 +1,8 @@
 # Unsworn architecture
 
-> Describes the server (v1) and Cloudflare Workers (v2) hosts as built.
-> Serverless hosts (v3) are planned; see the [roadmap](roadmap.md).
+> Describes the server (v1), Cloudflare Workers (v2) and serverless
+> function (v3) hosts as built. See the [roadmap](roadmap.md) for what's
+> still open.
 
 ## Goals
 
@@ -98,7 +99,7 @@ A host combines an ingress, a dispatcher and a store around the core.
 |---|---|---|---|
 | `unsworn` binary (servers, containers) | hyper on tokio, HTTP/1.1 and HTTP/2, TLS | worker process pools over Tier 1 or Tier 2 | in memory, optionally external |
 | Cloudflare Worker (v2) | the Worker's `fetch` event | direct calls to bundled JS/TS handlers in the isolate | a Durable Object per rate-limit bucket, the Cache API |
-| Serverless (v3) | the platform's function event, via a generated shim | the handler runs in the same function | external store |
+| Serverless function (v3) | the platform's request or event, in one Node function | direct calls to bundled JS/TS handlers in the process | Redis through a REST API |
 
 ## Request lifecycle (binary host)
 
@@ -226,14 +227,16 @@ limit buckets, validation, `before` handlers and `unsworn routes --policies`.
   JavaScript *bridge* for its I/O, the way the binary implements `Host`; the
   Cloudflare bridge is `@unswornjs/sdk/cloudflare`. Languages that can't run
   there need a container target instead. See [`cloudflare.md`](cloudflare.md).
-- **v3: serverless functions** (`--target vercel`, `--target lambda`).
-  Declarative routes become the platform's routing config (for example
-  Vercel's Build Output API). Each handler becomes a native function wrapped
-  by a shim that runs the WASM core for validation and auth before calling it.
+- **v3: serverless functions** (`--target vercel`, `--target netlify`,
+  `--target lambda`). One Node function runs the whole project: the same
+  wasm core, with the Node bridge in `@unswornjs/sdk/node` and a thin entry
+  per platform. The platform's routing only sends every path to that
+  function, so a route behaves the same on every target. See
+  [`serverless.md`](serverless.md).
 
 Features that need shared state (rate limits, caches) need a store on
-stateless targets: Cloudflare brings its own, and serverless targets will need
-a configured one. `unsworn check --target <name>` reports what a config needs
+stateless targets: Cloudflare brings its own, and serverless functions use
+Redis through a REST API, from `[store]`. `unsworn check --target <name>` reports what a config needs
 from a per-target capability table (`unsworn-core/src/targets.rs`).
 
 ## Crates
@@ -260,7 +263,7 @@ from a per-target capability table (`unsworn-core/src/targets.rs`).
 | `unsworn openapi` | Emit the OpenAPI document. |
 | `unsworn gen <lang>` | Planned: generate typed request and response models for handlers. |
 | `unsworn conformance --runtime <r>` | Run the protocol conformance suite against a runtime. |
-| `unsworn build --target cloudflare` | Bundle the project into a Cloudflare Worker. Serverless targets are planned (v3). |
+| `unsworn build --target <t>` | Bundle the project into a Cloudflare Worker (`cloudflare`) or a serverless function (`vercel`, `netlify`, `lambda`). |
 | `unsworn schema` | Print the config's JSON Schema. |
 | `unsworn init` | Write a starter config. |
 

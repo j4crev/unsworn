@@ -42,13 +42,7 @@ pub fn build(p: Prepared) -> Result<(), String> {
     let publish = p.root.join(PUBLISH);
     std::fs::create_dir_all(&publish).map_err(|e| format!("{}: {e}", publish.display()))?;
 
-    p.report(
-        built.assets,
-        &[
-            ("try it:", "npx netlify dev"),
-            ("deploy:", "npx netlify deploy --prod"),
-        ],
-    );
+    p.report(built.assets, &[("deploy:", "npx netlify deploy --prod")]);
     if !p.root.join("netlify.toml").exists() {
         println!(
             "  netlify.toml needs:  [build] command = \"unsworn build --target netlify\", publish = \"{PUBLISH}\""

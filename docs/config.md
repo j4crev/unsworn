@@ -1,7 +1,7 @@
 # Unsworn configuration
 
-> Describes what's built. Edge and serverless deployment targets are
-> planned; see the [roadmap](roadmap.md).
+> Describes what's built. For what's still open, see the
+> [roadmap](roadmap.md).
 
 An Unsworn project is a config file plus handlers. Routes can come from any
 mix of these [route sources](#route-sources):
@@ -275,9 +275,9 @@ own cache, so use `redis` (or anything that speaks its protocol, such as
 Valkey, Dragonfly or a managed Redis) to share them.
 
 - **`url` and `token`:** the server speaks the Redis protocol, so it takes a
-  `redis://` or `rediss://` URL. Serverless functions can't keep
-  connections open, so they reach Redis through a REST API instead: give
-  the API's `https://` URL and its `token`. Any service that speaks
+  `redis://` or `rediss://` URL. [Serverless functions](serverless.md#the-store)
+  can't keep connections open, so they reach Redis through a REST API
+  instead: give the API's `https://` URL and its `token`. Any service that speaks
   Upstash's REST protocol works. Rate limits use the same keys either way,
   so a server and a function on the same Redis share them; cached responses
   aren't shared between the two.
@@ -780,8 +780,8 @@ MCP support is described in [`mcp.md`](mcp.md). In config it adds:
 
 ```
 $ unsworn check --target vercel
-✗ unsworn.toml:20 [[route]].rate_limit: needs a shared store on this target
-  → set [store] backend to a shared store, or remove rate_limit
+✗ unsworn.toml:20 [[route]].rate_limit: needs a shared store on this target: each instance of the function would count on its own
+  → set [store] backend = "redis" with a REST API's `url` and `token`, or remove it
 ✓ 12 routes OK
 ```
 
@@ -789,7 +789,9 @@ The capability table for each target is part of Unsworn's source, so a config
 that passes `check` for a target is expected to work there.
 
 `unsworn build --target cloudflare` bundles a project into a Cloudflare
-Worker; see [`cloudflare.md`](cloudflare.md).
+Worker; see [`cloudflare.md`](cloudflare.md). `--target vercel`,
+`--target netlify` and `--target lambda` bundle it into a serverless
+function; see [`serverless.md`](serverless.md).
 
 ## Open questions
 
