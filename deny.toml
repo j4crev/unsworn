@@ -1,0 +1,14 @@
+# What `cargo deny check advisories sources` enforces, in CI (see
+# .github/workflows/audit.yml) and locally.
+
+[advisories]
+# Fail on a dependency with a known vulnerability, and on one that's been
+# yanked. An unmaintained crate is only worth failing on when it's one this
+# workspace depends on directly.
+yanked = "deny"
+unmaintained = "workspace"
+
+[sources]
+# Every crate comes from crates.io: no git dependencies, no other registry.
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,0 +1,23 @@
+name: Audit
+
+# Known vulnerabilities in the Rust dependencies, and crates from anywhere
+# but crates.io (see deny.toml). The weekly run catches advisories
+# published after a change was merged.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          command: check advisories sources
