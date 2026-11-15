@@ -1,7 +1,42 @@
 // What the serverless tests share: a local upstream for proxy routes, and a
 // stand-in for a Redis REST API.
 
+import { spawnSync } from "node:child_process";
+import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
+import { join } from "node:path";
+
+const here = new URL(".", import.meta.url).pathname;
+const repo = join(here, "../..");
+
+/**
+ * Builds `dir` with `unsworn build --target <target>`, linking the SDK from
+ * this repository as the project's @unswornjs/sdk. esbuild comes from this
+ * directory's node_modules. Set UNSWORN_BIN to use a built binary instead
+ * of `cargo run`.
+ */
+export function build(dir, target, env = {}) {
+  const modules = join(dir, "node_modules/@unswornjs");
+  mkdirSync(modules, { recursive: true });
+  rmSync(join(modules, "sdk"), { recursive: true, force: true });
+  symlinkSync(join(repo, "sdk/js"), join(modules, "sdk"));
+  const bin = process.env.UNSWORN_BIN;
+  const [cmd, args] = bin ? [bin, []] : ["cargo", ["run", "-q", "-p", "unsworn", "--"]];
+  const result = spawnSync(cmd, [...args, "build", "--target", target, "-C", dir], {
+    cwd: repo,
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  });
+  const output = result.stdout + result.stderr;
+  if (result.status !== 0) throw new Error(`unsworn build failed:\n${output}`);
+  return { dir, output };
+}
+
+/** Serves a Node `(req, res)` listener on a local port. */
+export async function serve(listener) {
+  const server = createServer(listener);
+  return { base: await listen(server), close: () => server.close() };
+}
 
 async function listen(server) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

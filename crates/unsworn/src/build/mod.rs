@@ -8,6 +8,8 @@
 //! platform's own config.
 
 mod cloudflare;
+mod functions;
+mod vercel;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -106,7 +108,10 @@ impl Host for Recorder {
 /// A project compiled and checked for a target, with its output
 /// directory emptied and ready.
 struct Prepared {
+    target: &'static str,
     root: PathBuf,
+    /// The installed `@unswornjs/sdk`.
+    sdk: PathBuf,
     /// The config file's path, as the bundle names it.
     config: String,
     /// The output directory, absolute.
@@ -123,21 +128,49 @@ struct Prepared {
     missing_env: BTreeSet<String>,
 }
 
+/// A target `unsworn build` can write.
+struct Target {
+    name: &'static str,
+    /// Where the output goes without `--out`, relative to the project.
+    out: &'static str,
+    /// How to set a variable on the platform, with `{name}` for it.
+    env_hint: &'static str,
+    build: fn(Prepared) -> Result<(), String>,
+}
+
+const TARGETS: &[Target] = &[
+    Target {
+        name: "cloudflare",
+        out: "dist/cloudflare",
+        env_hint: "set it with `wrangler secret put {name}` or as a var",
+        build: cloudflare::build,
+    },
+    Target {
+        name: "vercel",
+        // Where `vercel deploy --prebuilt` looks.
+        out: ".vercel/output",
+        env_hint: "set it with `vercel env add {name}`",
+        build: vercel::build,
+    },
+];
+
 pub fn build(opts: BuildOptions) -> Result<(), String> {
-    match opts.target.as_str() {
-        "cloudflare" => cloudflare::build(prepare(&opts, cloudflare::ENV_HINT)?),
-        other => Err(format!(
-            "unsworn build doesn't build for \"{other}\"; the only target so far is cloudflare (run the server with unsworn serve)"
-        )),
-    }
+    let Some(target) = TARGETS.iter().find(|t| t.name == opts.target) else {
+        let names: Vec<&str> = TARGETS.iter().map(|t| t.name).collect();
+        return Err(format!(
+            "unsworn build doesn't build for \"{}\"; its targets are {} (run the server with unsworn serve)",
+            opts.target,
+            names.join(", ")
+        ));
+    };
+    (target.build)(prepare(&opts, target)?)
 }
 
 /// Compiles the project, checks it for the target and empties the output
-/// directory. `env_hint` says how to set a variable on the platform, with
-/// `{name}` for the variable.
-fn prepare(opts: &BuildOptions, env_hint: &str) -> Result<Prepared, String> {
+/// directory.
+fn prepare(opts: &BuildOptions, target: &Target) -> Result<Prepared, String> {
     let root = &opts.root;
-    let target = opts.target.as_str();
+    let env_hint = target.env_hint;
     let recorder = Recorder {
         fs: FsHost { root: root.clone() },
         files: RefCell::default(),
@@ -155,16 +188,13 @@ fn prepare(opts: &BuildOptions, env_hint: &str) -> Result<Prepared, String> {
     let Some(project) = compiled.project else {
         return Err(format!("{errors} error(s)"));
     };
-    errors += load::print_diagnostics(&targets::check(&project, target));
+    errors += load::print_diagnostics(&targets::check(&project, target.name));
     if errors > 0 {
         return Err(format!("{errors} error(s)"));
     }
-    check_sdk(root)?;
+    let sdk = check_sdk(root)?;
 
-    let out = opts
-        .out
-        .clone()
-        .unwrap_or_else(|| root.join("dist").join(target));
+    let out = opts.out.clone().unwrap_or_else(|| root.join(target.out));
     let out = if out.is_absolute() {
         out
     } else {
@@ -175,6 +205,8 @@ fn prepare(opts: &BuildOptions, env_hint: &str) -> Result<Prepared, String> {
     write(&out.join(MARKER), "")?;
 
     Ok(Prepared {
+        target: target.name,
+        sdk,
         root: root.clone(),
         config: normalize(&opts.config),
         modules: handler_modules(&project),
@@ -274,8 +306,8 @@ fn prepare_out(out: &Path) -> Result<(), String> {
 }
 
 /// The entry imports the core from `@unswornjs/sdk`, whose wasm must load
-/// the same config this binary checked.
-fn check_sdk(root: &Path) -> Result<(), String> {
+/// the same config this binary checked. Returns the SDK's directory.
+fn check_sdk(root: &Path) -> Result<PathBuf, String> {
     let install = format!("npm install @unswornjs/sdk@{}", unsworn_core::VERSION);
     let found = root
         .ancestors()
@@ -297,7 +329,7 @@ fn check_sdk(root: &Path) -> Result<(), String> {
             unsworn_core::VERSION
         ));
     }
-    Ok(())
+    Ok(path.parent().unwrap_or(root).to_path_buf())
 }
 
 /// Every module a handler reference names, sorted.

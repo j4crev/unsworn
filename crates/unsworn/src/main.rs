@@ -65,14 +65,15 @@ enum Command {
         #[arg(long)]
         target: Option<String>,
     },
-    /// Bundle the project for a deployment target. For now:
-    /// `--target cloudflare`, a Cloudflare Worker.
+    /// Bundle the project for a deployment target: `cloudflare` (a Worker)
+    /// or `vercel` (a Vercel Function).
     Build {
         /// The deployment target.
         #[arg(long)]
         target: String,
-        /// Output directory, relative to the project directory.
-        /// Default: `dist/<target>`.
+        /// Output directory, relative to the project directory. Default:
+        /// where the platform's tools look, such as `dist/cloudflare` or
+        /// `.vercel/output`.
         #[arg(long, short)]
         out: Option<PathBuf>,
     },
