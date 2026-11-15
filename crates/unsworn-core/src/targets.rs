@@ -24,7 +24,7 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
     match target {
         "server" => Vec::new(),
         "cloudflare" => cloudflare(project),
-        "vercel" => functions(project, target),
+        "vercel" | "netlify" => functions(project, target),
         _ => planned(project, target, version),
     }
 }

@@ -14,7 +14,8 @@
     "./worker": "./src/worker.ts",
     "./cloudflare": "./src/cloudflare.ts",
     "./node": "./src/node.ts",
-    "./vercel": "./src/vercel.ts"
+    "./vercel": "./src/vercel.ts",
+    "./netlify": "./src/netlify.ts"
   },
   "files": [
     "src",

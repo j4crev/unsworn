@@ -47,18 +47,36 @@ export default {create}({bundle}, {{
     ))
 }
 
-/// Writes `entry` to `<out>/entry.mjs` and builds the function in `dir`:
-/// the bundle as `index.mjs` with its source map, `unsworn_bg.wasm`, and
-/// `assets/` when the project has `static` routes.
+/// Builds the function in `dir` from `entry`'s source: the bundle as
+/// `index.mjs` with its source map, `unsworn_bg.wasm`, and `assets/` when
+/// the project has `static` routes. The entry is written to
+/// `<out>/entry.mjs` (the directory [`entry`] was given) for esbuild, and
+/// removed again: platforms may read every file in their output directory.
 pub fn build(p: &Prepared, dir: &Path, entry: &str) -> Result<Function, String> {
     let source = p.out.join("entry.mjs");
     write(&source, entry)?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let bundled = bundle(p, &source, dir);
+    let _ = std::fs::remove_file(&source);
+    bundled?;
 
+    let wasm = p.sdk.join("wasm/unsworn_bg.wasm");
+    std::fs::copy(&wasm, dir.join("unsworn_bg.wasm")).map_err(|e| {
+        format!(
+            "{}: {e} (is @unswornjs/sdk installed from npm, or its wasm built?)",
+            wasm.display()
+        )
+    })?;
+    let assets = p.copy_statics(&dir.join("assets"))?;
+    Ok(Function { assets })
+}
+
+/// Bundles `source` and everything it imports into `dir/index.mjs`.
+fn bundle(p: &Prepared, source: &Path, dir: &Path) -> Result<(), String> {
     let esbuild = find_esbuild(&p.root)?;
     let status = Command::new(&esbuild)
         .current_dir(&p.root)
-        .arg(&source)
+        .arg(source)
         .arg("--bundle")
         .arg("--platform=node")
         .arg("--format=esm")
@@ -74,16 +92,7 @@ pub fn build(p: &Prepared, dir: &Path, entry: &str) -> Result<Function, String> 
     if !status.success() {
         return Err("esbuild couldn't bundle the handlers (see above)".into());
     }
-
-    let wasm = p.sdk.join("wasm/unsworn_bg.wasm");
-    std::fs::copy(&wasm, dir.join("unsworn_bg.wasm")).map_err(|e| {
-        format!(
-            "{}: {e} (is @unswornjs/sdk installed from npm, or its wasm built?)",
-            wasm.display()
-        )
-    })?;
-    let assets = p.copy_statics(&dir.join("assets"))?;
-    Ok(Function { assets })
+    Ok(())
 }
 
 /// esbuild, from the project's dependencies.
