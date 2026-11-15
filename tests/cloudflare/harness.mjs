@@ -2,6 +2,7 @@
 // the tests, with a local upstream for proxy routes.
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -29,13 +30,17 @@ export function build(dir) {
   return { dir, output: result.stdout + result.stderr };
 }
 
-/** A local upstream that echoes what it received. */
+/**
+ * A local upstream that echoes what it received. WebSocket upgrades get the
+ * request as their first message, then an echo of each message.
+ */
 export async function upstream() {
   const server = createServer((req, res) => {
     res.setHeader("content-type", "application/json");
     res.setHeader("connection", "close");
     res.end(JSON.stringify({ url: req.url, headers: req.headers }));
   });
+  server.on("upgrade", echoWebSocket);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return { url: `http://127.0.0.1:${server.address().port}`, close: () => server.close() };
 }
@@ -83,4 +88,71 @@ export async function start(dir, vars = {}) {
       rmSync(persist, { recursive: true, force: true });
     },
   };
+}
+
+// A WebSocket server just big enough for the tests: unfragmented frames,
+// no extensions.
+function echoWebSocket(req, socket) {
+  const accept = createHash("sha1")
+    .update(req.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+    .digest("base64");
+  const protocol = req.headers["sec-websocket-protocol"]?.split(",")[0].trim();
+  const head = ["HTTP/1.1 101 Switching Protocols", "Upgrade: websocket", "Connection: Upgrade"];
+  head.push(`Sec-WebSocket-Accept: ${accept}`);
+  if (protocol) head.push(`Sec-WebSocket-Protocol: ${protocol}`);
+  socket.write(head.join("\r\n") + "\r\n\r\n");
+
+  const send = (opcode, payload) => {
+    const len = payload.length;
+    const header =
+      len < 126
+        ? Buffer.from([0x80 | opcode, len])
+        : len < 65536
+          ? Buffer.from([0x80 | opcode, 126, len >> 8, len & 0xff])
+          : Buffer.concat([Buffer.from([0x80 | opcode, 127]), bigEndian64(len)]);
+    socket.write(Buffer.concat([header, payload]));
+  };
+  send(1, Buffer.from(JSON.stringify({ url: req.url, headers: req.headers })));
+
+  let buf = Buffer.alloc(0);
+  socket.on("error", () => {});
+  socket.on("data", (data) => {
+    buf = Buffer.concat([buf, data]);
+    for (;;) {
+      if (buf.length < 2) return;
+      const opcode = buf[0] & 0x0f;
+      let len = buf[1] & 0x7f;
+      let at = 2;
+      if (len === 126) {
+        if (buf.length < 4) return;
+        len = buf.readUInt16BE(2);
+        at = 4;
+      } else if (len === 127) {
+        if (buf.length < 10) return;
+        len = Number(buf.readBigUInt64BE(2));
+        at = 10;
+      }
+      const masked = buf[1] & 0x80;
+      const mask = masked ? buf.subarray(at, at + 4) : null;
+      if (masked) at += 4;
+      if (buf.length < at + len) return;
+      const payload = Buffer.from(buf.subarray(at, at + len));
+      if (mask) for (let i = 0; i < len; i++) payload[i] ^= mask[i % 4];
+      buf = buf.subarray(at + len);
+      if (opcode === 1) send(1, Buffer.concat([Buffer.from("echo:"), payload]));
+      else if (opcode === 2) send(2, payload);
+      else if (opcode === 9) send(10, payload);
+      else if (opcode === 8) {
+        send(8, payload);
+        socket.end();
+        return;
+      }
+    }
+  });
+}
+
+function bigEndian64(n) {
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64BE(BigInt(n));
+  return b;
 }

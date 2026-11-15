@@ -121,8 +121,11 @@ within a second, `"open"` lets the request through and `"closed"` answers
 - **Static files** are served from Workers Static Assets. Every request
   reaches the Worker first, so a `static` route's auth, CORS and rate limits
   apply to its files.
-- **Proxy routes** forward with `fetch()`. WebSocket upgrades through a
-  proxy route aren't supported in a Worker yet.
+- **Proxy routes** forward with `fetch()`, WebSocket upgrades included. Auth
+  and rate limits run before the upgrade. After it, Cloudflare passes
+  messages straight through without running the Worker's code, and the
+  connection counts as one request. Cloudflare's runtime updates and your
+  deploys close open WebSockets, so clients should reconnect.
 - **Timeouts:** `timeout` works as on the server, but Cloudflare's own
   CPU-time and duration limits apply too.
 

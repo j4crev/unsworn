@@ -493,7 +493,8 @@ Caching the wrong response can serve one user's data to another, so `cache`
 follows these rules wherever it is set, including in `[defaults]`:
 
 - **Only `GET` and `HEAD` responses are cached,** and only with status
-  `200`, `203`, `204`, `301`, `404` or `410`.
+  `200`, `203`, `204`, `301`, `404` or `410`. WebSocket upgrades are never
+  answered from the cache.
 - **Responses to authenticated requests aren't cached** unless `vary`
   includes `Authorization` or the header an API-key scheme reads, or the
   `key` setting puts the user in the cache key (`key = "auth.sub"`). `unsworn check` warns about routes where `cache`

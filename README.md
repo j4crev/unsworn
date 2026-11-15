@@ -189,7 +189,7 @@ All of this is configured in `unsworn.toml`, with no code:
 |---|---|
 | AI agents (MCP) | OAuth protected-resource metadata, origin checks and streaming pass-through for existing MCP servers, with per-tool policies; MCP tools as handlers, with tool lists filtered by scope; routes and OpenAPI operations as tools |
 | Responses | static JSON or text, redirects, static files with SPA fallback, health checks |
-| Forwarding | reverse proxy, load balancing, catch-all to an existing app |
+| Forwarding | reverse proxy with WebSocket pass-through, load balancing, catch-all to an existing app |
 | Security | JWT/JWKS, API keys, CORS, IP allow and deny lists, body size limits |
 | Traffic | rate limits, timeouts, response caching |
 | Contracts | params, query, header and body validation (JSON Schema), OpenAPI input and output |
