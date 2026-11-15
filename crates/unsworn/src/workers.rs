@@ -4,7 +4,7 @@
 //! least busy worker that has capacity. Workers speak the protocol in
 //! `unsworn-proto`, over stdin/stdout (Tier 1) or a Unix socket (Tier 2).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -73,16 +73,56 @@ enum Pending {
 struct CallInfo {
     request_id: String,
     route: String,
-    /// When the request finished. Kept a little longer, since stderr is
-    /// read separately and can lag behind the response.
-    done: Option<Instant>,
 }
 
+/// How long a finished request stays in its worker's `CallLog`, since
+/// stderr is read separately and can lag behind the response.
 const LOG_GRACE: Duration = Duration::from_secs(5);
+/// The most finished requests a `CallLog` keeps, so a busy worker's
+/// late log lines can lose their request id but memory stays bounded.
+const LOG_GRACE_MAX: usize = 10_000;
 
-/// Requests in flight on one worker, by protocol id. Shared with the
-/// worker's output readers, so log lines can be tied to their request.
-type Calls = Arc<Mutex<HashMap<String, CallInfo>>>;
+/// Requests on one worker by protocol id: those in flight, and those that
+/// finished within `LOG_GRACE`. Shared with the worker's output readers,
+/// so log lines can be tied to their request.
+#[derive(Default)]
+struct CallLog {
+    calls: HashMap<String, CallInfo>,
+    /// Finished requests, oldest first, so expiring them never scans
+    /// `calls`: that scan ran on every request and capped throughput.
+    finished: VecDeque<(Instant, String)>,
+}
+
+impl CallLog {
+    fn get(&self, id: &str) -> Option<&CallInfo> {
+        self.calls.get(id)
+    }
+
+    fn start(&mut self, id: String, call: CallInfo) {
+        self.expire();
+        self.calls.insert(id, call);
+    }
+
+    fn finish(&mut self, id: &str) {
+        if self.calls.contains_key(id) {
+            self.finished.push_back((Instant::now(), id.to_owned()));
+        }
+        self.expire();
+    }
+
+    fn expire(&mut self) {
+        while let Some((done, _)) = self.finished.front() {
+            if done.elapsed() < LOG_GRACE && self.finished.len() <= LOG_GRACE_MAX {
+                break;
+            }
+            if let Some((_, id)) = self.finished.pop_front() {
+                self.calls.remove(&id);
+            }
+        }
+    }
+}
+
+type Calls = Arc<Mutex<CallLog>>;
 
 struct Worker {
     id: String,
@@ -851,9 +891,7 @@ impl Pool {
     }
 
     fn release(&self, w: &Worker, id: &str) {
-        if let Some(call) = w.calls.lock().unwrap().get_mut(id) {
-            call.done = Some(Instant::now());
-        }
+        w.calls.lock().unwrap().finish(id);
         if let Some(credit) = w.credits.lock().unwrap().remove(id) {
             credit.close();
         }
@@ -971,18 +1009,13 @@ impl Pool {
                 .as_millis() as u64,
         );
         let (tx, rx) = oneshot::channel();
-        {
-            let mut calls = worker.calls.lock().unwrap();
-            calls.retain(|_, c| c.done.is_none_or(|t| t.elapsed() < LOG_GRACE));
-            calls.insert(
-                id.clone(),
-                CallInfo {
-                    request_id,
-                    route: request.route.clone(),
-                    done: None,
-                },
-            );
-        }
+        worker.calls.lock().unwrap().start(
+            id.clone(),
+            CallInfo {
+                request_id,
+                route: request.route.clone(),
+            },
+        );
         worker
             .pending
             .lock()
@@ -1422,8 +1455,44 @@ impl SocketDir {
 
 #[cfg(test)]
 mod tests {
-    use super::SocketDir;
+    use super::{CallInfo, CallLog, LOG_GRACE_MAX, SocketDir};
     use std::os::unix::fs::PermissionsExt;
+
+    fn info(n: usize) -> CallInfo {
+        CallInfo {
+            request_id: format!("req-{n}"),
+            route: "/r".into(),
+        }
+    }
+
+    #[test]
+    fn finished_calls_stay_for_late_logs_but_are_bounded() {
+        let mut log = CallLog::default();
+        log.start("r-0".into(), info(0));
+        log.finish("r-0");
+        assert!(
+            log.get("r-0").is_some(),
+            "kept for log lines that arrive late"
+        );
+
+        log.start("live".into(), info(1));
+        for n in 1..=LOG_GRACE_MAX + 10 {
+            let id = format!("r-{n}");
+            log.start(id.clone(), info(n));
+            log.finish(&id);
+        }
+        assert!(
+            log.get("r-0").is_none(),
+            "the oldest finished calls make way"
+        );
+        assert!(log.get(&format!("r-{}", LOG_GRACE_MAX + 10)).is_some());
+        assert!(
+            log.get("live").is_some(),
+            "calls in flight are never dropped"
+        );
+        assert_eq!(log.finished.len(), LOG_GRACE_MAX);
+        assert_eq!(log.calls.len(), LOG_GRACE_MAX + 1);
+    }
 
     #[test]
     fn the_socket_directory_is_private_and_removed() {
