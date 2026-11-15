@@ -1,0 +1,17 @@
+#:schema ../../schema/unsworn.schema.json
+# The rate limit from policies.toml, counted in Redis instead of memory.
+
+[server]
+listen = "127.0.0.1:8080"
+
+[store]
+backend = "redis"
+url     = "redis://127.0.0.1:6390"
+
+[defaults]
+headers = { set = { "x-bench" = "1" } }
+
+[[route]]
+path       = "/p/rate-limit"
+rate_limit = { requests = 1000000000, per = "1s", key = "ip" }
+respond    = { status = 200, json = { ok = true } }

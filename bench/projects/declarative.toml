@@ -1,0 +1,46 @@
+#:schema ../../schema/unsworn.schema.json
+# Requests Unsworn answers without a handler, next to a handler call for
+# comparison. run.py serves this with the repository root as the project.
+
+[server]
+listen = "127.0.0.1:8080"
+
+[auth.jwt]
+type   = "jwt"
+secret = "bench-secret-0123456789abcdef-0123456789"
+
+[runtimes.ts]
+extensions = [".ts"]
+command    = "bun run sdk/js/src/worker.ts"
+protocol   = "framed"
+workers    = 4
+eager      = true
+
+[[route]]
+path    = "/respond"
+respond = { status = 200, json = { ok = true } }
+
+[[route]]
+path     = "/redirect"
+redirect = { to = "/respond", status = 308 }
+
+[[route]]
+path    = "/private"
+auth    = "jwt"
+respond = { status = 200, json = { ok = true } }
+
+[[route]]
+path       = "/limited"
+rate_limit = { requests = 1, per = "1h", key = "ip" }
+respond    = { status = 200, json = { ok = true } }
+
+[[route]]
+path    = "/handler"
+method  = "GET"
+handler = "sdk/js/conformance/handlers.ts#echo"
+
+[[route]]
+path    = "/cached"
+method  = "GET"
+cache   = { ttl = "1h" }
+handler = "sdk/js/conformance/handlers.ts#echo"
