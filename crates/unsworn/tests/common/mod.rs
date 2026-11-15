@@ -2,11 +2,12 @@
 
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub fn repo_root() -> PathBuf {
@@ -25,12 +26,26 @@ pub fn has(cmd: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// A port nothing is listening on, for tests that need an address to point
+/// at (a dead upstream, or a server the test starts itself). The port is
+/// released before it's returned, so the OS could hand it out again; this
+/// at least never returns the same port twice to tests in this process.
+/// Unsworn servers don't use it: they bind port 0 (see
+/// [`Project::start_with`]).
 pub fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    static GIVEN: Mutex<Option<HashSet<u16>>> = Mutex::new(None);
+    let mut given = GIVEN.lock().unwrap();
+    let given = given.get_or_insert_with(HashSet::new);
+    loop {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        if given.insert(port) {
+            return port;
+        }
+    }
 }
 
 pub struct Project {
@@ -75,33 +90,54 @@ impl Project {
         self.start_with(&[mode])
     }
 
-    /// Starts `unsworn <args...> --listen <addr>`.
+    /// Starts `unsworn <args...> --listen 127.0.0.1:0` and waits until it's
+    /// listening. The OS picks the port and the server reports it in its
+    /// log, so tests running in parallel can't end up on the same port.
     pub fn start_with(&self, args: &[&str]) -> Server {
-        let port = free_port();
-        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
         let log = self.path().join("unsworn.log");
         let child = Command::new(env!("CARGO_BIN_EXE_unsworn"))
             .arg("-C")
             .arg(self.path())
             .args(args)
             .arg("--listen")
-            .arg(addr.to_string())
+            .arg("127.0.0.1:0")
             .env("PYTHONPATH", repo_root().join("sdk/python"))
             .env("UNSWORN_LOG", "info")
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(&log).unwrap())
             .spawn()
             .unwrap();
-        let server = Server { child, addr, log };
+        let mut server = Server {
+            child,
+            addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            log,
+        };
         let deadline = Instant::now() + Duration::from_secs(20);
-        while TcpStream::connect(addr).is_err() {
+        loop {
+            if let Some(addr) = listening_addr(&server.logs()) {
+                server.addr = addr;
+                return server;
+            }
+            if let Ok(Some(status)) = server.child.try_wait() {
+                panic!("server exited ({status}):\n{}", server.logs());
+            }
             if Instant::now() > deadline {
                 panic!("server didn't start:\n{}", server.logs());
             }
             std::thread::sleep(Duration::from_millis(30));
         }
-        server
     }
+}
+
+/// Finds the address in the server's "listening on <scheme>://<addr>" log
+/// line, in plain or JSON log output.
+fn listening_addr(logs: &str) -> Option<SocketAddr> {
+    let rest = &logs[logs.find("listening on ")?..];
+    let rest = &rest[rest.find("://")? + 3..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '[' | ']')))
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
 }
 
 pub struct Server {

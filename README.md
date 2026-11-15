@@ -216,8 +216,8 @@ All of this is configured in `unsworn.toml`, with no code:
   for editor autocomplete.
 
 Details: [architecture](docs/architecture.md), [config](docs/config.md),
-[protocol](docs/protocol.md), [conformance](docs/conformance.md) and
-[MCP](docs/mcp.md).
+[protocol](docs/protocol.md), [conformance](docs/conformance.md),
+[MCP](docs/mcp.md) and [roadmap](docs/roadmap.md).
 
 ## Getting started
 
@@ -268,27 +268,6 @@ Handler SDKs:
 front of an existing app, and [`examples/raw-python`](examples/raw-python)
 is a worker written without an SDK.
 
-## Status
-
-v1 (servers and containers) is available. What's in it, and what comes
-later:
-
-| Area | Status |
-|---|---|
-| Route sources: config, nested and flat route files, OpenAPI, catch-all | Done |
-| Policies: defaults, named sets, folder `_policies.toml`, prefix and exact entries | Done |
-| Auth (JWT/JWKS, API keys, scopes, OAuth protected-resource metadata), CORS, origin and IP rules | Done |
-| Rate limits and response caching, in memory or shared through Redis | Done |
-| Validation of params, query, headers, bodies and responses | Done |
-| Respond, redirect, static files, reverse proxy (WebSockets, SSE, sticky upstreams), handlers | Done |
-| Worker pools: Tier 1 and Tier 2, build steps, verify, cancel, restarts | Done |
-| HTTP/1.1 and HTTP/2, TLS, compression, graceful shutdown, reloads | Done |
-| JS/TS, Python, Go and Rust SDKs, conformance suite | Done |
-| MCP: in front of existing servers, tools as handlers, routes and OpenAPI operations as tools | Done |
-| Install script, Docker image, release workflow | Done (first release: v0.1.0) |
-| Automatic TLS certificates, HTTP/3, OpenTelemetry | Later |
-| Typed request models for handlers (`unsworn gen`) | Later |
-
 ## Where Unsworn sits
 
 | Tool | What it is | Where custom logic lives |
@@ -330,6 +309,9 @@ MCP support was first planned across these versions too. All of it is now
 built for servers and containers. The MCP endpoint needs no shared state,
 so it's designed to come to edge isolates and serverless functions along
 with them.
+
+What's left to build for each version, and what isn't scheduled yet, is in
+[`docs/roadmap.md`](docs/roadmap.md).
 
 ## License
 

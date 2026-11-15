@@ -1,6 +1,6 @@
 # Unsworn handler protocol
 
-> Protocol version **1**, implemented in `crates/unsworn-proto` and both SDKs.
+> Protocol version **1**, implemented in `crates/unsworn-proto` and the SDKs.
 
 Unsworn talks to handler workers over one **message model** with two
 **encodings**:
@@ -226,8 +226,8 @@ Error bodies sent to clients never include worker messages unless
 
 ## MCP tool calls
 
-Used by [MCP tools as handlers](mcp.md#level-2-mcp-tools-as-handlers) (v2)
-and [routes as tools](mcp.md#level-3-routes-as-tools) (v3). No new message
+Used by [MCP tools as handlers](mcp.md#level-2-mcp-tools-as-handlers)
+and [routes as tools](mcp.md#level-3-routes-as-tools). No new message
 types are needed: a tool call is a normal `request`.
 
 - For a `[[mcp.tool]]`: `route` is `mcp:<tool name>`, `method` is `POST`,

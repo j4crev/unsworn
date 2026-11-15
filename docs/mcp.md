@@ -60,7 +60,7 @@ Unsworn is never the OAuth *authorization server*. Tokens come from an
 identity provider such as Auth0, Clerk, WorkOS, Keycloak or your own.
 Unsworn verifies them.
 
-## Shared building blocks (v1)
+## Shared building blocks
 
 These are general Unsworn features that MCP relies on. They work for any
 route, at every level.

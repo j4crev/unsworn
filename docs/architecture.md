@@ -1,6 +1,7 @@
 # Unsworn architecture
 
-> Describes v1 as built. The edge and serverless hosts (v2, v3) are planned.
+> Describes v1 as built. The edge and serverless hosts (v2, v3) are planned;
+> see the [roadmap](roadmap.md).
 
 ## Goals
 

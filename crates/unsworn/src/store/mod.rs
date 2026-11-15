@@ -93,6 +93,12 @@ impl Store {
         }
     }
 
+    /// Whether the store lives in this process, so its writes finish
+    /// without waiting on the network.
+    pub fn is_local(&self) -> bool {
+        matches!(self.backend, Backend::Memory(_))
+    }
+
     /// Whether the last store operation succeeded.
     pub fn is_up(&self) -> bool {
         self.up.load(Ordering::Relaxed)
