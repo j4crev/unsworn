@@ -9,6 +9,7 @@
 
 mod cloudflare;
 mod functions;
+mod lambda;
 mod netlify;
 mod vercel;
 
@@ -145,6 +146,12 @@ const TARGETS: &[Target] = &[
         out: "dist/cloudflare",
         env_hint: "set it with `wrangler secret put {name}` or as a var",
         build: cloudflare::build,
+    },
+    Target {
+        name: "lambda",
+        out: "dist/lambda",
+        env_hint: "set it in the function's environment variables",
+        build: lambda::build,
     },
     Target {
         name: "netlify",

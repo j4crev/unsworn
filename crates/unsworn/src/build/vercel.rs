@@ -30,7 +30,7 @@ pub fn build(p: Prepared) -> Result<(), String> {
         &p,
         &p.out,
         "import { createVercelFunction } from \"@unswornjs/sdk/vercel\";",
-        "createVercelFunction",
+        "export default createVercelFunction",
     )?;
     let built = functions::build(&p, &dir, &entry)?;
 

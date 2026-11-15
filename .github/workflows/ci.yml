@@ -123,4 +123,5 @@ jobs:
           UNSWORN_BIN: ${{ github.workspace }}/target/debug/unsworn
         run: |
           npm ci --no-audit --no-fund
-          node --test *.test.mjs
+          npm run typecheck
+          npm test

@@ -66,14 +66,14 @@ enum Command {
         target: Option<String>,
     },
     /// Bundle the project for a deployment target: `cloudflare` (a
-    /// Worker), `vercel` or `netlify` (a function on either).
+    /// Worker), or `vercel`, `netlify` or `lambda` (a function on each).
     Build {
         /// The deployment target.
         #[arg(long)]
         target: String,
         /// Output directory, relative to the project directory. Default:
-        /// where the platform's tools look, such as `dist/cloudflare` or
-        /// `.vercel/output`.
+        /// where the platform's tools look (`.vercel/output`,
+        /// `.netlify/v1`), else `dist/<target>`.
         #[arg(long, short)]
         out: Option<PathBuf>,
     },

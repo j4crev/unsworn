@@ -14,18 +14,17 @@ pub const TARGETS: &[(&str, &str)] = &[
 
 /// Checks a project against a target's capabilities.
 pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
-    let Some((_, version)) = TARGETS.iter().find(|(t, _)| *t == target) else {
+    if !TARGETS.iter().any(|(t, _)| *t == target) {
         let known: Vec<&str> = TARGETS.iter().map(|(t, _)| *t).collect();
         return vec![
             Diagnostic::error("--target", format!("unknown target \"{target}\""))
                 .hint(format!("known targets: {}", known.join(", "))),
         ];
-    };
+    }
     match target {
         "server" => Vec::new(),
         "cloudflare" => cloudflare(project),
-        "vercel" | "netlify" => functions(project, target),
-        _ => planned(project, target, version),
+        _ => functions(project, target),
     }
 }
 
@@ -163,16 +162,6 @@ fn js_handlers_only(project: &Project, target: &str, place: &str, out: &mut Vec<
     }
 }
 
-/// Targets that aren't built yet: what's known not to work there.
-fn planned(project: &Project, target: &str, version: &str) -> Vec<Diagnostic> {
-    let mut out = vec![Diagnostic::warning(
-        "--target",
-        format!("the {target} target is planned for {version}; this only checks capabilities"),
-    )];
-    out.extend(functions(project, target));
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,10 +251,8 @@ rate_limit = { requests = 1, per = "1s" }
             .collect();
         assert_eq!(errors, ["[store].url"]);
 
-        // Targets that aren't built yet check the same things, and say so.
-        let planned = check(&rest, "lambda");
-        assert_eq!(planned.len(), 1);
-        assert!(!planned[0].is_error());
+        assert_eq!(check(&rest, "lambda"), vec![]);
+        assert_eq!(check(&rest, "netlify"), vec![]);
 
         let python = project("[[route]]\npath = \"/b\"\nhandler = \"src/b.py\"\n");
         assert!(check(&python, "vercel").iter().any(|d| d.is_error()));
