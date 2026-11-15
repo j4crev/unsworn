@@ -231,10 +231,8 @@ For containers, extend the `ghcr.io/j4crev/unsworn` base image with the
 runtimes your handlers need. With Rust 1.88 or newer, `cargo install unsworn`
 works too.
 
-The latest release is [v0.1.0](https://github.com/j4crev/unsworn/releases/tag/v0.1.0).
-Newer features described here are on `main` until the next release,
-including MCP tools as handlers, routes as tools, the Redis store and
-streamed request bodies. To use them now, build from `main`:
+The latest release is [v0.2.0](https://github.com/j4crev/unsworn/releases/tag/v0.2.0).
+To try unreleased changes, build from `main`:
 
 ```sh
 cargo install --git https://github.com/j4crev/unsworn unsworn

@@ -1,6 +1,6 @@
 {
   "name": "@unswornjs/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Write Unsworn handlers in JavaScript or TypeScript (Bun, Node, Deno).",
   "license": "MIT",
   "type": "module",

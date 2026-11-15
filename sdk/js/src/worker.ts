@@ -382,7 +382,7 @@ function ready() {
     max_in_flight: maxInFlight,
     verify: true,
     stream_body: true,
-    sdk: "unsworn-js/0.1.0",
+    sdk: "unsworn-js/0.2.0",
   });
 }
 

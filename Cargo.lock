@@ -2662,7 +2662,7 @@ checksum = "b39abd59bf32521c7f2301b52d05a6a2c975b6003521cbd0c6dc1582f0a22104"
 
 [[package]]
 name = "unsworn"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "async-compression",
@@ -2701,7 +2701,7 @@ dependencies = [
 
 [[package]]
 name = "unsworn-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jsonschema",
  "jsonwebtoken",
@@ -2716,7 +2716,7 @@ dependencies = [
 
 [[package]]
 name = "unsworn-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "serde",
@@ -2726,7 +2726,7 @@ dependencies = [
 
 [[package]]
 name = "unsworn-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures-util",
