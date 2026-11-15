@@ -13,8 +13,11 @@
 # The project stays owned by root, so handlers can read it but not change
 # it: a flaw in one can't rewrite `unsworn.toml`, or another handler, for
 # the next start. That means runtimes' `build` steps can't write there at
-# startup either. Build compiled workers in the image (a `RUN` before
-# `USER unsworn`, or an earlier stage) and run `serve --no-build`.
+# startup either, so the image skips them (UNSWORN_NO_BUILD=1). Build
+# compiled workers in the image instead, a `RUN` before `USER unsworn` or
+# an earlier stage, e.g. `RUN go build -o .unsworn/go-worker ./routes`.
+# `ENV UNSWORN_NO_BUILD=0` brings startup builds back, for a `build` that
+# writes somewhere `unsworn` can.
 #
 # The base images are pinned by digest, which Dependabot keeps current.
 FROM rust:1-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS build
@@ -32,6 +35,7 @@ COPY --from=build /src/target/dist/unsworn /usr/local/bin/unsworn
 WORKDIR /app
 USER unsworn
 ENV UNSWORN_LOG=info
+ENV UNSWORN_NO_BUILD=1
 EXPOSE 8080
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["unsworn"]

@@ -140,7 +140,10 @@ the runtime's first workers start, and again on each reload.
 
 For production, build compiled workers ahead of time (in CI or a Docker build
 stage) and run `unsworn serve --no-build` (or set `UNSWORN_NO_BUILD=1`), so
-the server needs no compiler or source code. Mark those runtimes
+the server needs no compiler or source code. The official image sets
+`UNSWORN_NO_BUILD=1`, since its project directory belongs to root and a
+build at startup couldn't write there; a worker that won't start says when
+its runtime's `build` was skipped. Mark those runtimes
 `eager = true`, so a missing worker or handler stops startup instead of
 failing the first request.
 

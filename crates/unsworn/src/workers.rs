@@ -442,7 +442,7 @@ impl Pool {
                     for w in &started {
                         w.alive.store(false, Ordering::Relaxed);
                     }
-                    return Err(e);
+                    return Err(self.unbuilt_hint(e));
                 }
             }
         }
@@ -452,6 +452,19 @@ impl Pool {
             "runtime started"
         );
         Ok(())
+    }
+
+    /// A worker that won't start, for a runtime whose `build` was skipped,
+    /// is most likely missing what that build makes: say so. The official
+    /// image skips builds, since handlers can't write to the project there.
+    fn unbuilt_hint(&self, error: String) -> String {
+        match &self.runtime.build {
+            Some(build) if !self.opts.build => format!(
+                "{error}\n  [runtimes.{}].build (`{build}`) didn't run, since building is off (`--no-build` or UNSWORN_NO_BUILD=1, which the official image sets). Run it when building the image, or set UNSWORN_NO_BUILD=0 to build at startup",
+                self.runtime.name
+            ),
+            _ => error,
+        }
     }
 
     /// The credentials' environment variables this runtime doesn't ask for

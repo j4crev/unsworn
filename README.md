@@ -263,7 +263,9 @@ the release was built by this repository's release workflow. Set
 For containers, extend the `ghcr.io/j4crev/unsworn` base image with the
 runtimes your handlers need. It runs as the unprivileged user `unsworn`,
 and the project in `/app` should stay owned by root, so handler code can't
-change the rules it runs under (see the [`Dockerfile`](Dockerfile)). With
+change the rules it runs under. For the same reason it skips runtimes'
+`build` steps at startup: build compiled workers into your image (see the
+[`Dockerfile`](Dockerfile)). With
 Rust 1.88 or newer, `cargo install unsworn` works too.
 
 To try unreleased changes, build from `main`:

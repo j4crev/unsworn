@@ -223,6 +223,12 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
     );
     if opts.dev {
         eprintln!("unsworn dev server on {scheme}://{local}");
+        if opts.listen.is_none() && !server.listen_set {
+            eprintln!(
+                "  only this machine can reach it; use --listen 0.0.0.0:{} to reach it from other machines or from outside a container",
+                listener.local_addr().map(|a| a.port()).unwrap_or(8080)
+            );
+        }
     }
 
     if opts.dev {
