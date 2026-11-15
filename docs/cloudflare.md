@@ -109,6 +109,8 @@ within a second, `"open"` lets the request through and `"closed"` answers
   is ignored.
 - **The client IP** comes from `CF-Connecting-IP`; `trusted_proxies` is
   ignored.
+  If the platform doesn't give one, a route with an `ip` policy answers
+  `403`: an unknown client can't be shown to be allowed.
 - **Request ids** come from an incoming `X-Request-Id`, else the `CF-Ray`
   header.
 - **There's no `/_unsworn/health`, metrics endpoint or admin listener.** Use

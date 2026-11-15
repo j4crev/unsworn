@@ -50,6 +50,11 @@ static = { dir = "public", spa_fallback = "index.html", cache_control = "max-age
 "#,
         ),
         ("public/index.html", "<h1>app</h1>"),
+        ("public/.env", "SECRET=1"),
+        (
+            "public/.well-known/security.txt",
+            "Contact: mailto:security@example.com",
+        ),
         ("public/app.css", "body{}"),
         ("public/big.txt", &"unsworn ".repeat(400)),
     ]);
@@ -125,8 +130,14 @@ static = { dir = "public", spa_fallback = "index.html", cache_control = "max-age
         );
     }
 
+    // Dotfiles in a served directory stay private; `.well-known` doesn't.
+    assert_eq!(s.get("/assets/.env").status, 404);
+    assert_eq!(s.get("/assets/.well-known/security.txt").status, 200);
+
+    // The public health check says whether the instance is healthy, and
+    // nothing about what it's made of.
     let r = s.get("/_unsworn/health");
-    assert_eq!(r.json()["status"], "ok");
+    assert_eq!(r.json(), serde_json::json!({ "status": "ok" }));
 }
 
 #[test]
@@ -1217,9 +1228,17 @@ fn upload(s: &common::Server, path: &str, body: &[u8], chunked: bool) -> common:
 
 #[test]
 fn redis_store_is_shared_and_fails_open() {
-    let rate_limited = |store: &str| {
+    // Health details, such as the store's state, are on the admin listener.
+    let admin = common::free_port();
+    let details = || {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], admin));
+        common::http(addr, "GET", "/_unsworn/health", &[], b"")
+    };
+    let config = |store: &str, server: &str| {
         format!(
             r#"
+{server}
+
 {store}
 
 [[route]]
@@ -1229,6 +1248,8 @@ rate_limit = {{ requests = 2, per = "1m", key = "ip" }}
 "#
         )
     };
+    let with_admin = format!("[server]\nadmin_listen = \"127.0.0.1:{admin}\"");
+    let rate_limited = |store: &str| config(store, &with_admin);
 
     // Unreachable: rate limits let requests through (on_error = "open" by
     // default), health stays ok but reports it, and metrics count errors.
@@ -1240,9 +1261,11 @@ url = "redis://127.0.0.1:1""#;
     for _ in 0..3 {
         assert_eq!(s.get("/limited").status, 200);
     }
-    let health = s.get("/_unsworn/health");
+    assert_eq!(s.get("/_unsworn/health").status, 200);
+    let health = details();
     assert_eq!(health.status, 200, "{}", health.text());
     assert_eq!(health.json()["store"]["reachable"], false);
+    assert!(health.json()["version"].is_string());
     assert!(
         s.logs().contains("letting requests through uncounted"),
         "{}",
@@ -1268,12 +1291,14 @@ url = "redis://127.0.0.1:1""#;
     );
     let p = Project::new(&[("unsworn.toml", &rate_limited(&shared))]);
     let a = p.serve();
+    // The second instance leaves the admin port to the first.
+    let p = Project::new(&[("unsworn.toml", &config(&shared, ""))]);
     let b = p.serve();
     assert_eq!(a.get("/limited").status, 200);
     assert_eq!(b.get("/limited").status, 200);
     assert_eq!(a.get("/limited").status, 429, "the limit is shared");
     assert_eq!(b.get("/limited").status, 429);
-    assert_eq!(a.get("/_unsworn/health").json()["store"]["reachable"], true);
+    assert_eq!(details().json()["store"]["reachable"], true);
 }
 
 /// A stand-in API-key verifier: answers by key, and records each request's
