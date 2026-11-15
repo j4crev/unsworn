@@ -1,0 +1,21 @@
+#:schema ../../schema/unsworn.schema.json
+# Unsworn in front of an existing app (the Go server in bench/servers on
+# 127.0.0.1:9001): a plain catch-all, and a path with the "day one"
+# policies from the README.
+
+[server]
+listen   = "127.0.0.1:8080"
+max_body = "16MB"
+
+[auth.jwt]
+type   = "jwt"
+secret = "bench-secret-0123456789abcdef-0123456789"
+
+[[route]]
+path  = "/{*rest}"
+proxy = "http://127.0.0.1:9001"
+
+[[route]]
+path       = "/guarded/{*rest}"
+auth       = "jwt"
+rate_limit = { requests = 1000000000, per = "1s", key = "auth.sub" }

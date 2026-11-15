@@ -98,6 +98,20 @@ A handler call does cross a process boundary, so a trivial endpoint won't
 beat the same code running directly on Bun, for example. The gains come from the points
 above.
 
+Measured on two cores of a laptop CPU, over loopback
+([details and every scenario](docs/benchmarks.md)):
+
+| What Unsworn does | Requests/s | p50 latency at 1,000 req/s |
+|---|--:|--:|
+| Static `respond`, redirect, 404 or rejection | 144,000–183,000 | 0.16 ms, the same as Go's `net/http` |
+| `proxy` in front of an existing app | 61,000 | 0.33 ms (the app directly: 0.15 ms) |
+| Call a TypeScript handler on Bun | 61,000 | 0.25 ms (Bun on its own: 0.15 ms) |
+| Call a Rust handler | 46,000 | 0.19 ms |
+
+Most policies add 1.5 to 4 µs of CPU per request, JWT 17 µs. Matching is as
+fast with 10,000 routes as with 10, and the binary is ready to serve in
+3 ms.
+
 ## A quick look
 
 **Day one:** Unsworn in front of an existing app, with no code changes.
@@ -216,7 +230,8 @@ All of this is configured in `unsworn.toml`, with no code:
 
 Details: [architecture](docs/architecture.md), [config](docs/config.md),
 [protocol](docs/protocol.md), [conformance](docs/conformance.md),
-[MCP](docs/mcp.md) and [roadmap](docs/roadmap.md).
+[MCP](docs/mcp.md), [benchmarks](docs/benchmarks.md) and
+[roadmap](docs/roadmap.md).
 
 ## Where Unsworn sits
 
