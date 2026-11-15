@@ -55,7 +55,10 @@ test("the build writes a Build Output API deployment", () => {
   assert.equal(vc.handler, "index.mjs");
   assert.equal(vc.launcherType, "Nodejs");
   assert.equal(vc.supportsResponseStreaming, true);
-  assert.equal(vc.maxDuration, 30, "from vercel.function.json");
+  // From the project's vercel.json.
+  assert.equal(vc.maxDuration, 30);
+  assert.equal(vc.memory, 1024);
+  assert.deepEqual(vc.regions, ["fra1"]);
   for (const file of ["index.mjs", "index.mjs.map", "unsworn_bg.wasm", "assets/public/style.css"]) {
     assert.ok(existsSync(join(func, file)), file);
   }
