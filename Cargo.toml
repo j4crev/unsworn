@@ -21,3 +21,12 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# The WebAssembly core (`crates/unsworn-wasm`): small over fast, since edge
+# platforms cap script size and load it on every cold start.
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"

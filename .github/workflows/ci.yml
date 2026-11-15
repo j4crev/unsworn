@@ -57,5 +57,15 @@ jobs:
           targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -p unsworn-core -p unsworn-proto --target wasm32-unknown-unknown -- -D warnings
+      - uses: taiki-e/install-action@v2
+        with:
+          # Must match the `wasm-bindgen` crate in crates/unsworn-wasm.
+          tool: wasm-bindgen@0.2.130
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: cargo clippy -p unsworn-core -p unsworn-proto -p unsworn-wasm --target wasm32-unknown-unknown -- -D warnings
       - run: cargo build -p unsworn-core -p unsworn-proto --target wasm32-unknown-unknown --release
+      - name: Build the wasm core and check its size
+        run: crates/unsworn-wasm/build.sh --check-size
+      - run: node --test crates/unsworn-wasm/tests/

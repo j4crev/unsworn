@@ -2750,6 +2750,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "unsworn-wasm"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http",
+ "js-sys",
+ "percent-encoding",
+ "serde_json",
+ "tracing",
+ "unsworn-core",
+ "unsworn-proto",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2860,6 +2877,17 @@ dependencies = [
  "rustversion",
  "wasm-bindgen-macro",
  "wasm-bindgen-shared",
+]
+
+[[package]]
+name = "wasm-bindgen-futures"
+version = "0.4.80"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e14e0327cb5368ad60ccb22d04a9827a693c95a926d8d125e9fa39e0baec501"
+dependencies = [
+ "js-sys",
+ "tokio",
+ "wasm-bindgen",
 ]
 
 [[package]]
