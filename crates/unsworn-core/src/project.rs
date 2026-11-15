@@ -25,7 +25,7 @@ use crate::policy::{
 };
 use crate::routefiles::{self, METHODS};
 use crate::rules;
-use crate::validate::{BodyRule, LocationRules, ParamSpec, Validation, param_schema};
+use crate::validate::{BodyRule, Build, LocationRules, ParamSpec, Validation, param_schema};
 
 /// What the core needs from its host to load a project. All paths are
 /// relative to the project root and use `/`.
@@ -685,8 +685,15 @@ pub struct Compiled {
 
 /// Loads and compiles a project from its config file.
 pub fn compile(host: &dyn Host, config_file: &str) -> Compiled {
+    compile_with(host, config_file, Build::Now)
+}
+
+/// [`compile`], choosing when validation schemas are built. Pass
+/// [`Build::OnFirstUse`] only for a config that `compile` already accepted.
+pub fn compile_with(host: &dyn Host, config_file: &str, schemas: Build) -> Compiled {
     let mut c = Compiler {
         host,
+        schemas,
         config_file: config_file.to_string(),
         diags: Diagnostics::default(),
         runtimes: BTreeMap::new(),
@@ -710,6 +717,7 @@ pub fn compile(host: &dyn Host, config_file: &str) -> Compiled {
 
 struct Compiler<'h> {
     host: &'h dyn Host,
+    schemas: Build,
     config_file: String,
     diags: Diagnostics,
     runtimes: BTreeMap<String, Arc<Runtime>>,
@@ -2218,7 +2226,7 @@ impl<'h> Compiler<'h> {
             route: 0,
             own,
             input_rule: validate_input
-                .then(|| crate::validate::BodyRule::new(input_for_rule, true).ok())
+                .then(|| crate::validate::BodyRule::new(input_for_rule, true, self.schemas).ok())
                 .flatten(),
             binding: None,
         })
@@ -2383,13 +2391,14 @@ impl<'h> Compiler<'h> {
                 let Some((input, binding)) = self.route_tool_schema(route, &method, &at) else {
                     break 'tool;
                 };
-                let input_rule = match crate::validate::BodyRule::new(input.clone(), true) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        self.diags.error(&at, e);
-                        break 'tool;
-                    }
-                };
+                let input_rule =
+                    match crate::validate::BodyRule::new(input.clone(), true, self.schemas) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            self.diags.error(&at, e);
+                            break 'tool;
+                        }
+                    };
                 let param_headers = match mcp::param_headers(&input) {
                     Ok(h) => h,
                     Err(errors) => {
@@ -2966,13 +2975,13 @@ impl<'h> Compiler<'h> {
             validation.headers = self.location("headers", h.clone(), &loc);
         }
         if let Some((schema, required)) = &raw_validation.body {
-            match BodyRule::new(schema.clone(), *required) {
+            match BodyRule::new(schema.clone(), *required, self.schemas) {
                 Ok(r) => validation.body = Some(r),
                 Err(e) => self.diags.error(format!("{loc}.body"), e),
             }
         }
         if let Some(schema) = &raw_validation.response {
-            match BodyRule::new(schema.clone(), false) {
+            match BodyRule::new(schema.clone(), false, self.schemas) {
                 Ok(r) => validation.response = Some(r),
                 Err(e) => self.diags.error(format!("{loc}.response"), e),
             }
@@ -3007,7 +3016,7 @@ impl<'h> Compiler<'h> {
         specs: Vec<ParamSpec>,
         loc: &str,
     ) -> Option<LocationRules> {
-        match LocationRules::new(prefix, specs) {
+        match LocationRules::new(prefix, specs, self.schemas) {
             Ok(r) => Some(r),
             Err(e) => {
                 self.diags.error(format!("{loc}.{prefix}"), e);
