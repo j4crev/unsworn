@@ -230,8 +230,8 @@ pub fn rate_limit_bucket(
 }
 
 /// The cache key for a request, or `None` when it mustn't be cached: a
-/// method other than `GET` or `HEAD`, or an authenticated request whose key
-/// doesn't separate users.
+/// method other than `GET` or `HEAD`, a protocol upgrade such as a
+/// WebSocket, or an authenticated request whose key doesn't separate users.
 #[allow(clippy::too_many_arguments)]
 pub fn cache_key(
     rule: &CacheRule,
@@ -243,7 +243,7 @@ pub fn cache_key(
     claims: Option<&Map<String, Value>>,
     client_ip: IpAddr,
 ) -> Option<String> {
-    if !rules::cache_method(method) {
+    if !rules::cache_method(method) || super::proxy::is_upgrade(headers) {
         return None;
     }
     if claims.is_some() && !rules::cache_separates_users(rule, credential_headers) {
@@ -460,6 +460,14 @@ mod tests {
         // Authenticated, and the key doesn't separate users.
         assert_eq!(
             cache_key(&rule, &[], 1, "GET", &uri, &headers, Some(&claims), client),
+            None
+        );
+        // A WebSocket upgrade never gets a cached response.
+        let mut upgrade = headers.clone();
+        upgrade.insert("connection", "Upgrade".parse().unwrap());
+        upgrade.insert("upgrade", "websocket".parse().unwrap());
+        assert_eq!(
+            cache_key(&rule, &[], 1, "GET", &uri, &upgrade, None, client),
             None
         );
     }
