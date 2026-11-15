@@ -16,8 +16,7 @@ use serde_json::{Map, Value, json};
 use unsworn_proto::{Phase, Request as ProtoRequest};
 
 use super::{
-    Ctx, Prepared, Resp, empty_response, for_handler, json_response, problem, rate_limited,
-    run_befores,
+    Ctx, Prepared, Resp, empty_response, json_response, problem, rate_limited, run_befores,
 };
 use crate::config::{OrOff, ResponseValidation};
 use crate::mcp::rpc::{self, Headers, Message, RpcError};
@@ -358,8 +357,15 @@ impl ToolCall<'_> {
         let Some(handler) = route.handler() else {
             return self.error("The tool has no handler.");
         };
-        let request = for_handler(&checked.template, handler, Phase::Handle, &checked.context);
-        let deadline = ctx.deadline(checked.timeout);
+        let Checked {
+            timeout,
+            context,
+            template: mut request,
+        } = checked;
+        request.handler = handler.raw.clone();
+        request.phase = Phase::Handle;
+        request.context = context;
+        let deadline = ctx.deadline(timeout);
         let reply = ctx.host.call(handler, request, Body::Empty, deadline).await;
         let response = match reply {
             Ok(Reply::Response { response, .. }) => response,
@@ -367,7 +373,7 @@ impl ToolCall<'_> {
                 tracing::error!(handler = %handler.raw, "a tool handler sent `continue`, which only before handlers may send");
                 return self.error("The tool failed.");
             }
-            Err(CallError::Timeout) => return self.error(timed_out(checked.timeout)),
+            Err(CallError::Timeout) => return self.error(timed_out(timeout)),
             Err(e) => {
                 tracing::error!(handler = %handler.raw, tool = %self.tool.name, "{e}");
                 return self.error(if ctx.host.dev() {

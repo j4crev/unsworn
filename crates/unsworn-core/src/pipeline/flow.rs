@@ -504,6 +504,14 @@ async fn prepare<H: Host>(
     } else {
         body_bytes.clone().filter(|b| !b.is_empty())
     };
+    // Only a handler reads the copied headers: the route's own or a
+    // `before` handler. Static answers and proxied requests skip the copy,
+    // and so does MCP, which builds each tool's request itself.
+    let for_a_handler = match route.action {
+        Action::Handler(_) => true,
+        Action::Mcp => false,
+        _ => !eff.before.is_empty(),
+    };
     let template = ProtoRequest {
         route: route.path.clone(),
         method,
@@ -511,7 +519,11 @@ async fn prepare<H: Host>(
         params,
         query,
         raw_query: parts.uri.query().map(String::from),
-        headers: header_map(&parts.headers),
+        headers: if for_a_handler {
+            header_map(&parts.headers)
+        } else {
+            Default::default()
+        },
         json: json_body,
         ..Default::default()
     };
@@ -725,7 +737,12 @@ async fn run_action<H: Host>(
                 .await
         }
         Action::Handler(h) => {
-            let request = for_handler(&template, h, Phase::Handle, &context);
+            // The last use of the request, so it moves instead of copying
+            // its headers and JSON body again.
+            let mut request = template;
+            request.handler = h.raw.clone();
+            request.phase = Phase::Handle;
+            request.context = context;
             let body = match streaming_body {
                 Some(stream) if stream_body => Body::Host(stream),
                 _ => Body::bytes(raw_body),

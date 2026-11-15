@@ -586,6 +586,41 @@ origin = { allow = ["https://app.example"] }
     assert_eq!(t.get("/browser").status, StatusCode::OK, "no Origin header");
 }
 
+/// Only handlers read the request's copied headers, so routes without one
+/// skip the copy. A `before` handler on such a route still needs them.
+#[test]
+fn before_handlers_see_headers_on_routes_without_a_handler() {
+    let host = TestHost::new().handler("src/auth.ts#tenant", |req, _| {
+        match req.headers.get("x-tenant").map(String::as_str) {
+            Some("acme") => Ok(Reply::Continue(Map::new())),
+            _ => Ok(Reply::Response {
+                response: unsworn_proto::Response::new("", 403),
+                body: Body::Empty,
+            }),
+        }
+    });
+    let t = Test::new(
+        &format!(
+            r#"{TS}
+[[route]]
+path = "/gated"
+respond = {{ status = 200, json = {{ ok = true }} }}
+before = ["src/auth.ts#tenant"]
+
+[[route]]
+path = "/open"
+respond = {{ status = 200, json = {{ ok = true }} }}
+"#
+        ),
+        &["src/auth.ts"],
+        host,
+    );
+    let r = t.send("GET", "/gated", &[("x-tenant", "acme")], b"");
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(t.get("/gated").status, StatusCode::FORBIDDEN);
+    assert_eq!(t.get("/open").status, StatusCode::OK);
+}
+
 #[test]
 fn handlers_get_validated_requests() {
     let host = TestHost::new()
