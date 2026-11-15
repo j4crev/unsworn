@@ -26,13 +26,12 @@ use unsworn_proto::{
 };
 
 use crate::server::support::Body;
+pub use unsworn_core::pipeline::{BODY_IDLE, BodyError, CallError};
 
 /// Unacknowledged bytes of a streamed request body allowed per request.
 const STREAM_WINDOW: usize = 256 * 1024;
 /// Largest `chunk` sent for a streamed request body.
 const STREAM_CHUNK: usize = 64 * 1024;
-/// How long a streamed request body may go without new data.
-pub const BODY_IDLE: Duration = Duration::from_secs(30);
 
 /// What a handler call produced.
 pub enum Reply {
@@ -60,46 +59,6 @@ impl From<Option<Bytes>> for CallBody {
         match b {
             Some(b) if !b.is_empty() => CallBody::Bytes(b),
             _ => CallBody::Empty,
-        }
-    }
-}
-
-/// Why a streamed request body couldn't be delivered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BodyError {
-    TooLarge,
-    Idle,
-    Read,
-}
-
-#[derive(Debug, Clone)]
-pub enum CallError {
-    /// The runtime couldn't start or has no healthy workers.
-    Unavailable(String),
-    /// The worker reported that this handler doesn't exist.
-    MissingHandler(String),
-    Timeout,
-    /// The worker exited or broke the protocol mid-request.
-    WorkerFailed(String),
-    /// The handler sent an `error` message.
-    Handler(String),
-    /// A streamed request body failed: too large, stalled or unreadable.
-    Body(BodyError),
-}
-
-impl std::fmt::Display for CallError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CallError::Unavailable(m) => write!(f, "runtime unavailable: {m}"),
-            CallError::MissingHandler(m) => write!(f, "handler not found: {m}"),
-            CallError::Timeout => write!(f, "the handler timed out"),
-            CallError::WorkerFailed(m) => write!(f, "worker failed: {m}"),
-            CallError::Handler(m) => write!(f, "handler error: {m}"),
-            CallError::Body(BodyError::TooLarge) => write!(f, "the request body is too large"),
-            CallError::Body(BodyError::Idle) => {
-                write!(f, "the request body stalled for {}s", BODY_IDLE.as_secs())
-            }
-            CallError::Body(BodyError::Read) => write!(f, "couldn't read the request body"),
         }
     }
 }

@@ -66,6 +66,34 @@ pub trait ResponseCache: MaybeSend + MaybeSync {
     ) -> impl Future<Output = Result<(), StoreError>> + MaybeSend;
 }
 
+impl<T: RateLimiter + ?Sized> RateLimiter for std::sync::Arc<T> {
+    fn take(
+        &self,
+        key: &str,
+        requests: u32,
+        per: Duration,
+    ) -> impl Future<Output = Result<Option<Duration>, StoreError>> + MaybeSend {
+        (**self).take(key, requests, per)
+    }
+}
+
+impl<T: ResponseCache + ?Sized> ResponseCache for std::sync::Arc<T> {
+    fn get(
+        &self,
+        key: &str,
+    ) -> impl Future<Output = Result<Option<CachedResponse>, StoreError>> + MaybeSend {
+        (**self).get(key)
+    }
+
+    fn put(
+        &self,
+        key: &str,
+        value: CachedResponse,
+    ) -> impl Future<Output = Result<(), StoreError>> + MaybeSend {
+        (**self).put(key, value)
+    }
+}
+
 /// The outcome of a rate-limit check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RateLimit {

@@ -363,6 +363,18 @@ handler = "src/h.py#events"
 path = "/big"
 method = "GET"
 handler = "src/h.py#big"
+
+[[route]]
+path = "/huge"
+method = "GET"
+handler = "src/h.py#huge"
+cache = {{ ttl = "1m" }}
+
+[[route]]
+path = "/huge-stream"
+method = "GET"
+handler = "src/h.py#huge_stream"
+cache = {{ ttl = "1m" }}
 "#
     );
     let p = Project::new(&[
@@ -402,6 +414,16 @@ handler = "src/h.py#big"
     let r = s.get("/big");
     assert_eq!(r.header("content-encoding"), None);
     assert_eq!(r.json()["items"].as_array().unwrap().len(), 500);
+
+    // Too large to cache: passed through whole, and not cached.
+    for path in ["/huge", "/huge-stream"] {
+        for _ in 0..2 {
+            let r = s.get(path);
+            assert_eq!(r.status, 200, "{path}");
+            assert_eq!(r.body.len(), 1_500_000, "{path}");
+            assert!(r.header("age").is_none(), "{path} isn't cached");
+        }
+    }
 }
 
 #[test]
