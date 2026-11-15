@@ -364,9 +364,26 @@ impl PrefixEntry {
 pub struct StoreConfig {
     pub backend: config::StoreBackend,
     pub url: Option<String>,
+    /// The token for a Redis REST API, when `url` is one.
+    #[serde(skip)]
+    pub token: Option<String>,
     /// Prepended to every key. Empty by default.
     pub prefix: String,
     pub on_error: config::OnError,
+}
+
+impl StoreConfig {
+    /// Whether `url` is a Redis REST API (Upstash's protocol) instead of a
+    /// Redis server. Functions use one; the binary speaks Redis itself.
+    pub fn is_rest_url(url: &str) -> bool {
+        url.starts_with("https://") || url.starts_with("http://")
+    }
+
+    /// Whether the store is Redis behind a REST API.
+    pub fn is_rest(&self) -> bool {
+        self.backend == config::StoreBackend::Redis
+            && self.url.as_deref().is_some_and(Self::is_rest_url)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1429,13 +1446,16 @@ impl<'h> Compiler<'h> {
             }
             (config::StoreBackend::Redis, Some(u))
                 if !u.is_empty()
+                    && !StoreConfig::is_rest_url(u)
                     && !["redis://", "rediss://", "redis+unix://", "unix://"]
                         .iter()
                         .any(|s| u.starts_with(s)) =>
             {
-                self.diags.error(
-                    "[store].url",
-                    "must start with redis://, rediss:// (TLS) or redis+unix://",
+                self.diags.push(
+                    Diagnostic::error(
+                        "[store].url",
+                        "must start with redis://, rediss:// (TLS), redis+unix://, or https:// for a Redis REST API",
+                    ),
                 );
             }
             (config::StoreBackend::Memory, Some(_)) => {
@@ -1446,9 +1466,24 @@ impl<'h> Compiler<'h> {
             }
             _ => {}
         }
+        let token = store.token.as_ref().map(|t| self.subst(t, "[store].token"));
+        let rest = url.as_deref().is_some_and(StoreConfig::is_rest_url);
+        if store.backend == config::StoreBackend::Redis && rest && token.is_none() {
+            self.diags.push(
+                Diagnostic::error("[store].token", "a Redis REST API needs a `token`")
+                    .hint("token = \"{env.UPSTASH_REDIS_REST_TOKEN}\""),
+            );
+        }
+        if token.is_some() && !rest {
+            self.diags.push(Diagnostic::warning(
+                "[store].token",
+                "`token` is only used with an https:// `url` (a Redis REST API)",
+            ));
+        }
         StoreConfig {
             backend: store.backend,
             url,
+            token,
             prefix: store.prefix.unwrap_or_default(),
             on_error: store.on_error,
         }

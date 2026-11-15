@@ -20,6 +20,33 @@ use serde::{Deserialize, Serialize};
 use crate::config::OnError;
 use crate::{MaybeSend, MaybeSync};
 
+/// The token bucket ([`take_token`]) as a Redis script, run atomically on
+/// Redis's clock, so instances with skewed clocks still agree. `KEYS[1]` is
+/// the bucket; `ARGV` is the capacity and the refill period in
+/// milliseconds. Returns how many milliseconds to wait, or 0 when the
+/// request is allowed. Every host that keeps rate limits in Redis runs this
+/// script on `{prefix}rl:{key}`, so they can share buckets.
+pub const REDIS_RATE_LIMIT: &str = r#"
+local capacity = tonumber(ARGV[1])
+local per_ms = tonumber(ARGV[2])
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local state = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens = tonumber(state[1]) or capacity
+local ts = tonumber(state[2]) or now
+local rate = capacity / per_ms
+tokens = math.min(capacity, tokens + math.max(0, now - ts) * rate)
+local wait = 0
+if tokens >= 1 then
+  tokens = tokens - 1
+else
+  wait = math.max(1, math.ceil((1 - tokens) / rate))
+end
+redis.call('HSET', KEYS[1], 'tokens', tostring(tokens), 'ts', tostring(now))
+redis.call('PEXPIRE', KEYS[1], math.ceil(per_ms))
+return wait
+"#;
+
 /// Responses larger than this aren't cached.
 pub const MAX_CACHED_BODY: usize = 1024 * 1024;
 

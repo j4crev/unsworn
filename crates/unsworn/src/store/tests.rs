@@ -28,6 +28,7 @@ fn config(backend: StoreBackend, url: Option<String>, on_error: OnError) -> Stor
     StoreConfig {
         backend,
         url,
+        token: None,
         // A fresh namespace per run, so runs never see each other's keys.
         prefix: format!(
             "test-{}-{}:",

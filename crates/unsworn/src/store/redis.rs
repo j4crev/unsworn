@@ -6,34 +6,12 @@ use std::time::Duration;
 use redis::AsyncCommands;
 use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 
+use unsworn_core::store::REDIS_RATE_LIMIT;
+
 use super::CachedResponse;
 
 /// How long one store operation may take before it counts as failed.
 pub const TIMEOUT: Duration = Duration::from_secs(1);
-
-/// The core's token bucket (`unsworn_core::store::take_token`), run
-/// atomically in Redis on Redis's clock, so instances with skewed clocks still agree. Returns
-/// how many milliseconds to wait, or 0 when the request is allowed.
-const RATE_LIMIT: &str = r#"
-local capacity = tonumber(ARGV[1])
-local per_ms = tonumber(ARGV[2])
-local t = redis.call('TIME')
-local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
-local state = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
-local tokens = tonumber(state[1]) or capacity
-local ts = tonumber(state[2]) or now
-local rate = capacity / per_ms
-tokens = math.min(capacity, tokens + math.max(0, now - ts) * rate)
-local wait = 0
-if tokens >= 1 then
-  tokens = tokens - 1
-else
-  wait = math.max(1, math.ceil((1 - tokens) / rate))
-end
-redis.call('HSET', KEYS[1], 'tokens', tostring(tokens), 'ts', tostring(now))
-redis.call('PEXPIRE', KEYS[1], math.ceil(per_ms))
-return wait
-"#;
 
 pub struct RedisStore {
     conn: ConnectionManager,
@@ -45,6 +23,11 @@ impl RedisStore {
     /// Connects lazily: Unsworn starts even when Redis is down, and the
     /// connection is retried as requests need it.
     pub fn new(url: &str, prefix: &str) -> Result<RedisStore, String> {
+        if unsworn_core::project::StoreConfig::is_rest_url(url) {
+            return Err(
+                "[store].url: the server speaks the Redis protocol, so give it a redis:// or rediss:// URL; https:// (a REST API) is for serverless targets".into(),
+            );
+        }
         let client = redis::Client::open(url).map_err(|e| format!("[store].url: {e}"))?;
         let config = ConnectionManagerConfig::new()
             .set_connection_timeout(Some(TIMEOUT))
@@ -55,7 +38,7 @@ impl RedisStore {
         Ok(RedisStore {
             conn,
             prefix: prefix.to_string(),
-            script: redis::Script::new(RATE_LIMIT),
+            script: redis::Script::new(REDIS_RATE_LIMIT),
         })
     }
 

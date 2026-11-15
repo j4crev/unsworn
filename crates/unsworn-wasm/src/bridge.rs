@@ -56,6 +56,13 @@ export type CallResult =
   | { type: "timeout" }
   | { type: "body"; error: "too_large" | "idle" | "read" };
 
+/** `[store]` as configured. `token` goes with a Redis REST API `url`. */
+export interface StoreSettings {
+  backend: "memory" | "redis";
+  url: string | null;
+  token: string | null;
+  prefix: string;
+}
 /** The I/O a JavaScript host does for the core. */
 export interface Bridge {
   /** Calls a handler. `request` is a protocol `request` message as JSON. Must settle within `timeoutMs`, resolving `{ type: "timeout" }` if the handler doesn't. */

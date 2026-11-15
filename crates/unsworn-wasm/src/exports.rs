@@ -112,6 +112,25 @@ impl Unsworn {
         out
     }
 
+    /// Where `[store]` says rate limits and cached responses live, for
+    /// hosts that follow it: `{ backend, url, token, prefix }`. A host with
+    /// a store of its own, such as Cloudflare, ignores it.
+    #[wasm_bindgen(getter, unchecked_return_type = "StoreSettings")]
+    pub fn store(&self) -> Object {
+        let config = &self.router.project().store;
+        let out = Object::new();
+        let backend = match config.backend {
+            unsworn_core::config::StoreBackend::Memory => "memory",
+            unsworn_core::config::StoreBackend::Redis => "redis",
+        };
+        let text = |v: &Option<String>| v.as_deref().map_or(JsValue::NULL, JsValue::from_str);
+        set(&out, "backend", &JsValue::from_str(backend));
+        set(&out, "url", &text(&config.url));
+        set(&out, "token", &text(&config.token));
+        set(&out, "prefix", &JsValue::from_str(&config.prefix));
+        out
+    }
+
     /// Handles a request (`IncomingRequest`), resolving a
     /// `HandledResponse`.
     pub fn handle(&self, request: JsValue, bridge: Bridge) -> Promise {
@@ -206,6 +225,14 @@ pub fn take_token(
         b.last.as_secs_f64() * 1000.0,
         wait.map_or(-1.0, |w| w.as_secs_f64() * 1000.0),
     ]
+}
+
+/// The token bucket as a Redis script, the one every Unsworn host runs
+/// (see `unsworn_core::store::REDIS_RATE_LIMIT`): `EVAL script 1
+/// {prefix}rl:{key} requests perMs` returns the milliseconds to wait, or 0.
+#[wasm_bindgen(js_name = redisRateLimitScript)]
+pub fn redis_rate_limit_script() -> String {
+    unsworn_core::store::REDIS_RATE_LIMIT.to_string()
 }
 
 /// The Unsworn version this module was built from.

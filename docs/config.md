@@ -264,6 +264,7 @@ Where `rate_limit` and `cache` keep their state.
 [store]
 backend  = "redis"              # "memory" (the default) | "redis"
 url      = "{env.REDIS_URL}"    # redis://, rediss:// (TLS) or redis+unix://
+token    = "{env.REDIS_TOKEN}"  # only with an https:// url (see below)
 prefix   = "billing:"           # optional, prepended to every key
 on_error = "open"               # "open" (the default) | "closed"
 ```
@@ -273,6 +274,13 @@ With several instances, each would count its own rate limits and fill its
 own cache, so use `redis` (or anything that speaks its protocol, such as
 Valkey, Dragonfly or a managed Redis) to share them.
 
+- **`url` and `token`:** the server speaks the Redis protocol, so it takes a
+  `redis://` or `rediss://` URL. Serverless functions can't keep
+  connections open, so they reach Redis through a REST API instead: give
+  the API's `https://` URL and its `token`. Any service that speaks
+  Upstash's REST protocol works. Rate limits use the same keys either way,
+  so a server and a function on the same Redis share them; cached responses
+  aren't shared between the two.
 - **`prefix`:** set it when separate projects or environments share one
   Redis. Without it, two projects with the same routes share rate limits and
   can serve each other's cached responses.
@@ -286,7 +294,7 @@ Valkey, Dragonfly or a managed Redis) to share them.
 
 Values in these places can include `{env.NAME}`, replaced with the
 environment variable `NAME` when the config loads: auth scheme secrets, JWKS
-and verifier URLs, verifier `headers`, issuers, audiences and API keys, proxy upstreams, `[store].url`, and
+and verifier URLs, verifier `headers`, issuers, audiences and API keys, proxy upstreams, `[store].url` and `token`, and
 runtime `env` values. A missing variable is an error.
 
 ## Routes

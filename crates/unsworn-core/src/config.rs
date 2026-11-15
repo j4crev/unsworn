@@ -228,8 +228,12 @@ pub struct RawApiKey {
 pub struct RawStore {
     #[serde(default)]
     pub backend: StoreBackend,
-    /// `redis://` or `rediss://` (TLS), for the `redis` backend.
+    /// For the `redis` backend: `redis://` or `rediss://` (TLS), or the
+    /// `https://` URL of a Redis REST API (Upstash's protocol), which is
+    /// how serverless functions reach Redis.
     pub url: Option<String>,
+    /// The REST API's token, with an `https://` `url`.
+    pub token: Option<String>,
     /// Prepended to every key, so separate projects can share one Redis.
     pub prefix: Option<String>,
     /// What rate limits do when the store can't be reached.

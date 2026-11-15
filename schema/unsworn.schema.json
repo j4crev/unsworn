@@ -1656,8 +1656,15 @@
             "null"
           ]
         },
+        "token": {
+          "description": "The REST API's token, with an `https://` `url`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "url": {
-          "description": "`redis://` or `rediss://` (TLS), for the `redis` backend.",
+          "description": "For the `redis` backend: `redis://` or `rediss://` (TLS), or the\n`https://` URL of a Redis REST API (Upstash's protocol), which is\nhow serverless functions reach Redis.",
           "type": [
             "string",
             "null"
