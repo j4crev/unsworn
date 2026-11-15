@@ -8,6 +8,7 @@ license.workspace = true
 readme = "../../README.md"
 
 [dependencies]
+bytes = "1.12.1"
 form_urlencoded = "1.2.2"
 http = "1.5.0"
 ipnet = "2.12.2"

@@ -1,5 +1,10 @@
-//! Shared state for rate limits and response caching, behind one interface
-//! with a backend per `[store].backend`.
+//! Shared state for rate limits and response caching: the binary's store
+//! backends (`[store].backend`), behind the core's store traits.
+//!
+//! [`Store`] wraps a backend with what a long-running server needs on top:
+//! a timeout on remote operations, failure counts for `/_unsworn/health` and
+//! metrics, and rate-limited error logs. What a failure means for a request
+//! is the core's call (see `unsworn_core::store`).
 
 mod memory;
 mod redis;
@@ -7,51 +12,25 @@ mod redis;
 use std::fmt::Display;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bytes::Bytes;
-use http::HeaderValue;
 use unsworn_core::config::{OnError, StoreBackend};
 use unsworn_core::project::StoreConfig;
+use unsworn_core::store::{self as core_store, RateLimiter, ResponseCache, StoreError};
+pub use unsworn_core::store::{CachedResponse, MAX_CACHED_BODY, RateLimit};
 
 use memory::MemoryStore;
 use redis::RedisStore;
 
-pub const MAX_CACHE_ENTRIES: usize = 10_000;
-/// Responses larger than this aren't cached.
-pub const MAX_CACHED_BODY: usize = 1024 * 1024;
 /// Store errors are logged at most this often; the rest are counted.
 const ERROR_LOG_INTERVAL: Duration = Duration::from_secs(10);
 
-/// A cached response.
-#[derive(Debug, Clone)]
-pub struct CachedResponse {
-    pub status: u16,
-    pub headers: Vec<(String, HeaderValue)>,
-    pub body: Bytes,
-    pub stored: SystemTime,
-    pub ttl: Duration,
-}
-
-impl CachedResponse {
-    pub fn age(&self) -> Duration {
-        self.stored.elapsed().unwrap_or_default()
-    }
-
-    fn fresh(&self) -> bool {
-        self.age() < self.ttl
-    }
-}
-
-/// The outcome of a rate-limit check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RateLimit {
-    Allowed,
-    Limited {
-        retry_after: Duration,
-    },
-    /// The store failed and `on_error = "closed"`.
-    Unavailable,
+/// The wall clock in milliseconds since the Unix epoch, for cache entries.
+pub fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 enum Backend {
@@ -109,69 +88,52 @@ impl Store {
         self.errors.load(Ordering::Relaxed)
     }
 
-    /// Token bucket: `requests` per `per`, per key.
+    /// Counts a request against the bucket `key`, applying `on_error`.
     pub async fn rate_limit(&self, key: &str, requests: u32, per: Duration) -> RateLimit {
-        let result = match &self.backend {
-            Backend::Memory(m) => Ok(m.rate_limit(key, requests, per)),
-            Backend::Redis(r) => self.timed(r.rate_limit(key, requests, per)).await,
-        };
-        match result {
-            Ok(None) => RateLimit::Allowed,
-            Ok(Some(retry_after)) => RateLimit::Limited { retry_after },
-            Err(e) => {
-                self.failed("rate limit", e);
-                match self.config.on_error {
-                    OnError::Open => RateLimit::Allowed,
-                    OnError::Closed => RateLimit::Unavailable,
-                }
-            }
-        }
+        core_store::rate_limit(self, key, requests, per, self.config.on_error).await
     }
 
     /// A fresh cached response. Store errors count as a miss.
     pub async fn cache_get(&self, key: &str) -> Option<CachedResponse> {
-        let result = match &self.backend {
-            Backend::Memory(m) => return m.cache_get(key),
-            Backend::Redis(r) => self.timed(r.cache_get(key)).await,
-        };
-        result.unwrap_or_else(|e| {
-            self.failed("cache read", e);
-            None
-        })
+        core_store::cache_get(self, key, now_ms()).await
     }
 
+    /// Stores a response. Failures are logged and counted, never returned.
     pub async fn cache_put(&self, key: String, value: CachedResponse) {
-        let result = match &self.backend {
-            Backend::Memory(m) => return m.cache_put(key, value),
-            Backend::Redis(r) => self.timed(r.cache_put(&key, &value)).await,
-        };
-        if let Err(e) = result {
-            self.failed("cache write", e);
-        }
+        let _ = self.put(&key, value).await;
     }
 
     /// Drops expired entries. Called periodically; only the memory store
     /// needs it.
     pub fn sweep(&self) {
         if let Backend::Memory(m) = &self.backend {
-            m.sweep();
+            m.sweep(now_ms());
         }
     }
 
-    /// Runs a remote operation with [`redis::TIMEOUT`], and notes recovery.
+    /// Runs a remote operation with [`redis::TIMEOUT`], noting failures and
+    /// recovery.
     async fn timed<T, E: Display>(
         &self,
-        op: impl Future<Output = Result<T, E>>,
-    ) -> Result<T, String> {
-        match tokio::time::timeout(redis::TIMEOUT, op).await {
-            Ok(Ok(v)) => {
+        op: &str,
+        fut: impl Future<Output = Result<T, E>>,
+    ) -> Result<T, StoreError> {
+        let result = match tokio::time::timeout(redis::TIMEOUT, fut).await {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err(format!("no answer within {}s", redis::TIMEOUT.as_secs())),
+        };
+        match result {
+            Ok(v) => {
                 if !self.up.swap(true, Ordering::Relaxed) {
                     tracing::info!(store = self.backend_name(), "the store is reachable again");
                 }
                 Ok(v)
             }
-            Ok(Err(e)) => Err(e.to_string()),
-            Err(_) => Err(format!("no answer within {}s", redis::TIMEOUT.as_secs())),
+            Err(e) => {
+                self.failed(op, &e);
+                Err(StoreError(e))
+            }
         }
     }
 
@@ -196,6 +158,39 @@ impl Store {
             skipped,
             "{op} failed ({error}); {fallback}"
         );
+    }
+}
+
+impl RateLimiter for Store {
+    async fn take(
+        &self,
+        key: &str,
+        requests: u32,
+        per: Duration,
+    ) -> Result<Option<Duration>, StoreError> {
+        match &self.backend {
+            Backend::Memory(m) => Ok(m.take(key, requests, per)),
+            Backend::Redis(r) => self.timed("rate limit", r.take(key, requests, per)).await,
+        }
+    }
+}
+
+impl ResponseCache for Store {
+    async fn get(&self, key: &str) -> Result<Option<CachedResponse>, StoreError> {
+        match &self.backend {
+            Backend::Memory(m) => Ok(m.get(key)),
+            Backend::Redis(r) => self.timed("cache read", r.get(key)).await,
+        }
+    }
+
+    async fn put(&self, key: &str, value: CachedResponse) -> Result<(), StoreError> {
+        match &self.backend {
+            Backend::Memory(m) => {
+                m.put(key.to_string(), value, now_ms());
+                Ok(())
+            }
+            Backend::Redis(r) => self.timed("cache write", r.put(key, &value)).await,
+        }
     }
 }
 

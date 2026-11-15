@@ -29,7 +29,7 @@ use super::support::{
     Body, check_key, empty, full, json_response, problem, problem_response, problem_with,
 };
 use super::{Generation, Shared};
-use crate::store::{CachedResponse, MAX_CACHED_BODY, RateLimit};
+use crate::store::{CachedResponse, MAX_CACHED_BODY, RateLimit, now_ms};
 use crate::workers::{BodyError, CallBody, CallError, Reply, ReplyBody};
 
 /// Per-request facts used across steps.
@@ -520,10 +520,12 @@ fn cached_response(hit: &CachedResponse, method: &str, dev: bool) -> Response<Bo
     });
     *resp.status_mut() = StatusCode::from_u16(hit.status).unwrap_or(StatusCode::OK);
     for (k, v) in &hit.headers {
-        append_raw(resp.headers_mut(), k, v.clone());
+        if let (Ok(n), Ok(v)) = (HeaderName::try_from(k.as_str()), HeaderValue::from_str(v)) {
+            resp.headers_mut().append(n, v);
+        }
     }
     resp.headers_mut()
-        .insert(header::AGE, HeaderValue::from(hit.age().as_secs()));
+        .insert(header::AGE, HeaderValue::from(hit.age(now_ms()).as_secs()));
     if dev {
         resp.headers_mut()
             .insert("x-unsworn-cache", HeaderValue::from_static("hit"));
@@ -786,10 +788,10 @@ async fn store_in_cache(
             .headers
             .iter()
             .filter(|(k, _)| *k != header::DATE)
-            .map(|(k, v)| (k.as_str().to_string(), v.clone()))
+            .filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string())))
             .collect(),
         body: bytes.clone(),
-        stored: std::time::SystemTime::now(),
+        stored_ms: now_ms(),
         ttl,
     };
     // A local write is immediate, so the next request sees it. A remote one
@@ -825,12 +827,6 @@ async fn collect_up_to(mut body: Body, limit: usize) -> (Bytes, bool) {
         }
     }
     (out.freeze(), true)
-}
-
-fn append_raw(headers: &mut HeaderMap, name: &str, value: HeaderValue) {
-    if let Ok(n) = HeaderName::try_from(name) {
-        headers.append(n, value);
-    }
 }
 
 fn call_error(ctx: &Ctx, handler: &HandlerRef, e: CallError) -> Response<Body> {

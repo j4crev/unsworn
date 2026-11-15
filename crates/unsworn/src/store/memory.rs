@@ -4,51 +4,48 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use super::{CachedResponse, MAX_CACHE_ENTRIES};
+use unsworn_core::store::{Bucket, CachedResponse, take_token};
 
-struct Bucket {
-    tokens: f64,
-    last: Instant,
-}
+pub const MAX_CACHE_ENTRIES: usize = 10_000;
 
-#[derive(Default)]
+/// Buckets idle this long are dropped by [`MemoryStore::sweep`].
+const IDLE_BUCKET: Duration = Duration::from_secs(3600);
+
 pub struct MemoryStore {
+    /// The zero of the buckets' monotonic clock.
+    epoch: Instant,
     buckets: Mutex<HashMap<String, Bucket>>,
     cache: Mutex<HashMap<String, CachedResponse>>,
 }
 
-impl MemoryStore {
-    /// Token bucket: `requests` per `per`. Returns how long to wait when the
-    /// limit is hit.
-    pub fn rate_limit(&self, key: &str, requests: u32, per: Duration) -> Option<Duration> {
-        let now = Instant::now();
-        let rate = requests as f64 / per.as_secs_f64();
-        let mut buckets = self.buckets.lock().unwrap();
-        let bucket = buckets.entry(key.to_string()).or_insert(Bucket {
-            tokens: requests as f64,
-            last: now,
-        });
-        let elapsed = now.duration_since(bucket.last).as_secs_f64();
-        bucket.tokens = (bucket.tokens + elapsed * rate).min(requests as f64);
-        bucket.last = now;
-        if bucket.tokens >= 1.0 {
-            bucket.tokens -= 1.0;
-            None
-        } else {
-            let wait = (1.0 - bucket.tokens) / rate;
-            Some(Duration::from_secs_f64(wait.max(0.001)))
+impl Default for MemoryStore {
+    fn default() -> Self {
+        MemoryStore {
+            epoch: Instant::now(),
+            buckets: Mutex::default(),
+            cache: Mutex::default(),
         }
     }
+}
 
-    pub fn cache_get(&self, key: &str) -> Option<CachedResponse> {
-        let cache = self.cache.lock().unwrap();
-        cache.get(key).filter(|e| e.fresh()).cloned()
+impl MemoryStore {
+    /// Takes a token from the bucket `key` (see `take_token`).
+    pub fn take(&self, key: &str, requests: u32, per: Duration) -> Option<Duration> {
+        let now = self.epoch.elapsed();
+        let mut buckets = self.buckets.lock().unwrap();
+        let (bucket, wait) = take_token(buckets.get(key).copied(), now, requests, per);
+        buckets.insert(key.to_string(), bucket);
+        wait
     }
 
-    pub fn cache_put(&self, key: String, value: CachedResponse) {
+    pub fn get(&self, key: &str) -> Option<CachedResponse> {
+        self.cache.lock().unwrap().get(key).cloned()
+    }
+
+    pub fn put(&self, key: String, value: CachedResponse, now_ms: u64) {
         let mut cache = self.cache.lock().unwrap();
         if cache.len() >= MAX_CACHE_ENTRIES {
-            cache.retain(|_, v| v.fresh());
+            cache.retain(|_, v| v.fresh(now_ms));
             if cache.len() >= MAX_CACHE_ENTRIES
                 && let Some(k) = cache.keys().next().cloned()
             {
@@ -59,12 +56,12 @@ impl MemoryStore {
     }
 
     /// Drops expired entries and idle buckets.
-    pub fn sweep(&self) {
-        self.cache.lock().unwrap().retain(|_, v| v.fresh());
-        let idle = Duration::from_secs(3600);
+    pub fn sweep(&self, now_ms: u64) {
+        self.cache.lock().unwrap().retain(|_, v| v.fresh(now_ms));
+        let now = self.epoch.elapsed();
         self.buckets
             .lock()
             .unwrap()
-            .retain(|_, b| b.last.elapsed() < idle);
+            .retain(|_, b| now.saturating_sub(b.last) < IDLE_BUCKET);
     }
 }
