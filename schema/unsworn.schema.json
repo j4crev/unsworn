@@ -1544,6 +1544,17 @@
           "default": true,
           "type": "boolean"
         },
+        "idle_timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How long a kept-alive connection may wait for its next request."
+        },
         "listen": {
           "default": "0.0.0.0:8080",
           "type": "string"
@@ -1556,6 +1567,15 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "max_connections": {
+          "description": "The most connections held open at once. More wait to be accepted.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
           ]
         },
         "response_validation": {

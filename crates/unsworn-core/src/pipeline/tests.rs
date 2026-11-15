@@ -302,6 +302,11 @@ const IP: &str = "198.51.100.7";
 impl Test {
     /// `files` are paths the config refers to, such as handler files.
     fn new(config: &str, files: &[&str], host: TestHost) -> Test {
+        Test::with_keys(config, files, host, Arc::new(KeyCache::default()))
+    }
+
+    /// As [`Test::new`], with the key cache a host would keep across reloads.
+    fn with_keys(config: &str, files: &[&str], host: TestHost, keys: Arc<KeyCache>) -> Test {
         let mut all = vec![("unsworn.toml", config)];
         all.extend(files.iter().map(|f| (*f, "")));
         let files = MemHost::with(&all);
@@ -310,7 +315,7 @@ impl Test {
             .project
             .unwrap_or_else(|| panic!("{:#?}", compiled.diagnostics));
         Test {
-            router: Router::new(Arc::new(project), Arc::new(KeyCache::default())),
+            router: Router::new(Arc::new(project), keys),
             host,
         }
     }
@@ -1117,9 +1122,26 @@ rate_limit = {{ requests = 1, per = "1m", key = "auth.sub" }}
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(t.host.fetch_count(), 1);
 
+    // An unknown key id refetches, but at most once a minute.
+    me(&jwt(b"secret-two", Some("k2"), claims("u5", "profile")));
+    assert_eq!(t.host.fetch_count(), 1, "fetched less than a minute ago");
+    t.host.clock.advance(Duration::from_secs(61));
+    me(&jwt(b"secret-two", Some("k2"), claims("u5", "profile")));
+    assert_eq!(t.host.fetch_count(), 2);
+
+    // Requests that fail authentication have no subject to count by, so
+    // they count against the client's address.
+    let minute = Duration::from_secs(60);
+    t.host.clock.advance(minute);
     let r = t.get("/me");
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
     assert_eq!(r.header("www-authenticate"), Some("Bearer"));
+    let r = me(&jwt(b"wrong", Some("k1"), claims("u4", "profile")));
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS, "a second guess");
+    let r = me(&jwt(b"secret-one", Some("k1"), claims("u6", "profile")));
+    assert_eq!(r.status, StatusCode::OK, "a valid token has its own count");
+
+    t.host.clock.advance(minute);
     let r = me(&jwt(b"secret-one", Some("k1"), claims("u3", "email")));
     assert_eq!(r.status, StatusCode::FORBIDDEN);
     assert!(
@@ -1127,15 +1149,113 @@ rate_limit = {{ requests = 1, per = "1m", key = "auth.sub" }}
             .unwrap()
             .contains("insufficient_scope")
     );
+    t.host.clock.advance(minute);
     let r = me(&jwt(b"wrong", Some("k1"), claims("u4", "profile")));
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+}
 
-    // An unknown key id refetches, but at most once a minute.
-    me(&jwt(b"secret-two", Some("k2"), claims("u5", "profile")));
-    assert_eq!(t.host.fetch_count(), 1, "fetched less than a minute ago");
-    t.host.clock.advance(Duration::from_secs(61));
-    me(&jwt(b"secret-two", Some("k2"), claims("u5", "profile")));
-    assert_eq!(t.host.fetch_count(), 2);
+#[test]
+fn a_rotated_jwt_secret_takes_effect_on_reload() {
+    let config = |secret: &str| {
+        format!(
+            r#"
+[auth.users]
+type = "jwt"
+secret = "{secret}"
+
+[[route]]
+path = "/me"
+respond = {{ status = 200 }}
+auth = "users"
+"#
+        )
+    };
+    // A host keeps one key cache across reloads.
+    let keys = Arc::new(KeyCache::default());
+    let before = Test::with_keys(&config("leaked"), &[], TestHost::new(), keys.clone());
+    let exp = before.host.clock.now() / 1000 + 3600;
+    let token = |secret: &[u8]| jwt(secret, None, json!({ "sub": "u1", "exp": exp }));
+    let me = |t: &Test, token: &str| {
+        t.send("GET", "/me", &[("authorization", token)], b"")
+            .status
+    };
+    assert_eq!(me(&before, &token(b"leaked")), StatusCode::OK);
+
+    let after = Test::with_keys(&config("fresh"), &[], TestHost::new(), keys);
+    assert_eq!(me(&after, &token(b"leaked")), StatusCode::UNAUTHORIZED);
+    assert_eq!(me(&after, &token(b"fresh")), StatusCode::OK);
+    // Requests still on the old project keep its key.
+    assert_eq!(me(&before, &token(b"leaked")), StatusCode::OK);
+}
+
+#[test]
+fn rate_limits_count_requests_that_fail_auth() {
+    let host = TestHost::new().fetch_answer(
+        "https://keys.example/verify",
+        200,
+        json!({ "active": false }).to_string(),
+    );
+    let t = Test::new(
+        r#"
+[auth.customers]
+type = "api_key"
+url = "https://keys.example/verify"
+
+[[route]]
+path = "/report"
+respond = { status = 200 }
+auth = "customers"
+rate_limit = { requests = 2, per = "1m" }
+"#,
+        &[],
+        host,
+    );
+    let guess = |key: &str| t.send("GET", "/report", &[("x-api-key", key)], b"").status;
+    assert_eq!(guess("sk_1"), StatusCode::UNAUTHORIZED);
+    assert_eq!(guess("sk_2"), StatusCode::UNAUTHORIZED);
+    assert_eq!(guess("sk_3"), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        t.host.fetch_count(),
+        2,
+        "the verifier isn't asked past the limit"
+    );
+}
+
+#[test]
+fn a_get_policy_covers_head() {
+    let t = Test::new(
+        r#"
+[auth.key]
+type = "api_key"
+keys = ["k1"]
+
+[[route]]
+path = "/{*rest}"
+respond = { status = 200 }
+
+[[route]]
+path = "/admin/{*rest}"
+method = "GET"
+auth = "key"
+
+[[route]]
+path = "/reports/daily"
+method = "GET"
+auth = "key"
+"#,
+        &[],
+        TestHost::new(),
+    );
+    for path in ["/admin/users", "/reports/daily"] {
+        for method in ["GET", "HEAD"] {
+            let r = t.send(method, path, &[], b"");
+            assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{method} {path}");
+            let r = t.send(method, path, &[("x-api-key", "k1")], b"");
+            assert_eq!(r.status, StatusCode::OK, "{method} {path}");
+        }
+        // The entry names `GET`, so other methods are outside it.
+        assert_eq!(t.send("POST", path, &[], b"").status, StatusCode::OK);
+    }
 }
 
 #[test]

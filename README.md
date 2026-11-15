@@ -118,10 +118,14 @@ respond = { status = 200, json = { ok = true } }
 [[route]]
 path  = "/{*rest}"
 proxy = "http://127.0.0.1:3000"          # your existing app, unchanged
+auth  = "jwt"                            # everything in it needs a token...
+
+[[route]]                                # ...except the paths you open
+path = "/assets/{*rest}"
+auth = "none"
 
 [[route]]                                # add policies to paths inside it
 path       = "/api/{*rest}"
-auth       = "jwt"
 rate_limit = { requests = 100, per = "1m", key = "auth.sub" }
 ```
 

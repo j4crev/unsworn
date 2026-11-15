@@ -72,6 +72,8 @@ trusted_proxies     = ["10.0.0.0/8"] # trust X-Forwarded-For from these ("all" t
 admin_listen        = "127.0.0.1:9090"  # optional: /_unsworn/metrics (Prometheus)
 response_validation = "log"          # "off" | "log" | "enforce", for `response` schemas
 shutdown_timeout    = "10s"          # how long to wait for open requests on shutdown
+max_connections     = 10000          # the most connections open at once (the default)
+idle_timeout        = "5m"           # how long a connection may wait for its next request (the default)
 
 [server.tls]
 cert = "certs/fullchain.pem"
@@ -80,6 +82,21 @@ key  = "certs/privkey.pem"
 
 `unsworn serve --listen <addr>` overrides `listen`. Every server also answers
 `/_unsworn/health` with the state of each runtime.
+
+Connections are limited, so clients that open them and then stall can't
+tie the server up:
+
+- At `max_connections`, new connections wait to be accepted until one
+  closes. A proxied WebSocket stops counting once it has upgraded.
+- A new connection has 10 seconds to finish its TLS handshake, and 30
+  seconds (or `idle_timeout`, if that's shorter) to send its first request.
+- `idle_timeout` is how long an HTTP/1.1 connection may then wait for its
+  next request, which includes the time that request's headers take to
+  arrive. Behind a load balancer that reuses connections, keep it longer
+  than the balancer's own idle timeout, or the balancer will now and then
+  send a request down a connection Unsworn has just closed.
+- An HTTP/2 connection is pinged every 30 seconds and closed when it
+  doesn't answer.
 
 ### `[runtimes.<name>]`
 
@@ -142,6 +159,10 @@ no network call per request: JWKS documents are fetched on first use,
 refreshed every 10 minutes, and refetched (at most once a minute) when a
 token names an unknown key id. `jwks_url`, the old name for `url`, still
 works, with a warning.
+
+A reload that changes `secret`, the `public_key` file or `url` switches to
+the new keys at once: tokens signed with the old key stop working. To keep
+both working while clients move over, serve both keys from a JWKS `url`.
 
 #### `type = "api_key"`
 
@@ -460,6 +481,20 @@ a burst and then refill evenly over `per`. A request over the limit gets
 `429` with `Retry-After`. The client IP is the connection's address, or the
 `X-Forwarded-For` address when the connection comes from one of
 `[server].trusted_proxies`.
+
+- **Requests that fail `auth` count too,** so guessing credentials is
+  limited like anything else. A limit keyed on `ip` or a header is counted
+  before credentials are checked, which also keeps a remote API-key verifier
+  from being asked more often than the limit allows. A limit keyed on a
+  claim (`auth.sub`) has no claim to count a failed request by, so it counts
+  that request against the client's IP.
+- **An IPv6 client is counted by its /64,** the smallest block a network
+  gives one subscriber. Counting whole addresses would give such a client a
+  new bucket for every address in it.
+- **A `header.<name>` key is only as trustworthy as the header.** Any client
+  can send any value, and each new value starts a new count. Use one only
+  when the route's `auth` reads that header, or a proxy you trust sets it;
+  `unsworn check` warns otherwise.
 
 ### Applying policies to many routes
 
@@ -801,6 +836,38 @@ There are two kinds of policy entries:
   auth       = "jwt"
   rate_limit = { requests = 100, per = "1m", key = "auth.sub" }
   ```
+
+An entry with `method = "GET"` covers `HEAD` too, since a `GET` route
+answers `HEAD`.
+
+#### Locking down part of a catch-all app
+
+A policy entry matches paths as they're written: `/admin/{*rest}` covers
+`/admin/users`, but not `/Admin/users` or `/admin%2Fusers`. Unsworn treats
+those as different paths, and for its own routes they are. An app behind a
+catch-all does its own routing, though, and may not agree: Express matches
+paths without regard to case by default, and some servers decode `%2F`
+before routing. Such an app would serve `/Admin/users` as its admin page,
+without the policy.
+
+So don't add `auth` (or `ip`) to part of a catch-all that is otherwise open.
+Require it for the whole catch-all, or in `[defaults]`, and open the public
+paths:
+
+```toml
+[[route]]
+path  = "/{*rest}"
+proxy = "http://127.0.0.1:3000"
+auth  = "jwt"                 # every path the app serves needs a token
+
+[[route]]
+path = "/assets/{*rest}"
+auth = "none"                 # except these
+```
+
+A path that slips past the entry that opens it now meets the stricter
+policy, not the looser one. `unsworn check` warns about an entry that adds
+`auth` or `ip` inside an open catch-all.
 
 For OpenAPI routes, policy values here override what the spec implies.
 

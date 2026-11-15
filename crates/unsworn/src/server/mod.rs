@@ -8,13 +8,13 @@ pub mod support;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use http::{Request, Response, StatusCode};
 use hyper::body::Incoming;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use hyper_util::server::graceful::GracefulShutdown;
 use tokio::net::TcpListener;
@@ -224,63 +224,71 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
     spawn_reload_on_hup(shared.clone(), opts.config.clone());
 
     let graceful = GracefulShutdown::new();
-    let builder = auto::Builder::new(TokioExecutor::new());
+    let mut builder = auto::Builder::new(TokioExecutor::new());
+    // On HTTP/1, hyper's header timer also runs while a kept-alive
+    // connection waits for its next request, which makes it the idle
+    // timeout. On HTTP/2, pings find peers that have gone away.
+    builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(server.idle_timeout);
+    builder
+        .http2()
+        .timer(TokioTimer::new())
+        .keep_alive_interval(H2_PING_INTERVAL)
+        .keep_alive_timeout(H2_PING_TIMEOUT);
+    let options = ConnOptions {
+        compression: server.compression,
+        first_request: FIRST_REQUEST_TIMEOUT.min(server.idle_timeout),
+    };
+    // One permit per open connection. With none left, new connections wait
+    // in the listener's backlog rather than taking memory here.
+    let connections = Arc::new(tokio::sync::Semaphore::new(server.max_connections));
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
     loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let (stream, peer) = match accepted {
-                    Ok(a) => a,
-                    Err(e) => {
-                        tracing::warn!("accept failed: {e}");
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                        continue;
-                    }
-                };
-                let _ = stream.set_nodelay(true);
-                let shared = shared.clone();
-                let compression = server.compression;
-                let builder = builder.clone();
-                let watcher = graceful.watcher();
-                let tls = tls.clone();
-                tokio::spawn(async move {
-                    let is_tls = tls.is_some();
-                    let svc = hyper::service::service_fn(move |req: Request<Incoming>| {
-                        let shared = shared.clone();
-                        async move {
-                            let accept = req.headers().get(http::header::ACCEPT_ENCODING).cloned();
-                            let method = req.method().clone();
-                            let resp = host::handle(shared, req, peer, is_tls).await;
-                            let resp = if compression {
-                                compress::maybe_compress(&method, accept.as_ref(), resp)
-                            } else {
-                                resp
-                            };
-                            Ok::<_, std::convert::Infallible>(resp)
-                        }
-                    });
-                    match tls {
-                        Some(acceptor) => match acceptor.accept(stream).await {
-                            Ok(tls_stream) => {
-                                let conn = builder.serve_connection_with_upgrades(TokioIo::new(tls_stream), svc);
-                                let _ = watcher.watch(conn.into_owned()).await;
-                            }
-                            Err(e) => tracing::debug!("TLS handshake failed: {e}"),
-                        },
-                        None => {
-                            let conn = builder.serve_connection_with_upgrades(TokioIo::new(stream), svc);
-                            let _ = watcher.watch(conn.into_owned()).await;
-                        }
-                    }
-                });
+        let permit = tokio::select! {
+            permit = connections.clone().acquire_owned() => permit.expect("the semaphore is never closed"),
+            _ = &mut shutdown => break,
+        };
+        let accepted = tokio::select! {
+            accepted = listener.accept() => accepted,
+            _ = &mut shutdown => break,
+        };
+        let (stream, peer) = match accepted {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!("accept failed: {e}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
             }
-            _ = &mut shutdown => {
-                tracing::info!("shutting down");
-                break;
+        };
+        let _ = stream.set_nodelay(true);
+        let shared = shared.clone();
+        let builder = builder.clone();
+        let watcher = graceful.watcher();
+        let tls = tls.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            match tls {
+                Some(acceptor) => {
+                    let handshake = acceptor.accept(stream);
+                    match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, handshake).await {
+                        Ok(Ok(stream)) => {
+                            serve_connection(stream, peer, true, shared, builder, watcher, options)
+                                .await
+                        }
+                        Ok(Err(e)) => tracing::debug!("TLS handshake failed: {e}"),
+                        Err(_) => tracing::debug!(%peer, "TLS handshake timed out"),
+                    }
+                }
+                None => {
+                    serve_connection(stream, peer, false, shared, builder, watcher, options).await
+                }
             }
-        }
+        });
     }
+    tracing::info!("shutting down");
     drop(listener);
     let grace = server.shutdown_timeout;
     if tokio::time::timeout(grace, graceful.shutdown())
@@ -299,6 +307,71 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         .shutdown(Duration::from_secs(2))
         .await;
     Ok(())
+}
+
+/// How long a new connection has to finish its TLS handshake.
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a new connection has to send its first request's headers, at
+/// most. `[server].idle_timeout` lowers it: a connection that has sent
+/// nothing gets no longer than one that's been useful.
+const FIRST_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often an HTTP/2 connection is pinged, and how long it has to answer.
+const H2_PING_INTERVAL: Duration = Duration::from_secs(30);
+const H2_PING_TIMEOUT: Duration = Duration::from_secs(20);
+
+#[derive(Clone, Copy)]
+struct ConnOptions {
+    compression: bool,
+    /// See [`FIRST_REQUEST_TIMEOUT`].
+    first_request: Duration,
+}
+
+/// Serves one connection until it closes, or until `first_request` passes
+/// without a request on it. That covers what hyper's own timers don't: a
+/// connection that never says which HTTP version it speaks, and an HTTP/2
+/// one that never opens a stream.
+async fn serve_connection<I>(
+    io: I,
+    peer: std::net::SocketAddr,
+    is_tls: bool,
+    shared: Arc<Shared>,
+    builder: auto::Builder<TokioExecutor>,
+    watcher: hyper_util::server::graceful::Watcher,
+    options: ConnOptions,
+) where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let seen = Arc::new(AtomicBool::new(false));
+    let svc = {
+        let seen = seen.clone();
+        hyper::service::service_fn(move |req: Request<Incoming>| {
+            seen.store(true, Ordering::Relaxed);
+            let shared = shared.clone();
+            async move {
+                let accept = req.headers().get(http::header::ACCEPT_ENCODING).cloned();
+                let method = req.method().clone();
+                let resp = host::handle(shared, req, peer, is_tls).await;
+                let resp = if options.compression {
+                    compress::maybe_compress(&method, accept.as_ref(), resp)
+                } else {
+                    resp
+                };
+                Ok::<_, std::convert::Infallible>(resp)
+            }
+        })
+    };
+    let conn = builder.serve_connection_with_upgrades(TokioIo::new(io), svc);
+    let conn = watcher.watch(conn.into_owned());
+    let silent = async {
+        tokio::time::sleep(options.first_request).await;
+        if seen.load(Ordering::Relaxed) {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::select! {
+        _ = conn => {}
+        _ = silent => tracing::debug!(%peer, "closing a connection that sent no request"),
+    }
 }
 
 async fn shutdown_signal() {

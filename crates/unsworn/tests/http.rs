@@ -689,6 +689,80 @@ fn reload_on_sighup() {
 }
 
 #[test]
+fn connections_are_limited() {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::{Duration, Instant};
+
+    let config = |server: &str| {
+        format!(
+            "[server]\n{server}\n\n[[route]]\npath = \"/a\"\nrespond = {{ status = 200, text = \"ok\" }}\n"
+        )
+    };
+    let connect = |s: &common::Server| {
+        let stream = TcpStream::connect(s.addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream
+    };
+
+    let p = Project::new(&[("unsworn.toml", &config("idle_timeout = \"300ms\""))]);
+    let s = p.serve();
+    // A connection that never sends a request is closed.
+    let start = Instant::now();
+    let mut silent = connect(&s);
+    let mut raw = Vec::new();
+    silent.read_to_end(&mut raw).unwrap();
+    assert!(raw.is_empty());
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+    // So is one that stalls in the middle of its headers,
+    let start = Instant::now();
+    let mut slow = connect(&s);
+    slow.write_all(b"GET /a HTTP/1.1\r\nHost: x\r\n").unwrap();
+    let mut raw = Vec::new();
+    let _ = slow.read_to_end(&mut raw);
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+    // and a kept-alive one that sends nothing more.
+    let start = Instant::now();
+    let mut idle = connect(&s);
+    idle.write_all(b"GET /a HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    let mut raw = Vec::new();
+    let _ = idle.read_to_end(&mut raw);
+    assert!(String::from_utf8_lossy(&raw).starts_with("HTTP/1.1 200"));
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+
+    // At `max_connections`, the next connection waits for one to close.
+    let p = Project::new(&[(
+        "unsworn.toml",
+        &config("max_connections = 1\nidle_timeout = \"1500ms\""),
+    )]);
+    let s = p.serve();
+    let _held = connect(&s);
+    std::thread::sleep(Duration::from_millis(100));
+    let start = Instant::now();
+    assert_eq!(s.get("/a").text(), "ok");
+    assert!(
+        start.elapsed() > Duration::from_secs(1),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
 fn js_sdk_on_bun() {
     if !has("bun") {
         eprintln!("skipping: bun not found");

@@ -54,6 +54,10 @@ pub struct RawServer {
     #[serde(default)]
     pub response_validation: ResponseValidation,
     pub shutdown_timeout: Option<ConfigDuration>,
+    /// The most connections held open at once. More wait to be accepted.
+    pub max_connections: Option<u32>,
+    /// How long a kept-alive connection may wait for its next request.
+    pub idle_timeout: Option<ConfigDuration>,
 }
 
 impl Default for RawServer {
@@ -69,6 +73,8 @@ impl Default for RawServer {
             admin_listen: None,
             response_validation: ResponseValidation::default(),
             shutdown_timeout: None,
+            max_connections: None,
+            idle_timeout: None,
         }
     }
 }

@@ -254,7 +254,24 @@ impl ToolCall<'_> {
         // A missing scope is an HTTP error, so clients can ask for more access.
         if tool.own.auth.is_some() {
             let query = query_pairs(parts.uri.query());
-            let (more, tool_claims) = ctx.authenticate(&parts.headers, &eff, &query).await?;
+            let (more, tool_claims) = match ctx.authenticate(&parts.headers, &eff, &query).await {
+                Ok(outcome) => outcome,
+                Err(resp) => {
+                    // A call that fails the tool's `auth` still counts
+                    // against its rate limit, by the client's address,
+                    // unless it failed because a verifier is down.
+                    if resp.status() != StatusCode::SERVICE_UNAVAILABLE
+                        && let Some(OrOff::On(limit)) = &tool.own.rate_limit
+                        && let RateLimit::Limited { retry_after } =
+                            ctx.rate_limit(tool.route, limit, &self.trusted, None).await
+                    {
+                        return Err(super::problem_response(crate::pipeline::too_many_requests(
+                            retry_after,
+                        )));
+                    }
+                    return Err(resp);
+                }
+            };
             if let Some(auth) = more.get("auth") {
                 context.insert("auth".into(), auth.clone());
             }
