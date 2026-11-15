@@ -1,6 +1,7 @@
 # Unsworn configuration
 
-> Describes v1. Features marked v2 or v3 are planned, not implemented.
+> Describes what's built. Edge and serverless deployment targets are
+> planned; see the [roadmap](roadmap.md).
 
 An Unsworn project is a config file plus handlers. Routes can come from any
 mix of these [route sources](#route-sources):
@@ -52,7 +53,7 @@ into a second programming language.
 [server]       # listen address, TLS, limits
 [routes]       # optional: route directory
 [openapi]      # optional: OpenAPI spec as a route source
-[mcp]          # optional: an MCP endpoint and its tools (v2; see mcp.md)
+[mcp]          # optional: an MCP endpoint and its tools (see mcp.md)
 [runtimes.*]   # how to run handlers for each language
 [auth.*]       # named authentication schemes
 [store]        # shared state for rate limits and caches
@@ -630,7 +631,7 @@ rate_limit = { requests = 20, per = "1m", key = "auth.sub" }
 [openapi]
 spec      = "openapi.yaml"                  # OpenAPI 3.0 or 3.1, YAML or JSON
 handler   = "src/{tag}.ts#{operationId}"    # optional default for operations
-mcp_tools = { tags = ["public"] }           # optional, v3: offer operations as MCP tools
+mcp_tools = { tags = ["public"] }           # optional: offer operations as MCP tools
 ```
 
 Each operation in the spec becomes a route:
@@ -755,14 +756,14 @@ For OpenAPI routes, policy values here override what the spec implies.
 
 MCP support is described in [`mcp.md`](mcp.md). In config it adds:
 
-| Key | Where | Planned |
-|---|---|---|
-| `protected_resource` | `[auth.<name>]` | v1 |
-| `origin` policy, `sticky` proxying, SSE pass-through | routes | v1 |
-| `[mcp]` and `[[mcp.tool]]`, including `list_tools` and `list_ttl` ([reference](mcp.md#config-reference)) | top level | v2 |
-| `[mcp] proxy`, with handler-less `[[mcp.tool]]` entries for per-tool policies | top level | v2 |
-| `mcp = { tool = ... }` ([routes as tools](mcp.md#level-3-routes-as-tools)) | `[[route]]` with a handler, or a policy-only `[[route]]` entry | v3 |
-| `mcp_tools` | `[openapi]` | v3 |
+| Key | Where |
+|---|---|
+| `protected_resource` | `[auth.<name>]` |
+| `origin` policy, `sticky` proxying, SSE pass-through | routes |
+| `[mcp]` and `[[mcp.tool]]`, including `list_tools` and `list_ttl` ([reference](mcp.md#config-reference)) | top level |
+| `[mcp] proxy`, with handler-less `[[mcp.tool]]` entries for per-tool policies | top level |
+| `mcp = { tool = ... }` ([routes as tools](mcp.md#level-3-routes-as-tools)) | `[[route]]` with a handler, or a policy-only `[[route]]` entry |
+| `mcp_tools` | `[openapi]` |
 
 ## Deployment targets
 
