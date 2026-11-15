@@ -17,6 +17,7 @@ mod client_ip;
 mod flow;
 pub mod host;
 mod problem;
+pub mod proxy;
 
 pub use auth::KeyCache;
 pub use flow::{Handled, Router, json_response, problem_response};

@@ -260,10 +260,10 @@ impl Host for ServerHost {
             self.shared.client.clone(),
             request.proxy,
             request.request.map(into_body),
-            proxy::ForwardInfo {
+            core::proxy::ForwardInfo {
                 client_ip: request.client_ip,
                 tls: self.tls,
-                request_id: self.request_id.clone(),
+                request_id: Some(self.request_id.clone()),
             },
         )
         .await;
