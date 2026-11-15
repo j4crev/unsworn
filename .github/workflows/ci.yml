@@ -68,4 +68,4 @@ jobs:
       - run: cargo build -p unsworn-core -p unsworn-proto --target wasm32-unknown-unknown --release
       - name: Build the wasm core and check its size
         run: crates/unsworn-wasm/build.sh --check-size
-      - run: node --test crates/unsworn-wasm/tests/
+      - run: node --test crates/unsworn-wasm/tests/smoke.test.mjs

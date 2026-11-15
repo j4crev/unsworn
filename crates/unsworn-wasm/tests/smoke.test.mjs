@@ -2,7 +2,7 @@
 // what crosses the boundary: requests, handler calls, bodies, the store,
 // assets and proxying. Build first: crates/unsworn-wasm/build.sh
 //
-//   node --test crates/unsworn-wasm/tests/
+//   node --test crates/unsworn-wasm/tests/smoke.test.mjs
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
