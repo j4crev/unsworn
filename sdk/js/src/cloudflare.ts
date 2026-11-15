@@ -190,7 +190,23 @@ function errorMessage(err: unknown, dev: boolean): string {
   return String(err);
 }
 
-function bridge(bundle: Bundle, env: Env, ctx: ExecutionContextLike, origin: string, dev: boolean): Bridge {
+/**
+ * Where the bridge leaves an upstream's WebSocket when a `proxy` route
+ * upgrades. The core only sees the `101`; the Worker hands the socket to
+ * the client with it.
+ */
+interface Upgraded {
+  webSocket?: unknown;
+}
+
+function bridge(
+  bundle: Bundle,
+  env: Env,
+  ctx: ExecutionContextLike,
+  origin: string,
+  dev: boolean,
+  upgraded: Upgraded,
+): Bridge {
   const cache = () => (globalThis as unknown as { caches: { default: Cache } }).caches.default;
   return {
     async call(request: string, body, timeoutMs): Promise<CallResult> {
@@ -292,6 +308,11 @@ function bridge(bundle: Bundle, env: Env, ctx: ExecutionContextLike, origin: str
         body: (request.body ?? undefined) as BodyInit | undefined,
         redirect: "manual",
       });
+      // With `Upgrade: websocket`, fetch() opens the WebSocket to the
+      // upstream. Returning it unaccepted lets the runtime pass messages
+      // through without running this isolate's code.
+      const webSocket = (res as Response & { webSocket?: unknown }).webSocket;
+      if (res.status === 101 && webSocket) upgraded.webSocket = webSocket;
       return toValue(res);
     },
 
@@ -381,6 +402,7 @@ export function createWorker(bundle: Bundle) {
       const url = new URL(request.url);
       const requestId =
         request.headers.get("x-request-id")?.slice(0, 128) || request.headers.get("cf-ray") || crypto.randomUUID();
+      const upgraded: Upgraded = {};
       const handled = await currentId.run(requestId, () =>
         app.handle(
           {
@@ -391,9 +413,13 @@ export function createWorker(bundle: Bundle) {
             ip: request.headers.get("cf-connecting-ip") ?? "0.0.0.0",
             requestId,
           },
-          bridge(bundle, env, ctx, url.origin, dev),
+          bridge(bundle, env, ctx, url.origin, dev, upgraded),
         ),
       );
+      if (handled.status === 101 && upgraded.webSocket) {
+        const init = { status: 101, headers: handled.headers, webSocket: upgraded.webSocket };
+        return new Response(null, init as ResponseInit);
+      }
       const body = NULL_BODY.has(handled.status) || request.method === "HEAD" ? null : (handled.body ?? null);
       return new Response(body, { status: handled.status, headers: handled.headers });
     },

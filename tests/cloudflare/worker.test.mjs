@@ -111,6 +111,46 @@ test("proxy routes forward with rewritten headers", async () => {
   assert.ok(seen.headers["x-request-id"]);
 });
 
+test("proxy routes pass WebSockets through", async () => {
+  const ws = new WebSocket(`${worker.base.replace("http", "ws")}/up/chat?room=1`, ["v2.chat", "v1.chat"]);
+  ws.binaryType = "arraybuffer";
+  const messages = [];
+  let waiting;
+  ws.onmessage = (e) => {
+    messages.push(e.data);
+    waiting?.();
+  };
+  const next = async () => {
+    while (messages.length === 0) await new Promise((r) => (waiting = r));
+    return messages.shift();
+  };
+  const closed = new Promise((resolve) => (ws.onclose = resolve));
+  await new Promise((resolve, reject) => {
+    ws.onopen = resolve;
+    ws.onerror = () => reject(new Error("the WebSocket didn't open"));
+  });
+  assert.equal(ws.protocol, "v2.chat");
+
+  const seen = JSON.parse(await next());
+  assert.equal(seen.url, "/chat?room=1");
+  assert.equal(seen.headers["x-forwarded-proto"], "http");
+  assert.ok(seen.headers["x-forwarded-for"]);
+  assert.ok(seen.headers["x-request-id"]);
+
+  ws.send("hi");
+  assert.equal(await next(), "echo:hi");
+  ws.send(new Uint8Array([1, 2, 3]));
+  assert.deepEqual([...new Uint8Array(await next())], [1, 2, 3]);
+  const big = "x".repeat(100_000);
+  ws.send(big);
+  assert.equal(await next(), "echo:" + big);
+
+  ws.close(4001, "bye");
+  const close = await closed;
+  assert.equal(close.code, 4001);
+  assert.equal(close.reason, "bye");
+});
+
 test("MCP tools run as handlers", async () => {
   const send = async (method, params, name) => {
     params._meta = {

@@ -42,10 +42,12 @@ Cloudflare Workers first (`unsworn build --target cloudflare`). Work needed:
   Worker, Redis as the store, and server settings Cloudflare ignores.
 - ~~**MCP on the edge.**~~ Done: tools run as handlers in the Worker; the
   Worker tests cover it.
+- ~~**WebSocket upgrades through `proxy` routes** in a Worker.~~ Done: the
+  Worker returns the upstream's WebSocket, so Cloudflare passes messages
+  through as the server does.
 
 Still open for the edge:
 
-- **WebSocket upgrades through `proxy` routes** in a Worker.
 - **WASM handlers** called directly, rather than through a JS wrapper.
 - **More isolate platforms,** such as Deno Deploy and Fastly, each with its
   own bridge.
