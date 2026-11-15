@@ -659,6 +659,20 @@ body = {{ type = "object", required = ["name"], properties = {{ name = {{ type =
     let r = t.send("POST", "/users", &json, b"{");
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
 
+    // Two values where one is declared, or two members with one name: an
+    // upstream could read the one that wasn't checked.
+    let r = t.get("/users/1?limit=500&limit=5");
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(r.json()["errors"][0]["location"], "query.limit");
+    let r = t.send("POST", "/users", &json, br#"{"name":1,"name":"Ada"}"#);
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(
+        r.json()["detail"]
+            .as_str()
+            .unwrap()
+            .contains("\"name\" appears more than once")
+    );
+
     // JSON is `application/json` or a `+json` type, whatever its
     // parameters; a type that merely contains those words isn't.
     let post = |content_type: &str| {
@@ -956,6 +970,103 @@ cache = {{ ttl = "30s", vary = ["Authorization"] }}
     }
     t.get("/private");
     assert_eq!(t.get("/private").header("x-unsworn-cache"), None);
+}
+
+#[test]
+fn cache_keeps_sessions_and_before_handlers() {
+    let counter = Arc::new(AtomicU64::new(0));
+    let (n1, n2) = (counter.clone(), counter.clone());
+    let host = TestHost::new()
+        .handler("src/h.ts#count", move |_, _| {
+            ok_json(json!({ "n": n1.fetch_add(1, Ordering::SeqCst) }))
+        })
+        // An app with sessions: its page depends on the cookie.
+        .handler("src/h.ts#session", move |_, _| {
+            let mut response = unsworn_proto::Response::new("", 200);
+            response.headers.insert(
+                "vary".into(),
+                unsworn_proto::HeaderValues::One("Accept-Encoding, Cookie".into()),
+            );
+            response.json = Some(json!({ "n": n2.fetch_add(1, Ordering::SeqCst) }));
+            Ok(Reply::Response {
+                response,
+                body: Body::Empty,
+            })
+        })
+        .handler("src/h.ts#members", |req, _| {
+            if req.headers.get("x-member").map(String::as_str) == Some("yes") {
+                Ok(Reply::Continue(Map::new()))
+            } else {
+                let mut response = unsworn_proto::Response::new("", 403);
+                response.json = Some(json!({ "error": "members only" }));
+                Ok(Reply::Response {
+                    response,
+                    body: Body::Empty,
+                })
+            }
+        });
+    let mut host = host;
+    host.dev = true;
+    let t = Test::new(
+        &format!(
+            r#"{TS}
+[[route]]
+path = "/session"
+method = "GET"
+handler = "src/h.ts#session"
+cache = {{ ttl = "30s" }}
+
+[[route]]
+path = "/cookie-varied"
+method = "GET"
+handler = "src/h.ts#session"
+cache = {{ ttl = "30s", vary = ["Cookie", "Accept-Encoding"] }}
+
+[[route]]
+path = "/public"
+method = "GET"
+handler = "src/h.ts#count"
+cache = {{ ttl = "30s" }}
+
+[[route]]
+path = "/members"
+method = "GET"
+handler = "src/h.ts#count"
+before = ["src/h.ts#members"]
+cache = {{ ttl = "30s" }}
+"#
+        ),
+        &["src/h.ts"],
+        host,
+    );
+
+    // A response that varies on a header the key doesn't cover isn't
+    // stored, even for a request that sent no cookie.
+    t.get("/session");
+    assert_eq!(t.get("/session").header("x-unsworn-cache"), None);
+    // Unless the rule varies on it too.
+    let cookie = |path, value| t.send("GET", path, &[("cookie", value)], b"");
+    let a = cookie("/cookie-varied", "sid=a").json();
+    assert_eq!(cookie("/cookie-varied", "sid=a").json(), a);
+    assert_ne!(cookie("/cookie-varied", "sid=b").json(), a);
+
+    // A request with cookies on a public route isn't answered from, or
+    // stored in, the cache: the app behind it may read a session from them.
+    let anon = t.get("/public");
+    assert_eq!(t.get("/public").json(), anon.json());
+    let r = cookie("/public", "sid=a");
+    assert_eq!(r.header("x-unsworn-cache"), None);
+    assert_ne!(r.json(), anon.json());
+
+    // `before` handlers run on a cache hit too, so one that turns a caller
+    // away still does.
+    let member = t.send("GET", "/members", &[("x-member", "yes")], b"");
+    assert_eq!(member.status, 200);
+    let hit = t.send("GET", "/members", &[("x-member", "yes")], b"");
+    assert_eq!(hit.header("x-unsworn-cache"), Some("hit"));
+    let stranger = t.get("/members");
+    assert_eq!(stranger.status, 403);
+    assert_eq!(stranger.header("x-unsworn-cache"), None);
 }
 
 #[test]

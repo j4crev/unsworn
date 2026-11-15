@@ -116,11 +116,13 @@ which calls back into the binary for I/O.
    a request that fails authentication counts against either kind.
 6. **Validate.** Path params, query and headers are checked against the
    route's rules and converted to typed values (`"42"` becomes `42`).
-7. **Cache lookup.** A hit is returned directly.
-8. **Body.** The body size limit is applied, then the body is read and
+7. **Body.** The body size limit is applied, then the body is read and
    checked against the route's schema, unless the route streams it to the
    handler.
-9. **Before handlers.** Each one may add to the context or reject the request.
+8. **Before handlers.** Each one may add to the context or reject the request.
+9. **Cache lookup.** A hit is returned directly. It comes after `before`
+   handlers, so one that rejects a caller does so even when a response is
+   cached.
 10. **Dispatch.** The handler runs in a worker. The response is validated
     against the response schema if one is declared (configurable: off, log, or
     enforce).
@@ -129,7 +131,7 @@ which calls back into the binary for I/O.
 12. **Observe.** The access log and metrics record the request.
 
 A rejected request stops at the step that rejects it, and a cache hit stops
-at step 7. Routes with a `respond`, `redirect`, `static` or `proxy` action
+at step 9. Routes with a `respond`, `redirect`, `static` or `proxy` action
 are answered at step 10 without a worker.
 
 ## Workers

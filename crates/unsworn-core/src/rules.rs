@@ -3,13 +3,20 @@
 use crate::policy::{CacheRule, Cors, KeySource};
 
 /// The value for `Access-Control-Allow-Origin`, if the origin is allowed.
+/// Any origin gets `*`, never its own name: browsers refuse `*` with
+/// credentials, and naming each origin would let every website read a
+/// signed-in user's responses (the config rejects the combination).
 pub fn cors_allow_origin(cors: &Cors, origin: &str) -> Option<String> {
     match &cors.origins {
-        None if cors.credentials => Some(origin.to_string()),
         None => Some("*".to_string()),
         Some(list) if list.iter().any(|o| o == origin) => Some(origin.to_string()),
         Some(_) => None,
     }
+}
+
+/// Credentials are only allowed for listed origins.
+fn allows_credentials(cors: &Cors) -> bool {
+    cors.credentials && cors.origins.is_some()
 }
 
 /// Headers for a CORS preflight response. `route_methods` is used when the
@@ -35,7 +42,7 @@ pub fn cors_preflight_headers(
     if let Some(h) = headers {
         out.push(("access-control-allow-headers".into(), h));
     }
-    if cors.credentials {
+    if allows_credentials(cors) {
         out.push(("access-control-allow-credentials".into(), "true".into()));
     }
     if let Some(max_age) = cors.max_age {
@@ -54,7 +61,7 @@ pub fn cors_response_headers(cors: &Cors, origin: &str) -> Vec<(String, String)>
         return Vec::new();
     };
     let mut out = vec![("access-control-allow-origin".to_string(), allow)];
-    if cors.credentials {
+    if allows_credentials(cors) {
         out.push(("access-control-allow-credentials".into(), "true".into()));
     }
     if !cors.expose.is_empty() {
@@ -85,9 +92,14 @@ pub fn cache_separates_users(rule: &CacheRule, credential_headers: &[String]) ->
 
 const CACHEABLE_STATUS: &[u16] = &[200, 203, 204, 301, 404, 410];
 
-/// Whether a response may be stored. `header` returns all values of a
-/// (lowercase) response header.
-pub fn cache_storable(status: u16, header: &dyn Fn(&str) -> Vec<String>) -> bool {
+/// Whether a response may be stored. `varied` are the (lowercase) request
+/// headers the rule's `vary` puts in the cache key, and `header` returns all
+/// values of a (lowercase) response header.
+pub fn cache_storable(
+    status: u16,
+    varied: &[String],
+    header: &dyn Fn(&str) -> Vec<String>,
+) -> bool {
     if !CACHEABLE_STATUS.contains(&status) {
         return false;
     }
@@ -102,13 +114,18 @@ pub fn cache_storable(status: u16, header: &dyn Fn(&str) -> Vec<String>) -> bool
     {
         return false;
     }
-    // `Vary: *` says no later request can be matched to this response
-    // (RFC 9111 section 4.1).
-    if header("vary")
+    // The response may only answer requests that agree with this one on
+    // the headers its `Vary` names (RFC 9111 section 4.1). The key covers
+    // the ones the rule varies on; a response that varies on any other
+    // (`Cookie`, say, from an app with sessions) could be another user's,
+    // so it isn't stored. `Vary: *` matches no later request at all.
+    let varies_elsewhere = header("vary")
         .iter()
         .flat_map(|v| v.split(','))
-        .any(|v| v.trim() == "*")
-    {
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .any(|v| v == "*" || !varied.contains(&v));
+    if varies_elsewhere {
         return false;
     }
     !header("content-type")
@@ -218,7 +235,14 @@ fn etag_listed(list: &str, etag: &str) -> bool {
     }
 }
 
-/// Builds a cache key from its parts.
+/// Builds a cache key from its parts: `resp|` and a SHA-256 of them.
+///
+/// Hashed, so a store never holds the credentials a `vary` on
+/// `Authorization` or an API-key header puts in the key, and each part is
+/// length-prefixed first, so no request's path, query or header values can
+/// spell out another request's key. `scheme` is the auth scheme that
+/// verified the caller, so two schemes' users with the same `sub` stay
+/// apart.
 pub fn cache_key(
     route: usize,
     method: &str,
@@ -226,20 +250,31 @@ pub fn cache_key(
     raw_query: Option<&str>,
     vary: &[(String, Option<String>)],
     key: Option<&str>,
+    scheme: Option<&str>,
 ) -> String {
+    use sha2::{Digest, Sha256};
     let method = if method == "HEAD" { "GET" } else { method };
-    let mut out = format!("{route}|{method}|{path}?{}", raw_query.unwrap_or(""));
+    let mut hash = Sha256::new();
+    let mut part = |value: Option<&str>| match value {
+        None => hash.update(b"-"),
+        Some(v) => {
+            hash.update(format!("+{}:", v.len()).as_bytes());
+            hash.update(v.as_bytes());
+        }
+    };
+    part(Some(&route.to_string()));
+    part(Some(method));
+    part(Some(path));
+    part(raw_query);
+    part(Some(&vary.len().to_string()));
     for (name, value) in vary {
-        out.push('|');
-        out.push_str(name);
-        out.push('=');
-        out.push_str(value.as_deref().unwrap_or(""));
+        part(Some(name));
+        part(value.as_deref());
     }
-    if let Some(k) = key {
-        out.push_str("|key=");
-        out.push_str(k);
-    }
-    out
+    part(key);
+    part(scheme);
+    let hex: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    format!("resp|{hex}")
 }
 
 #[cfg(test)]
@@ -264,9 +299,22 @@ mod tests {
             cors_allow_origin(&cors(None, false), "https://a"),
             Some("*".into())
         );
+        // Any origin is `*`, never the caller's own, and never with
+        // credentials, even if a config asked for them.
         assert_eq!(
             cors_allow_origin(&cors(None, true), "https://a"),
-            Some("https://a".into())
+            Some("*".into())
+        );
+        let any = cors_response_headers(&cors(None, true), "https://evil.example");
+        assert!(
+            !any.iter()
+                .any(|(k, _)| k == "access-control-allow-credentials")
+        );
+        let any =
+            cors_preflight_headers(&cors(None, true), "https://evil.example", None, &[]).unwrap();
+        assert!(
+            !any.iter()
+                .any(|(k, _)| k == "access-control-allow-credentials")
         );
         assert_eq!(
             cors_allow_origin(&cors(Some(vec!["https://b"]), false), "https://a"),
@@ -286,8 +334,8 @@ mod tests {
     #[test]
     fn storability() {
         let none = |_: &str| Vec::<String>::new();
-        assert!(cache_storable(200, &none));
-        assert!(!cache_storable(500, &none));
+        assert!(cache_storable(200, &[], &none));
+        assert!(!cache_storable(500, &[], &none));
         let private = |h: &str| {
             if h == "cache-control" {
                 vec!["private, max-age=0".to_string()]
@@ -295,7 +343,7 @@ mod tests {
                 vec![]
             }
         };
-        assert!(!cache_storable(200, &private));
+        assert!(!cache_storable(200, &[], &private));
         let cookie = |h: &str| {
             if h == "set-cookie" {
                 vec!["a=b".to_string()]
@@ -303,7 +351,7 @@ mod tests {
                 vec![]
             }
         };
-        assert!(!cache_storable(200, &cookie));
+        assert!(!cache_storable(200, &[], &cookie));
         let vary = |value: &'static str| {
             move |h: &str| {
                 if h == "vary" {
@@ -313,8 +361,18 @@ mod tests {
                 }
             }
         };
-        assert!(cache_storable(200, &vary("Accept-Encoding")));
-        assert!(!cache_storable(200, &vary("Accept, *")));
+        // A response varies only on headers the key covers, or isn't kept:
+        // a session app's `Vary: Cookie` page is one user's.
+        let encoding = ["accept-encoding".to_string()];
+        assert!(cache_storable(200, &encoding, &vary("Accept-Encoding")));
+        assert!(cache_storable(200, &encoding, &vary(" , accept-encoding")));
+        assert!(!cache_storable(200, &[], &vary("Accept-Encoding")));
+        assert!(!cache_storable(
+            200,
+            &encoding,
+            &vary("Accept-Encoding, Cookie")
+        ));
+        assert!(!cache_storable(200, &encoding, &vary("Accept, *")));
     }
 
     #[test]

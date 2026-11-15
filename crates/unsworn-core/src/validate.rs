@@ -215,7 +215,14 @@ impl LocationRules {
 
     /// Converts and validates raw string values. Undeclared names pass
     /// through as strings.
+    ///
+    /// A declared name that isn't an array may appear only once. Programs
+    /// disagree about which of two values counts (Go's `Query().Get` and
+    /// Flask's `args.get` take the first), and an upstream behind a `proxy`
+    /// route gets the request as it was sent, so checking one value would
+    /// let the other through unchecked.
     pub fn apply(&self, raw: &[(String, String)]) -> Result<Map<String, Value>, Vec<FieldError>> {
+        let mut repeated = Vec::new();
         let mut out = Map::new();
         for (name, value) in raw {
             if !self.specs.iter().any(|s| &s.name == name) && !out.contains_key(name) {
@@ -248,10 +255,23 @@ impl LocationRules {
                         .map(|v| coerce(v, &item_types))
                         .collect(),
                 )
+            } else if values.len() > 1 {
+                repeated.push(FieldError {
+                    location: format!("{}.{}", self.prefix, spec.name),
+                    message: format!(
+                        "{} is given {} times; send it once",
+                        spec.name,
+                        values.len()
+                    ),
+                });
+                continue;
             } else {
-                coerce(values[values.len() - 1], &types)
+                coerce(values[0], &types)
             };
             out.insert(spec.name.clone(), value);
+        }
+        if !repeated.is_empty() {
+            return Err(repeated);
         }
         let instance = Value::Object(out);
         let errors = collect_errors(&self.validator, &self.schema, &instance, self.prefix);
@@ -437,6 +457,16 @@ mod tests {
         assert_eq!(out["tag"], json!(["a", "b", "c"]));
         assert_eq!(out["other"], json!("x"));
         assert!(rules.apply(&[("limit".into(), "500".into())]).is_err());
+        // A single value may be sent once: an upstream that reads the
+        // first of two would get the one that wasn't checked.
+        let errors = rules
+            .apply(&[
+                ("limit".into(), "500".into()),
+                ("limit".into(), "10".into()),
+            ])
+            .unwrap_err();
+        assert_eq!(errors[0].location, "query.limit");
+        assert!(errors[0].message.contains("given 2 times"), "{errors:?}");
     }
 
     #[test]
