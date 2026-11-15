@@ -80,6 +80,15 @@ generator tops out at about 200,000 req/s here (see the Go rows), so the
 fastest scenarios are partly measuring wrk; their CPU µs/req column is
 the better guide.
 
+**Which build these are.** The tables come from a glibc build
+(`cargo build --profile dist`) made before Unsworn switched its allocator
+to mimalloc. The binary `install.sh` downloads is a static musl build, and
+with musl's own allocator it was 25 to 40% slower than these numbers. With
+mimalloc, spot checks of the musl build match the tables for proxied
+requests and handler calls, and reach about 80% of them for static
+answers. On glibc, mimalloc uses about 10% less CPU on proxied requests
+and handler calls than the tables show, and about 15 MB more memory.
+
 ### Setup
 
 | | |
