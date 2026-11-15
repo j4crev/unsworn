@@ -148,7 +148,8 @@ export function iterate(stream: ReadableStream<Uint8Array>): AsyncIterable<Uint8
   if (Symbol.asyncIterator in stream) return stream as unknown as AsyncIterable<Uint8Array>;
   return {
     async *[Symbol.asyncIterator]() {
-      const reader = stream.getReader();
+      // The check above narrows the type to nothing where streams iterate.
+      const reader = (stream as ReadableStream<Uint8Array>).getReader();
       for (;;) {
         const { done, value } = await reader.read();
         if (done) return;

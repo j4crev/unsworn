@@ -18,13 +18,14 @@ pub struct Function {
 }
 
 /// The entry's source: `import_line`, an import per handler module, and
-/// `export default {create}(bundle, options)`, where the options tell the
-/// runtime that the wasm and the assets sit next to the bundled file.
+/// `{export}(bundle, options)`, where `export` is the start of the export
+/// statement (`export default createX`) and the options tell the runtime
+/// that the wasm and the assets sit next to the bundled file.
 pub fn entry(
     p: &Prepared,
     entry_dir: &Path,
     import_line: &str,
-    create: &str,
+    export: &str,
 ) -> Result<String, String> {
     let (imports, bundle) = p.bundle_js(entry_dir)?;
     let assets = if p.statics.is_empty() {
@@ -38,7 +39,7 @@ pub fn entry(
 
 {import_line}
 {imports}
-export default {create}({bundle}, {{
+{export}({bundle}, {{
   wasm: new URL(\"./unsworn_bg.wasm\", import.meta.url),{assets}
 }});
 ",

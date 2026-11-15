@@ -4,9 +4,12 @@
   "type": "module",
   "description": "Runs Unsworn projects built for serverless targets, in plain Node.",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test *.test.mjs",
+    "typecheck": "tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution nodenext --allowImportingTsExtensions --skipLibCheck --types node ../../sdk/js/src/node.ts ../../sdk/js/src/vercel.ts ../../sdk/js/src/netlify.ts ../../sdk/js/src/lambda.ts ../../sdk/js/src/store.ts"
   },
   "devDependencies": {
-    "esbuild": "0.28.2"
+    "@types/node": "26.6.6",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
   }
 }

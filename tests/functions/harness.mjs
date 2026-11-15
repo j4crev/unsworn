@@ -2,7 +2,7 @@
 // stand-in for a Redis REST API.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 
@@ -16,10 +16,27 @@ const repo = join(here, "../..");
  * of `cargo run`.
  */
 export function build(dir, target, env = {}) {
+  // Test files run side by side and share the fixture, so only make the
+  // link when it isn't already right, and let another file win the race.
   const modules = join(dir, "node_modules/@unswornjs");
+  const link = join(modules, "sdk");
+  const sdk = join(repo, "sdk/js");
   mkdirSync(modules, { recursive: true });
-  rmSync(join(modules, "sdk"), { recursive: true, force: true });
-  symlinkSync(join(repo, "sdk/js"), join(modules, "sdk"));
+  const current = () => {
+    try {
+      return readlinkSync(link);
+    } catch {
+      return undefined;
+    }
+  };
+  if (current() !== sdk) {
+    try {
+      rmSync(link, { recursive: true, force: true });
+      symlinkSync(sdk, link);
+    } catch (err) {
+      if (current() !== sdk) throw err;
+    }
+  }
   const bin = process.env.UNSWORN_BIN;
   const [cmd, args] = bin ? [bin, []] : ["cargo", ["run", "-q", "-p", "unsworn", "--"]];
   const result = spawnSync(cmd, [...args, "build", "--target", target, "-C", dir], {

@@ -28,7 +28,7 @@ pub fn build(p: Prepared) -> Result<(), String> {
         &p,
         &p.out,
         "import { createNetlifyFunction } from \"@unswornjs/sdk/netlify\";",
-        "createNetlifyFunction",
+        "export default createNetlifyFunction",
     )?;
     let built = functions::build(&p, &dir, &entry)?;
 

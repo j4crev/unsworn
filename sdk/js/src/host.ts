@@ -325,5 +325,5 @@ const NULL_BODY = new Set([101, 204, 205, 304]);
 /** The core's answer as a `Response`. */
 export function toResponse(handled: HttpResponseValue, method: string): Response {
   const body = NULL_BODY.has(handled.status) || method === "HEAD" ? null : (handled.body ?? null);
-  return new Response(body, { status: handled.status, headers: handled.headers });
+  return new Response(body as BodyInit | null, { status: handled.status, headers: handled.headers });
 }
