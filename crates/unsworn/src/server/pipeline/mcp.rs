@@ -17,15 +17,15 @@ use unsworn_core::Project;
 use unsworn_core::config::{OrOff, ResponseValidation};
 use unsworn_core::mcp::rpc::{self, Headers, Message, RpcError};
 use unsworn_core::mcp::{McpEndpoint, McpTool};
+use unsworn_core::pipeline::{self as checks, header_map, retry_secs};
 use unsworn_core::policy::{AuthReq, Effective};
 use unsworn_core::project::{Proxy, Route};
 use unsworn_proto::{Phase, Request as ProtoRequest};
 
 use super::super::proxy;
-use super::super::support::{Body, empty, full, json_response, problem};
+use super::super::support::{Body, empty, full, json_response, problem, problem_response};
 use super::{
-    Ctx, Prepared, authenticate_request, check_rate_limit, collect_up_to, for_handler, header_map,
-    rate_limit_unavailable, retry_secs, run_befores, too_many_requests,
+    Ctx, Prepared, authenticate_request, check_rate_limit, collect_up_to, for_handler, run_befores,
 };
 use crate::store::RateLimit;
 use crate::workers::{CallBody, CallError, Reply};
@@ -60,7 +60,7 @@ pub(super) async fn serve(
         ..
     } = prepared;
     let body = body_bytes.unwrap_or_default();
-    let headers = mcp_headers(&parts.headers);
+    let headers = Headers::from_http(&parts.headers);
     let msg = match rpc::read(&body, &headers) {
         Ok(m) => m,
         Err(r) => return rpc_error(r.id.as_ref(), &r.error),
@@ -73,13 +73,15 @@ pub(super) async fn serve(
     {
         return rpc_error(msg.id.as_ref(), &e);
     }
-    let trusted = trusted_headers(&parts.headers, call.as_ref().map(|(t, _)| *t));
+    let trusted = rpc::trusted_headers(&parts.headers, call.as_ref().map(|(t, _)| *t));
 
     if let Some(limit) = &eff.rate_limit {
         match check_rate_limit(ctx, route.id, limit, &trusted, claims.as_ref()).await {
             RateLimit::Allowed => {}
-            RateLimit::Limited { retry_after } => return too_many_requests(retry_after),
-            RateLimit::Unavailable => return rate_limit_unavailable(),
+            RateLimit::Limited { retry_after } => {
+                return problem_response(checks::too_many_requests(retry_after));
+            }
+            RateLimit::Unavailable => return problem_response(checks::rate_limit_unavailable()),
         }
     }
 
@@ -224,11 +226,7 @@ async fn visible_tools(
 }
 
 fn query_pairs(parts: &http::request::Parts) -> Vec<(String, String)> {
-    parts
-        .uri
-        .query()
-        .map(|q| form_urlencoded::parse(q.as_bytes()).into_owned().collect())
-        .unwrap_or_default()
+    checks::query_pairs(parts.uri.query())
 }
 
 fn timed_out(timeout: Duration) -> String {
@@ -435,52 +433,6 @@ fn rpc_error(id: Option<&Value>, error: &RpcError) -> Response<Body> {
     json_response(status, &error.to_json(id))
 }
 
-/// The MCP request metadata headers.
-fn mcp_headers(headers: &HeaderMap) -> Headers {
-    let mut out = Headers::default();
-    let mut text = |name: &str, label: &str| match headers.get(name).map(|v| v.to_str()) {
-        None => None,
-        Some(Ok(v)) => Some(v.to_string()),
-        Some(Err(_)) => {
-            out.invalid.push(label.to_string());
-            None
-        }
-    };
-    let protocol_version = text("mcp-protocol-version", "MCP-Protocol-Version");
-    let method = text("mcp-method", "Mcp-Method");
-    let name = text("mcp-name", "Mcp-Name");
-    out.protocol_version = protocol_version;
-    out.method = method;
-    out.name = name;
-    for (k, v) in headers {
-        if k.as_str().starts_with("mcp-param-") {
-            match v.to_str() {
-                Ok(v) => out.params.push((k.as_str().to_string(), v.to_string())),
-                Err(_) => out.invalid.push(k.as_str().to_string()),
-            }
-        }
-    }
-    out
-}
-
-/// The headers policies may use as keys: `Mcp-Param-*` headers only when
-/// they were checked against this call's arguments.
-fn trusted_headers(headers: &HeaderMap, tool: Option<&McpTool>) -> HeaderMap {
-    let mut out = headers.clone();
-    let unchecked: Vec<_> = headers
-        .keys()
-        .filter(|k| {
-            k.as_str().starts_with("mcp-param-")
-                && !tool.is_some_and(|t| t.param_headers.iter().any(|p| p.header == k.as_str()))
-        })
-        .cloned()
-        .collect();
-    for k in unchecked {
-        out.remove(k);
-    }
-    out
-}
-
 fn forward(
     ctx: &Ctx,
     upstream: Arc<Proxy>,
@@ -503,21 +455,5 @@ fn forward(
 async fn rejection_text(resp: Response<Body>) -> String {
     let status = resp.status();
     let (bytes, _) = collect_up_to(resp.into_body(), 16 * 1024).await;
-    let reason = match serde_json::from_slice::<Value>(&bytes) {
-        Ok(v) => ["detail", "message", "error"]
-            .iter()
-            .find_map(|k| v.get(*k).and_then(Value::as_str).map(String::from))
-            .unwrap_or_else(|| v.to_string()),
-        Err(_) => String::from_utf8_lossy(&bytes).trim().to_string(),
-    };
-    let label = format!(
-        "{} {}",
-        status.as_u16(),
-        status.canonical_reason().unwrap_or("")
-    );
-    if reason.is_empty() {
-        format!("The call was rejected ({}).", label.trim())
-    } else {
-        format!("The call was rejected ({}): {reason}", label.trim())
-    }
+    rpc::rejection_text(status, &bytes)
 }

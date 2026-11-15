@@ -2670,7 +2670,6 @@ dependencies = [
  "async-compression",
  "bytes",
  "clap",
- "form_urlencoded",
  "futures-util",
  "http",
  "http-body",
@@ -2678,7 +2677,6 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
- "ipnet",
  "jsonwebtoken",
  "notify",
  "percent-encoding",
@@ -2687,7 +2685,6 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "tokio",
  "tokio-rustls",
@@ -2705,17 +2702,24 @@ dependencies = [
 name = "unsworn-core"
 version = "0.2.0"
 dependencies = [
+ "form_urlencoded",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
+ "http",
+ "ipnet",
  "jsonschema",
  "jsonwebtoken",
  "matchit",
+ "percent-encoding",
  "schemars",
  "serde",
  "serde_json",
  "serde_norway",
+ "sha2",
  "thiserror",
  "toml",
+ "tracing",
+ "unsworn-proto",
 ]
 
 [[package]]

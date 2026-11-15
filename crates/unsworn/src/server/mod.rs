@@ -24,7 +24,8 @@ use unsworn_core::Project;
 
 use crate::load;
 use crate::workers::{PoolOptions, Pools, SocketDir};
-use support::{Body, ClientIp, HttpClient, KeyCache, Metrics};
+use support::{Body, HttpClient, KeyCache, Metrics};
+use unsworn_core::pipeline::ClientIp;
 
 use crate::store::Store;
 
