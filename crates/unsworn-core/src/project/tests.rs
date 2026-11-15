@@ -472,9 +472,25 @@ fn store_config_is_checked() {
     assert!(errs.iter().any(|e| e.contains("needs a `url`")), "{errs:?}");
     let errs = errors(&[(
         "unsworn.toml",
-        "[store]\nbackend = \"redis\"\nurl = \"http://cache:6379\"\n",
+        "[store]\nbackend = \"redis\"\nurl = \"memcached://cache:11211\"\n",
     )]);
     assert!(errs.iter().any(|e| e.contains("redis://")), "{errs:?}");
+
+    // A REST API (how functions reach Redis) needs its token.
+    let errs = errors(&[(
+        "unsworn.toml",
+        "[store]\nbackend = \"redis\"\nurl = \"https://x.upstash.io\"\n",
+    )]);
+    assert!(
+        errs.iter().any(|e| e.contains("needs a `token`")),
+        "{errs:?}"
+    );
+    let p = project(&[(
+        "unsworn.toml",
+        "[store]\nbackend = \"redis\"\nurl = \"https://x.upstash.io\"\ntoken = \"t\"\n",
+    )]);
+    assert!(p.store.is_rest());
+    assert_eq!(p.store.token.as_deref(), Some("t"));
 
     let p = project(&[(
         "unsworn.toml",
@@ -483,6 +499,7 @@ fn store_config_is_checked() {
     assert_eq!(p.store.backend, crate::config::StoreBackend::Redis);
     assert_eq!(p.store.on_error, crate::config::OnError::Closed);
     assert_eq!(p.store.prefix, "");
+    assert!(!p.store.is_rest());
 }
 
 #[test]

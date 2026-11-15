@@ -96,3 +96,23 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           node --test worker.test.mjs
+
+  # The Node host that the serverless targets run on, driven directly.
+  functions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.130
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: crates/unsworn-wasm/build.sh
+      - name: Node host tests
+        timeout-minutes: 10
+        run: node --test tests/functions/node.test.mjs

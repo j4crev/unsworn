@@ -29,11 +29,22 @@ export function withRequestId<T>(id: string, fn: () => T): T {
   return currentId.run(id, fn);
 }
 
+let asJson = false;
+
+/**
+ * Writes handler logs as one JSON object per line, which is what log
+ * collectors for Node functions parse. Off, records go to the console as
+ * objects, which Workers Logs indexes.
+ */
+export function jsonLogs(on: boolean): void {
+  asJson = on;
+}
+
 export function logger(id: () => string | undefined) {
   const at = (level: Level) => (message: string, fields?: Record<string, unknown>) => {
     const record = { level, message: String(message), request_id: id(), ...fields };
     const method = level === "trace" ? "debug" : level === "info" ? "log" : level;
-    console[method](record);
+    console[method](asJson ? JSON.stringify(record) : record);
   };
   return { error: at("error"), warn: at("warn"), info: at("info"), debug: at("debug"), trace: at("trace") };
 }
