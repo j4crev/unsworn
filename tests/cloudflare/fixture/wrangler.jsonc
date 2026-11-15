@@ -1,0 +1,7 @@
+// The user's own settings; unsworn build adds what the Worker needs.
+{
+  "name": "unsworn-fixture",
+  "vars": {
+    "GREETING": "hello", // read by handlers through cloudflare:workers
+  },
+}

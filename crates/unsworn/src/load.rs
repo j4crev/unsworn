@@ -20,7 +20,7 @@ impl FsHost {
     }
 }
 
-const SKIP_DIRS: &[&str] = &["node_modules", ".git", "target", "__pycache__", ".venv"];
+pub const SKIP_DIRS: &[&str] = &["node_modules", ".git", "target", "__pycache__", ".venv"];
 
 impl Host for FsHost {
     fn read(&self, path: &str) -> Option<String> {

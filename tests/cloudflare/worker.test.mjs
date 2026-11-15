@@ -1,19 +1,20 @@
-// The Cloudflare host end to end: a project bundled into a Worker and run
-// in workerd. Needs the wasm core built (crates/unsworn-wasm/build.sh) and
-// `npm install` here.
+// The Cloudflare host end to end: a project built with `unsworn build
+// --target cloudflare` and run in workerd. Needs the wasm core built
+// (crates/unsworn-wasm/build.sh) and `npm install` here. Set UNSWORN_BIN
+// to use a built binary instead of `cargo run`.
 
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
-import { bundle, start, upstream } from "./harness.mjs";
+import { build, start, upstream } from "./harness.mjs";
 
 let worker;
 let up;
 
 before(async () => {
   up = await upstream();
-  const config = bundle(new URL("./fixture", import.meta.url).pathname);
-  worker = await start(config, { UPSTREAM: up.url, GREETING: "hello", UNSWORN_DEV: "1" });
+  const { dir } = build(new URL("./fixture", import.meta.url).pathname);
+  worker = await start(dir, { UPSTREAM: up.url, UNSWORN_DEV: "1" });
 });
 
 after(() => {
