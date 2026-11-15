@@ -102,9 +102,120 @@ pub fn cache_storable(status: u16, header: &dyn Fn(&str) -> Vec<String>) -> bool
     {
         return false;
     }
+    // `Vary: *` says no later request can be matched to this response
+    // (RFC 9111 section 4.1).
+    if header("vary")
+        .iter()
+        .flat_map(|v| v.split(','))
+        .any(|v| v.trim() == "*")
+    {
+        return false;
+    }
     !header("content-type")
         .iter()
-        .any(|ct| ct.starts_with("text/event-stream"))
+        .any(|ct| ct.to_ascii_lowercase().starts_with("text/event-stream"))
+}
+
+/// An HTTP date, in milliseconds since the Unix epoch.
+fn http_date_ms(value: &str) -> Option<u64> {
+    let time = httpdate::parse_http_date(value.trim()).ok()?;
+    let since = time.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(since.as_millis() as u64)
+}
+
+/// How long a response may be served from the cache, or `None` when it's
+/// already stale and shouldn't be stored.
+///
+/// The response decides, as RFC 9111 section 4.2 has a shared cache work it
+/// out: `s-maxage`, else `max-age`, else `Expires` (counted from `Date`).
+/// The rule's `ttl` is the lifetime of a response that says nothing, and
+/// the most any response gets. Time the response already spent in caches
+/// upstream (`Age`) comes off. Freshness information that can't be read
+/// means stale. `header` returns all values of a (lowercase) response
+/// header, and `now_ms` is the host's wall clock.
+pub fn cache_lifetime(
+    ttl: std::time::Duration,
+    now_ms: u64,
+    header: &dyn Fn(&str) -> Vec<String>,
+) -> Option<std::time::Duration> {
+    use std::time::Duration;
+    let cache_control = header("cache-control").join(",").to_ascii_lowercase();
+    let directive = |name: &str| {
+        cache_control.split(',').find_map(|d| {
+            let (key, value) = d.trim().split_once('=')?;
+            (key.trim() == name).then(|| {
+                let seconds = value.trim().trim_matches('"').parse::<u64>();
+                Duration::from_secs(seconds.unwrap_or(0))
+            })
+        })
+    };
+    let expires = || {
+        let expires = header("expires").into_iter().next()?;
+        let date = header("date").into_iter().next();
+        let from = date.as_deref().and_then(http_date_ms).unwrap_or(now_ms);
+        // A date that can't be read, such as `0`, is one in the past.
+        let until = http_date_ms(&expires).unwrap_or(0);
+        Some(Duration::from_millis(until.saturating_sub(from)))
+    };
+    let stated = directive("s-maxage")
+        .or_else(|| directive("max-age"))
+        .or_else(expires);
+    let lifetime = stated.map_or(ttl, |stated| stated.min(ttl));
+    let age = response_age(header);
+    lifetime.checked_sub(age).filter(|left| !left.is_zero())
+}
+
+/// The `Age` a response arrived with: how long caches upstream held it.
+pub fn response_age(header: &dyn Fn(&str) -> Vec<String>) -> std::time::Duration {
+    let seconds = header("age")
+        .first()
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    std::time::Duration::from_secs(seconds.unwrap_or(0))
+}
+
+/// Whether a conditional request's validators match a stored response, so
+/// the client's copy is still good and `304` can stand in for the body
+/// (RFC 9110 section 13.2.2): `If-None-Match` against the `ETag`, or, only
+/// without one, `If-Modified-Since` against `Last-Modified`.
+pub fn not_modified(
+    if_none_match: Option<&str>,
+    if_modified_since: Option<&str>,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> bool {
+    if let Some(condition) = if_none_match {
+        return etag.is_some_and(|etag| etag_listed(condition, etag));
+    }
+    match (
+        if_modified_since.and_then(http_date_ms),
+        last_modified.and_then(http_date_ms),
+    ) {
+        (Some(since), Some(modified)) => modified <= since,
+        _ => false,
+    }
+}
+
+/// Whether an `If-None-Match` list names `etag`, compared weakly: `W/`
+/// prefixes don't count.
+fn etag_listed(list: &str, etag: &str) -> bool {
+    let opaque = |tag: &str| tag.strip_prefix("W/").unwrap_or(tag).to_string();
+    let want = opaque(etag.trim());
+    let mut rest = list.trim();
+    if rest == "*" {
+        return true;
+    }
+    loop {
+        rest = rest.trim_start_matches([' ', '\t', ',']);
+        let tag = rest.strip_prefix("W/").unwrap_or(rest);
+        // An entity tag is quoted, and may hold commas.
+        let Some(end) = tag.strip_prefix('"').and_then(|t| t.find('"')) else {
+            return false;
+        };
+        if tag[..end + 2] == want {
+            return true;
+        }
+        rest = &tag[end + 2..];
+    }
 }
 
 /// Builds a cache key from its parts.
@@ -193,6 +304,107 @@ mod tests {
             }
         };
         assert!(!cache_storable(200, &cookie));
+        let vary = |value: &'static str| {
+            move |h: &str| {
+                if h == "vary" {
+                    vec![value.to_string()]
+                } else {
+                    vec![]
+                }
+            }
+        };
+        assert!(cache_storable(200, &vary("Accept-Encoding")));
+        assert!(!cache_storable(200, &vary("Accept, *")));
+    }
+
+    #[test]
+    fn lifetimes() {
+        let ttl = Duration::from_secs(30);
+        let now = 1_700_000_000_000; // Tue, 14 Nov 2023 22:13:20 GMT
+        let life = |headers: &'static [(&'static str, &'static str)]| {
+            cache_lifetime(ttl, now, &|name| {
+                headers
+                    .iter()
+                    .filter(|(k, _)| *k == name)
+                    .map(|(_, v)| v.to_string())
+                    .collect()
+            })
+            .map(|d| d.as_secs())
+        };
+        // Nothing stated: the rule's ttl.
+        assert_eq!(life(&[]), Some(30));
+        assert_eq!(
+            life(&[("cache-control", "public, must-revalidate")]),
+            Some(30)
+        );
+        // The response may shorten it, never lengthen it.
+        assert_eq!(life(&[("cache-control", "max-age=5")]), Some(5));
+        assert_eq!(life(&[("cache-control", "Max-Age=3600")]), Some(30));
+        assert_eq!(life(&[("cache-control", "max-age=0")]), None);
+        // A shared cache reads s-maxage first, then max-age, then Expires.
+        assert_eq!(
+            life(&[("cache-control", "max-age=5, s-maxage=10")]),
+            Some(10)
+        );
+        assert_eq!(
+            life(&[
+                ("cache-control", "max-age=5"),
+                ("expires", "Tue, 14 Nov 2023 22:13:40 GMT")
+            ]),
+            Some(5)
+        );
+        assert_eq!(
+            life(&[("expires", "Tue, 14 Nov 2023 22:13:40 GMT")]),
+            Some(20)
+        );
+        assert_eq!(
+            life(&[
+                ("expires", "Tue, 14 Nov 2023 22:13:40 GMT"),
+                ("date", "Tue, 14 Nov 2023 22:13:30 GMT")
+            ]),
+            Some(10)
+        );
+        assert_eq!(life(&[("expires", "Tue, 14 Nov 2023 22:13:20 GMT")]), None);
+        // What can't be read is stale.
+        assert_eq!(life(&[("expires", "0")]), None);
+        assert_eq!(life(&[("cache-control", "max-age=soon")]), None);
+        // Time spent in caches upstream counts.
+        assert_eq!(life(&[("age", "10")]), Some(20));
+        assert_eq!(
+            life(&[("cache-control", "max-age=20"), ("age", "5")]),
+            Some(15)
+        );
+        assert_eq!(life(&[("cache-control", "max-age=5"), ("age", "5")]), None);
+    }
+
+    #[test]
+    fn conditions() {
+        let etag = Some("\"v1\"");
+        let modified = Some("Tue, 14 Nov 2023 22:13:20 GMT");
+        for matching in [
+            "\"v1\"",
+            "W/\"v1\"",
+            "\"a,b\", \"v1\"",
+            "\"v0\" ,W/\"v1\"",
+            "*",
+        ] {
+            assert!(not_modified(Some(matching), None, etag, None), "{matching}");
+        }
+        assert!(not_modified(Some("\"v1\""), None, Some("W/\"v1\""), None));
+        for other in ["\"v2\"", "v1", "\"v", "", "\"v0\", \"v11\""] {
+            assert!(!not_modified(Some(other), None, etag, None), "{other}");
+        }
+        assert!(!not_modified(Some("\"v1\""), None, None, modified));
+        // Dates only count when there's no If-None-Match.
+        let later = Some("Tue, 14 Nov 2023 22:13:21 GMT");
+        let earlier = Some("Tue, 14 Nov 2023 22:13:19 GMT");
+        assert!(not_modified(None, modified, None, modified));
+        assert!(not_modified(None, later, None, modified));
+        assert!(!not_modified(None, earlier, None, modified));
+        assert!(!not_modified(None, Some("yesterday"), None, modified));
+        assert!(!not_modified(None, later, etag, None));
+        assert!(!not_modified(Some("\"v2\""), later, etag, modified));
+        assert!(!not_modified(None, None, etag, modified));
     }
 
     #[test]

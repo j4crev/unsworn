@@ -1,5 +1,6 @@
 //! The checks and conversions a request goes through, as pure functions.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 
@@ -23,6 +24,67 @@ pub fn decode_param(s: &str) -> String {
     percent_encoding::percent_decode_str(s)
         .decode_utf8_lossy()
         .into_owned()
+}
+
+/// Normalizes a request path the way RFC 3986 section 6.2.2 describes, so
+/// every route and policy sees the path an upstream would resolve it to:
+/// percent-encoded unreserved characters are decoded (`%61` is `a`), other
+/// escapes get uppercase hex digits, and `.` and `..` segments are removed.
+/// Reserved characters stay encoded, so `%2F` is never a separator.
+pub fn normalize_path(path: &str) -> Cow<'_, str> {
+    if !path.starts_with('/') || (!path.contains('%') && !path.contains("/.")) {
+        return Cow::Borrowed(path);
+    }
+    let bytes = path.as_bytes();
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    let mut decoded = String::with_capacity(path.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let escaped = (bytes[i] == b'%')
+            .then(|| Some(hex(*bytes.get(i + 1)?)? << 4 | hex(*bytes.get(i + 2)?)?))
+            .flatten();
+        match escaped {
+            Some(b) if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') => {
+                decoded.push(b as char);
+                i += 3;
+            }
+            Some(b) => {
+                decoded.push_str(&format!("%{b:02X}"));
+                i += 3;
+            }
+            None => {
+                // `path` is valid UTF-8, and this copies whole characters.
+                let len = path[i..].chars().next().map_or(1, char::len_utf8);
+                decoded.push_str(&path[i..i + len]);
+                i += len;
+            }
+        }
+    }
+    let mut segments: Vec<&str> = Vec::new();
+    // A path that ends in a dot segment names a directory.
+    let mut directory = false;
+    for segment in decoded.split('/').skip(1) {
+        match segment {
+            "." => directory = true,
+            ".." => {
+                segments.pop();
+                directory = true;
+            }
+            s => {
+                segments.push(s);
+                directory = false;
+            }
+        }
+    }
+    let mut out = format!("/{}", segments.join("/"));
+    if directory && !segments.is_empty() {
+        out.push('/');
+    }
+    if out == path {
+        Cow::Borrowed(path)
+    } else {
+        Cow::Owned(out)
+    }
 }
 
 fn ip_matches(entry: &str, ip: IpAddr) -> bool {
@@ -135,7 +197,10 @@ pub fn check_body(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let is_json = content_type.starts_with("application/json") || content_type.contains("+json");
+    // The media type without its parameters: `application/json`, or any
+    // type with the `+json` structured syntax suffix (RFC 6839).
+    let media_type = content_type.split(';').next().unwrap_or("").trim();
+    let is_json = media_type == "application/json" || media_type.ends_with("+json");
     let empty_body = body.is_none_or(<[u8]>::is_empty);
     let mut json_body = None;
     if let Some(bytes) = body
@@ -231,7 +296,9 @@ pub fn rate_limit_bucket(
 
 /// The cache key for a request, or `None` when it mustn't be cached: a
 /// method other than `GET` or `HEAD`, a protocol upgrade such as a
-/// WebSocket, or an authenticated request whose key doesn't separate users.
+/// WebSocket, an authenticated request whose key doesn't separate users,
+/// or a request with an `Authorization` header Unsworn didn't check (the
+/// upstream may have) that the rule doesn't vary on (RFC 9111 section 3.5).
 #[allow(clippy::too_many_arguments)]
 pub fn cache_key(
     rule: &CacheRule,
@@ -247,6 +314,12 @@ pub fn cache_key(
         return None;
     }
     if claims.is_some() && !rules::cache_separates_users(rule, credential_headers) {
+        return None;
+    }
+    if claims.is_none()
+        && headers.contains_key(header::AUTHORIZATION)
+        && !rule.vary.iter().any(|h| h == "authorization")
+    {
         return None;
     }
     let vary: Vec<(String, Option<String>)> = rule
@@ -322,13 +395,24 @@ pub fn finish_headers(eff: &Effective, origin: Option<&str>, headers: &mut Heade
     }
 }
 
-/// A `redirect` route's target, with path parameters filled in.
-pub fn redirect_location(to: &str, raw_params: &[(String, String)]) -> String {
+/// Everything but RFC 3986's unreserved characters.
+pub(crate) const NOT_UNRESERVED: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+/// A `redirect` route's target, with path parameters filled in. Their
+/// (decoded) values are percent-encoded again, so the result is a valid
+/// URI whatever they hold; a catch-all's slashes stay.
+pub fn redirect_location(to: &str, params: &[(String, String)]) -> String {
+    let encode = |v: &str| percent_encoding::utf8_percent_encode(v, NOT_UNRESERVED).to_string();
     let mut location = to.to_string();
-    for (k, v) in raw_params {
+    for (k, v) in params {
+        let path: Vec<String> = v.split('/').map(encode).collect();
         location = location
-            .replace(&format!("{{*{k}}}"), v)
-            .replace(&format!("{{{k}}}"), v);
+            .replace(&format!("{{*{k}}}"), &path.join("/"))
+            .replace(&format!("{{{k}}}"), &encode(v));
     }
     location
 }
@@ -462,6 +546,21 @@ mod tests {
             cache_key(&rule, &[], 1, "GET", &uri, &headers, Some(&claims), client),
             None
         );
+        // Credentials Unsworn didn't check: cached only per credential.
+        let mut bearer = headers.clone();
+        bearer.insert("authorization", "Bearer a".parse().unwrap());
+        assert_eq!(
+            cache_key(&rule, &[], 1, "GET", &uri, &bearer, None, client),
+            None
+        );
+        let per_user = CacheRule {
+            vary: vec!["authorization".into()],
+            ..rule.clone()
+        };
+        assert_eq!(
+            cache_key(&per_user, &[], 1, "GET", &uri, &bearer, None, client).as_deref(),
+            Some("1|GET|/a?b=1|authorization=Bearer a")
+        );
         // A WebSocket upgrade never gets a cached response.
         let mut upgrade = headers.clone();
         upgrade.insert("connection", "Upgrade".parse().unwrap());
@@ -473,10 +572,44 @@ mod tests {
     }
 
     #[test]
+    fn normalized_paths() {
+        for (path, want) in [
+            ("/", "/"),
+            ("/a/b", "/a/b"),
+            ("/.well-known/x", "/.well-known/x"),
+            ("/a/./b", "/a/b"),
+            ("/public/../admin/x", "/admin/x"),
+            ("/a/b/..", "/a/"),
+            ("/a/b/.", "/a/b/"),
+            ("/../..", "/"),
+            ("/a/../", "/"),
+            ("/a//b/", "/a//b/"),
+            ("/%61dmin", "/admin"),
+            ("/a/%2e%2E/b", "/b"),
+            ("/a%2fb/%c3%a9", "/a%2Fb/%C3%A9"),
+            ("/a%zz/100%", "/a%zz/100%"),
+            ("/caf\u{e9}/%7Euser", "/caf\u{e9}/~user"),
+            ("*", "*"),
+        ] {
+            assert_eq!(normalize_path(path), want, "{path}");
+        }
+        assert!(matches!(normalize_path("/a%2Fb"), Cow::Borrowed(_)));
+    }
+
+    #[test]
     fn redirects_and_decoding() {
         let params = vec![("id".to_string(), "7".to_string())];
         assert_eq!(redirect_location("/v2/{id}", &params), "/v2/7");
         assert_eq!(redirect_location("/files/{*id}", &params), "/files/7");
+        let params = vec![("p".to_string(), "a b/c?d#\u{e9}\n".to_string())];
+        assert_eq!(
+            redirect_location("/to/{p}", &params),
+            "/to/a%20b%2Fc%3Fd%23%C3%A9%0A"
+        );
+        assert_eq!(
+            redirect_location("https://x.example/{*p}", &params),
+            "https://x.example/a%20b/c%3Fd%23%C3%A9%0A"
+        );
         assert_eq!(decode_param("a%20b"), "a b");
         assert_eq!(
             query_pairs(Some("a=1&b=x%20y")),

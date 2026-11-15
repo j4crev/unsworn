@@ -3,7 +3,7 @@
 use http::{Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
-use unsworn_core::pipeline::proxy::{ForwardInfo, is_upgrade, rewrite, strip_hop_by_hop};
+use unsworn_core::pipeline::proxy::{ForwardInfo, is_upgrade, response_headers, rewrite};
 use unsworn_core::project::Proxy;
 
 use super::support::{Body, BoxError, HttpClient, problem, problem_response};
@@ -63,7 +63,7 @@ async fn forward_inner(
     }
 
     let (mut parts, body) = resp.into_parts();
-    strip_hop_by_hop(&mut parts.headers);
+    response_headers(&mut parts.headers, parts.version);
     Response::from_parts(
         parts,
         body.map_err(|e| -> BoxError { Box::new(e) }).boxed_unsync(),

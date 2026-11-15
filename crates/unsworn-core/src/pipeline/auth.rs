@@ -122,10 +122,11 @@ async fn fetch_jwks<H: Host>(host: &H, url: &str) -> Result<String, String> {
     String::from_utf8(resp.into_body().to_vec()).map_err(|e| e.to_string())
 }
 
-/// Asks a remote verifier whether `key` is valid.
+/// Asks a remote verifier whether `key` is valid, as an RFC 7662 token
+/// introspection request.
 async fn verify_key<H: Host>(host: &H, verifier: &KeyVerifier, key: &str) -> Verdict {
     let mut request = http::Request::post(verifier.url.as_str())
-        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CONTENT_TYPE, Verdict::REQUEST_TYPE)
         .header(header::ACCEPT, "application/json")
         .header(header::USER_AGENT, USER_AGENT);
     for (name, value) in &verifier.headers {
@@ -217,19 +218,18 @@ pub(super) async fn authenticate_request<H: Host>(
     let AuthReq::AnyOf(alts) = &eff.auth else {
         return Ok((context, None));
     };
-    let kid = token_kid(
-        headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok()),
-    );
+    let creds = Creds { headers, query };
     let schemes: Vec<Arc<Scheme>> = alts
         .iter()
         .filter_map(|alt| project.schemes.get(&alt.scheme).cloned())
         .collect();
     for scheme in &schemes {
+        let kid = match scheme.as_ref() {
+            Scheme::Jwt(jwt) => token_kid(jwt, &creds),
+            Scheme::ApiKey(_) => None,
+        };
         keys.ensure(host, scheme, kid.as_deref()).await;
     }
-    let creds = Creds { headers, query };
     // Remote API keys are checked up front, and only when the request
     // carries one, so `authenticate` stays synchronous.
     let mut verdicts = HashMap::new();

@@ -280,7 +280,7 @@
               "type": "string"
             },
             "url": {
-              "description": "An endpoint that verifies keys, instead of `keys`.",
+              "description": "An OAuth 2.0 token introspection endpoint (RFC 7662) that verifies\nkeys, instead of `keys`.",
               "type": [
                 "string",
                 "null"

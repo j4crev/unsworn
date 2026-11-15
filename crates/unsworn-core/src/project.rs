@@ -450,7 +450,7 @@ pub struct Matched<'a> {
 
 impl Project {
     pub fn match_request(&self, host: Option<&str>, method: &str, path: &str) -> MatchResult<'_> {
-        let host = host.map(|h| h.split(':').next().unwrap_or(h).to_ascii_lowercase());
+        let host = host.map(host_name);
         let mut allowed: Vec<String> = Vec::new();
         let candidates = [host, None];
         for (i, key) in candidates.iter().enumerate() {
@@ -507,6 +507,10 @@ impl Project {
         if allowed.is_empty() {
             MatchResult::NotFound
         } else {
+            // A route for `GET` answers `HEAD` too.
+            if allowed.iter().any(|m| m == "GET") {
+                allowed.push("HEAD".into());
+            }
             allowed.sort();
             allowed.dedup();
             MatchResult::MethodNotAllowed(allowed)
@@ -3220,12 +3224,18 @@ fn credential_headers(schemes: &BTreeMap<String, Arc<Scheme>>, auth: &AuthReq) -
         .collect()
 }
 
+/// The host of a `Host` header or URI authority, lowercase and without the
+/// port. An IPv6 literal keeps its brackets (`[::1]`).
+fn host_name(authority: &str) -> String {
+    match http::uri::Authority::try_from(authority) {
+        Ok(a) => a.host().to_ascii_lowercase(),
+        Err(_) => authority.to_ascii_lowercase(),
+    }
+}
+
 /// An HTTP header name: one or more RFC 9110 token characters.
-fn valid_header_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+pub(crate) fn valid_header_name(name: &str) -> bool {
+    http::HeaderName::from_bytes(name.as_bytes()).is_ok()
 }
 
 fn valid_ip_or_cidr(s: &str) -> bool {

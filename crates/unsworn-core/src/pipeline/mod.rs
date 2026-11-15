@@ -26,10 +26,11 @@ pub use host::{
     Response, StaticRequest,
 };
 
+pub(crate) use checks::NOT_UNRESERVED;
 pub use checks::{
     access, cache_key, check_body, check_content_length, decode_param, finish_headers, header_map,
-    ip_allowed, key_value, preflight_headers, query_pairs, rate_limit_bucket, redirect_location,
-    response_head, validate_inputs,
+    ip_allowed, key_value, normalize_path, preflight_headers, query_pairs, rate_limit_bucket,
+    redirect_location, response_head, validate_inputs,
 };
 pub use client_ip::ClientIp;
 pub use problem::{Problem, auth_failure, rate_limit_unavailable, retry_secs, too_many_requests};

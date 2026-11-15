@@ -16,8 +16,8 @@ use super::auth::{AuthOutcome, KeyCache, authenticate_request};
 use super::host::{Body, CallError, Deadline, Host, ProxyRequest, Reply, Response, StaticRequest};
 use super::{
     Problem, access, cache_key, check_body, check_content_length, decode_param, finish_headers,
-    header_map, preflight_headers, query_pairs, rate_limit_bucket, redirect_location,
-    response_head, validate_inputs,
+    header_map, normalize_path, preflight_headers, query_pairs, rate_limit_bucket,
+    redirect_location, response_head, validate_inputs,
 };
 use crate::config::{ResponseValidation, TrailingSlash};
 use crate::policy::{Effective, HandlerRef, RateLimit as RateLimitRule};
@@ -66,6 +66,7 @@ impl Router {
         req: http::Request<H::RequestBody>,
         client_ip: IpAddr,
     ) -> Handled<H::ResponseBody> {
+        let req = normalized(req);
         let ctx = Ctx {
             host,
             project: &self.project,
@@ -87,6 +88,26 @@ impl Router {
         let (response, route) = route_request(&ctx, req).await;
         Handled { response, route }
     }
+}
+
+/// The request with its path normalized (see [`normalize_path`]), so
+/// matching, policies, handlers and upstreams all see the same path.
+fn normalized<B>(mut req: http::Request<B>) -> http::Request<B> {
+    let std::borrow::Cow::Owned(path) = normalize_path(req.uri().path()) else {
+        return req;
+    };
+    let path_and_query = match req.uri().query() {
+        Some(q) => format!("{path}?{q}"),
+        None => path,
+    };
+    let mut parts = req.uri().clone().into_parts();
+    if let Ok(pq) = http::uri::PathAndQuery::try_from(path_and_query) {
+        parts.path_and_query = Some(pq);
+        if let Ok(uri) = http::Uri::from_parts(parts) {
+            *req.uri_mut() = uri;
+        }
+    }
+    req
 }
 
 /// Per-request facts used across steps.
@@ -148,11 +169,17 @@ async fn route_request<H: Host>(
 ) -> (Resp<H>, String) {
     let project = ctx.project;
     let path = req.uri().path().to_string();
+    // An absolute request target (and HTTP/2's `:authority`, which arrives
+    // as one) names the host; `Host` only does when there's none (RFC 9112
+    // section 3.2.2).
     let host_name = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .or_else(|| req.uri().host())
+        .uri()
+        .host()
+        .or_else(|| {
+            req.headers()
+                .get(header::HOST)
+                .and_then(|v| v.to_str().ok())
+        })
         .map(String::from);
     let method = req.method().as_str().to_string();
 
@@ -351,7 +378,12 @@ async fn serve_route<H: Host>(
         Ok(context) => prepared.context = context,
         Err(resp) => return resp,
     }
-    let cache_key = prepared.cache_key.take();
+    // A `HEAD` request may be answered from the cache, but its response
+    // has no body to answer a later `GET` with, so it's never stored.
+    let cache_key = prepared
+        .cache_key
+        .take()
+        .filter(|_| prepared.template.method == "GET");
     let resp = run_action(ctx, route, prepared, deadline).await;
     if let (Some(key), Some(rule)) = (cache_key, eff.cache.as_ref()) {
         return store_in_cache(ctx, key, rule.ttl, resp).await;
@@ -401,7 +433,7 @@ async fn prepare<H: Host>(
     if let Some(key) = &cache_key
         && let Some(hit) = cache_get(&ctx.host.store(), key, ctx.host.now_ms()).await
     {
-        return Err(cached_response(ctx, &hit, &method));
+        return Err(cached_response(ctx, &hit, &method, req.headers()));
     }
 
     // A handler with `stream_body` reads the body as it arrives instead.
@@ -470,15 +502,41 @@ fn rate_limited<B>(outcome: RateLimit) -> Result<(), Response<B>> {
     }
 }
 
-fn cached_response<H: Host>(ctx: &Ctx<'_, H>, hit: &CachedResponse, method: &str) -> Resp<H> {
-    let body = if method == "HEAD" {
+/// The answer from a cache entry: the stored response, or `304` when the
+/// request's validators show the client already has it.
+fn cached_response<H: Host>(
+    ctx: &Ctx<'_, H>,
+    hit: &CachedResponse,
+    method: &str,
+    request: &http::HeaderMap,
+) -> Resp<H> {
+    let stored = |name: &str| {
+        let found = hit.headers.iter().find(|(k, _)| k == name);
+        found.map(|(_, v)| v.as_str())
+    };
+    let asked = |name: http::HeaderName| request.get(name).and_then(|v| v.to_str().ok());
+    let not_modified = rules::not_modified(
+        asked(header::IF_NONE_MATCH),
+        asked(header::IF_MODIFIED_SINCE),
+        stored("etag"),
+        stored("last-modified"),
+    );
+    let body = if not_modified || method == "HEAD" {
         Body::Empty
     } else {
         Body::Bytes(hit.body.clone())
     };
     let mut resp = http::Response::new(body);
-    *resp.status_mut() = StatusCode::from_u16(hit.status).unwrap_or(StatusCode::OK);
+    *resp.status_mut() = if not_modified {
+        StatusCode::NOT_MODIFIED
+    } else {
+        StatusCode::from_u16(hit.status).unwrap_or(StatusCode::OK)
+    };
     for (k, v) in &hit.headers {
+        // A `304` has no content for these to describe.
+        if not_modified && matches!(k.as_str(), "content-length" | "content-type") {
+            continue;
+        }
         if let (Ok(n), Ok(v)) = (
             http::HeaderName::try_from(k.as_str()),
             HeaderValue::from_str(v),
@@ -486,7 +544,10 @@ fn cached_response<H: Host>(ctx: &Ctx<'_, H>, hit: &CachedResponse, method: &str
             resp.headers_mut().append(n, v);
         }
     }
-    let age = hit.age(ctx.host.now_ms()).as_secs();
+    // Its age on arrival, plus its time here (RFC 9111 section 4.2.3).
+    let upstream =
+        rules::response_age(&|name| stored(name).map(String::from).into_iter().collect());
+    let age = (upstream + hit.age(ctx.host.now_ms())).as_secs();
     resp.headers_mut()
         .insert(header::AGE, HeaderValue::from(age));
     if ctx.host.dev() {
@@ -678,13 +739,24 @@ async fn store_in_cache<H: Host>(
     resp: Resp<H>,
 ) -> Resp<H> {
     let status = resp.status().as_u16();
-    let storable = rules::cache_storable(status, &|name| {
-        resp.headers()
-            .get_all(name)
-            .iter()
-            .filter_map(|v| v.to_str().ok().map(String::from))
-            .collect()
-    });
+    let (storable, lifetime) = {
+        let header = |name: &str| -> Vec<String> {
+            resp.headers()
+                .get_all(name)
+                .iter()
+                .filter_map(|v| v.to_str().ok().map(String::from))
+                .collect()
+        };
+        (
+            rules::cache_storable(status, &header),
+            rules::cache_lifetime(ttl, ctx.host.now_ms(), &header),
+        )
+    };
+    // The response says how long it stays fresh; `ttl` is the fallback and
+    // the ceiling. One that's stale on arrival isn't worth keeping.
+    let Some(ttl) = lifetime else {
+        return resp;
+    };
     let small = resp
         .headers()
         .get(header::CONTENT_LENGTH)

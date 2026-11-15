@@ -212,7 +212,8 @@ pub struct RawApiKey {
     pub query: Option<String>,
     /// The valid keys: a list, or a comma-separated string.
     pub keys: Option<StringOrList>,
-    /// An endpoint that verifies keys, instead of `keys`.
+    /// An OAuth 2.0 token introspection endpoint (RFC 7662) that verifies
+    /// keys, instead of `keys`.
     pub url: Option<String>,
     /// Headers sent to `url`, such as its own credentials.
     pub headers: Option<BTreeMap<String, String>>,

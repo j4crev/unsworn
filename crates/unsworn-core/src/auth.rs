@@ -44,33 +44,42 @@ impl ProtectedResource {
     /// Paths where the metadata is served: the root form and the form with
     /// the resource's path appended.
     pub fn well_known_paths(&self) -> Vec<String> {
-        let mut paths = vec!["/.well-known/oauth-protected-resource".to_string()];
-        let (_, path) = split_url(&self.resource);
-        let path = path.trim_end_matches('/');
+        let mut paths = vec![WELL_KNOWN.to_string()];
+        let (_, path) = self.origin_and_path();
         if !path.is_empty() {
-            paths.push(format!("/.well-known/oauth-protected-resource{path}"));
+            paths.push(format!("{WELL_KNOWN}{path}"));
         }
         paths
     }
 
     /// The metadata URL to put in `WWW-Authenticate`.
     pub fn metadata_url(&self) -> String {
-        let (origin, path) = split_url(&self.resource);
-        format!(
-            "{origin}/.well-known/oauth-protected-resource{}",
-            path.trim_end_matches('/')
-        )
+        let (origin, path) = self.origin_and_path();
+        format!("{origin}{WELL_KNOWN}{path}")
+    }
+
+    /// The resource URL as (`https://host:port`, `/path`), the path without
+    /// a trailing slash.
+    fn origin_and_path(&self) -> (String, String) {
+        let uri = self.resource.parse::<http::Uri>().ok();
+        let parts = uri
+            .as_ref()
+            .and_then(|uri| Some((uri.scheme_str()?, uri.authority()?, uri.path())));
+        match parts {
+            Some((scheme, authority, path)) => (
+                format!("{scheme}://{authority}"),
+                path.trim_end_matches('/').to_string(),
+            ),
+            None => (
+                self.resource.trim_end_matches('/').to_string(),
+                String::new(),
+            ),
+        }
     }
 }
 
-/// Splits `https://host:port/path` into (`https://host:port`, `/path`).
-fn split_url(url: &str) -> (&str, &str) {
-    let start = url.find("://").map_or(0, |i| i + 3);
-    match url[start..].find('/') {
-        Some(i) => url.split_at(start + i),
-        None => (url, ""),
-    }
-}
+/// Where RFC 9728 puts protected-resource metadata.
+const WELL_KNOWN: &str = "/.well-known/oauth-protected-resource";
 
 #[derive(Debug, Clone)]
 pub enum JwtKeys {
@@ -110,10 +119,12 @@ pub enum ApiKeys {
     Remote(KeyVerifier),
 }
 
-/// An external API-key verification endpoint.
+/// An external API-key verification endpoint, speaking OAuth 2.0 token
+/// introspection (RFC 7662).
 ///
-/// Unsworn sends `POST <url>` with `{"key": "..."}` and expects `200` with
-/// `{"active": true, "claims": {...}}` or `{"active": false}`.
+/// Unsworn sends `POST <url>` with the form field `token=<key>` and expects
+/// `200` with a JSON object: `{"active": true, ...}`, whose other members
+/// are the key's claims, or `{"active": false}`.
 #[derive(Debug, Clone)]
 pub struct KeyVerifier {
     pub url: String,
@@ -140,12 +151,26 @@ impl KeyVerifier {
     }
 }
 
-/// The key id (`kid`) in the header of a bearer token, used to notice a
-/// rotated JWKS. `None` when the request has no bearer token or the token's
-/// header can't be read.
-pub fn token_kid(authorization: Option<&str>) -> Option<String> {
-    let (_, token) = authorization?.split_once(' ')?;
-    jsonwebtoken::decode_header(token.trim()).ok()?.kid
+/// The key id (`kid`) in the header of the token a JWT scheme would read,
+/// used to notice a rotated JWKS. `None` when the request has no token for
+/// the scheme or the token's header can't be read.
+pub fn token_kid(scheme: &JwtScheme, source: &dyn CredentialSource) -> Option<String> {
+    let token = scheme.token(source.header(&scheme.header)?)?;
+    jsonwebtoken::decode_header(token).ok()?.kid
+}
+
+impl JwtScheme {
+    /// The token in the value of the scheme's header: after `Bearer` in
+    /// `Authorization`, the whole value of any other header.
+    fn token<'a>(&self, raw: &'a str) -> Option<&'a str> {
+        if self.header != "authorization" {
+            return Some(raw.trim());
+        }
+        match raw.split_once(' ') {
+            Some((kind, token)) if kind.eq_ignore_ascii_case("bearer") => Some(token.trim()),
+            _ => None,
+        }
+    }
 }
 
 impl ApiKeyScheme {
@@ -179,16 +204,26 @@ pub enum Verdict {
 }
 
 impl Verdict {
-    /// The JSON body of a verification request.
+    /// The media type of [`Verdict::request_body`].
+    pub const REQUEST_TYPE: &'static str = "application/x-www-form-urlencoded";
+
+    /// The body of an introspection request (RFC 7662 section 2.1).
     pub fn request_body(key: &str) -> Vec<u8> {
-        serde_json::to_vec(&json!({ "key": key })).unwrap_or_default()
+        form_urlencoded::Serializer::new(String::new())
+            .append_pair("token", key)
+            .finish()
+            .into_bytes()
     }
 
-    /// The verdict as the verifier's JSON, for caching. `None` for
+    /// The verdict as an introspection response, for caching. `None` for
     /// [`Verdict::Unavailable`], which is never cached.
     pub fn to_json(&self) -> Option<Vec<u8>> {
         let doc = match self {
-            Verdict::Active(claims) => json!({ "active": true, "claims": claims }),
+            Verdict::Active(claims) => {
+                let mut doc = claims.clone();
+                doc.insert("active".into(), json!(true));
+                Value::Object(doc)
+            }
             Verdict::Inactive => json!({ "active": false }),
             Verdict::Unavailable(_) => return None,
         };
@@ -200,7 +235,11 @@ impl Verdict {
     /// once it has passed.
     pub fn cache_ttl(&self, max: Duration, now: u64) -> Option<Duration> {
         match self {
-            Verdict::Active(claims) => match claims.get("exp").and_then(Value::as_u64) {
+            Verdict::Active(claims) => match claims
+                .get("exp")
+                .and_then(Value::as_f64)
+                .map(|exp| exp.max(0.0) as u64)
+            {
                 Some(exp) if exp <= now => None,
                 Some(exp) => Some(max.min(Duration::from_secs(exp - now))),
                 None => Some(max),
@@ -210,9 +249,11 @@ impl Verdict {
         }
     }
 
-    /// Reads a verifier's response. Anything but `200` with a JSON object
-    /// holding a boolean `active` is a broken verifier, not a bad key, so
-    /// misconfigured URLs show up as `503`s rather than as `401`s.
+    /// Reads an introspection response (RFC 7662 section 2.2): a JSON
+    /// object with a boolean `active`, whose other members are the claims.
+    /// Anything else is a broken verifier, not a bad key, so misconfigured
+    /// URLs (and credentials the verifier rejects with `401`) show up as
+    /// `503`s rather than as `401`s.
     pub fn from_response(status: u16, body: &[u8]) -> Verdict {
         if status != 200 {
             return Verdict::Unavailable(format!("verifier returned {status}"));
@@ -220,12 +261,8 @@ impl Verdict {
         let Ok(Value::Object(mut doc)) = serde_json::from_slice::<Value>(body) else {
             return Verdict::Unavailable("verifier didn't return a JSON object".into());
         };
-        match doc.get("active") {
-            Some(Value::Bool(true)) => match doc.remove("claims") {
-                None | Some(Value::Null) => Verdict::Active(Map::new()),
-                Some(Value::Object(claims)) => Verdict::Active(claims),
-                Some(_) => Verdict::Unavailable("verifier's `claims` isn't an object".into()),
-            },
+        match doc.remove("active") {
+            Some(Value::Bool(true)) => Verdict::Active(doc),
             Some(Value::Bool(false)) => Verdict::Inactive,
             _ => Verdict::Unavailable("verifier's response has no boolean `active`".into()),
         }
@@ -412,13 +449,8 @@ fn check_jwt(
     let Some(raw) = source.header(&scheme.header) else {
         return Ok(None);
     };
-    let token = if scheme.header == "authorization" {
-        match raw.split_once(' ') {
-            Some((kind, token)) if kind.eq_ignore_ascii_case("bearer") => token.trim(),
-            _ => return Ok(None),
-        }
-    } else {
-        raw.trim()
+    let Some(token) = scheme.token(raw) else {
+        return Ok(None);
     };
     let header = jsonwebtoken::decode_header(token).map_err(|e| format!("malformed token: {e}"))?;
     if !scheme.algorithms.contains(&header.alg) {
@@ -453,13 +485,16 @@ fn check_jwt(
     }
     let claims = claims.ok_or(last_error)?;
 
-    let leeway = scheme.leeway;
-    if let Some(exp) = claims.get("exp").and_then(Value::as_u64)
-        && now > exp + leeway
-    {
+    let (now, leeway) = (now as f64, scheme.leeway as f64);
+    // A token must say when it expires: one that doesn't is valid forever
+    // once it leaks.
+    let Some(exp) = numeric_date(&claims, "exp")? else {
+        return Err("token has no `exp` claim".into());
+    };
+    if now >= exp + leeway {
         return Err("token has expired".into());
     }
-    if let Some(nbf) = claims.get("nbf").and_then(Value::as_u64)
+    if let Some(nbf) = numeric_date(&claims, "nbf")?
         && now + leeway < nbf
     {
         return Err("token isn't valid yet".into());
@@ -483,6 +518,19 @@ fn check_jwt(
         }
     }
     Ok(Some(claims))
+}
+
+/// A NumericDate claim (RFC 7519 section 2): seconds since the Unix epoch,
+/// which may have a fraction. A claim that's present but isn't a number is
+/// an error, so a token can't dodge a check by sending `"exp": "never"`.
+fn numeric_date(claims: &Map<String, Value>, name: &str) -> Result<Option<f64>, String> {
+    match claims.get(name) {
+        None => Ok(None),
+        Some(v) => match v.as_f64().filter(|n| n.is_finite()) {
+            Some(n) => Ok(Some(n)),
+            None => Err(format!("token's `{name}` isn't a number")),
+        },
+    }
 }
 
 enum KeyError {
@@ -539,6 +587,12 @@ fn has_scope(claims: &Map<String, Value>, scope: &str) -> bool {
     claims.get("scope").is_some_and(check) || claims.get("scp").is_some_and(check)
 }
 
+/// The challenge an API key scheme answers with. No registered HTTP
+/// authentication scheme covers API keys, but a `401` must carry a
+/// challenge (RFC 9110 section 15.5.2), and clients skip ones they don't
+/// know.
+const API_KEY_CHALLENGE: &str = "ApiKey";
+
 /// The `WWW-Authenticate` header for a failure.
 pub fn www_authenticate(
     failure: &AuthFailure,
@@ -549,8 +603,9 @@ pub fn www_authenticate(
         AuthFailure::InsufficientScope { scheme, .. } => scheme,
         AuthFailure::Unavailable { .. } => return None,
     };
-    let Scheme::Jwt(jwt) = schemes.get(scheme_name)?.as_ref() else {
-        return None;
+    let jwt = match schemes.get(scheme_name)?.as_ref() {
+        Scheme::Jwt(jwt) => jwt,
+        Scheme::ApiKey(_) => return Some(API_KEY_CHALLENGE.into()),
     };
     let mut parts = Vec::new();
     match failure {
@@ -708,6 +763,29 @@ mod tests {
             .unwrap_err();
             assert!(matches!(err, AuthFailure::Unauthorized { .. }), "{err:?}");
         }
+        // `exp` and `nbf` are NumericDates: a fraction counts, the moment of
+        // expiry is already too late, and anything else is rejected.
+        let claims = |extra: Value| {
+            let mut c = json!({"iss": "https://auth.example.com/", "aud": "api"});
+            c.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().cloned().unwrap());
+            vec![("authorization", format!("Bearer {}", token(c)))]
+        };
+        assert!(run(&jwt_req(&[]), claims(json!({"exp": 1000.5}))).is_ok());
+        for bad in [
+            json!({}),
+            json!({"nbf": 0}),
+            json!({"exp": 999.5}),
+            json!({"exp": 1000}),
+            json!({"exp": "2000"}),
+            json!({"exp": null}),
+            json!({"exp": 2000, "nbf": 1000.5}),
+            json!({"exp": 2000, "nbf": "0"}),
+        ] {
+            let err = run(&jwt_req(&[]), claims(bad.clone())).unwrap_err();
+            assert!(matches!(err, AuthFailure::Unauthorized { .. }), "{bad}");
+        }
         let missing = run(&jwt_req(&[]), vec![]).unwrap_err();
         assert_eq!(
             missing,
@@ -806,8 +884,16 @@ mod tests {
     #[test]
     fn verdict_contract() {
         assert_eq!(
-            Verdict::from_response(200, br#"{"active": true, "claims": {"sub": "c1"}}"#),
-            Verdict::Active(json!({"sub": "c1"}).as_object().cloned().unwrap())
+            Verdict::from_response(
+                200,
+                br#"{"active": true, "sub": "c1", "scope": "a b", "exp": 2000}"#
+            ),
+            Verdict::Active(
+                json!({"sub": "c1", "scope": "a b", "exp": 2000})
+                    .as_object()
+                    .cloned()
+                    .unwrap()
+            )
         );
         assert_eq!(
             Verdict::from_response(200, br#"{"active": true}"#),
@@ -822,8 +908,8 @@ mod tests {
             (500, b""),
             (200, b"not json"),
             (200, br#"{"active": "yes"}"#),
-            (200, br#"{"claims": {}}"#),
-            (200, br#"{"active": true, "claims": "sub"}"#),
+            (200, br#"{"sub": "c1"}"#),
+            (200, br#"{"active": 1}"#),
             (200, br#"[true]"#),
         ] {
             assert!(
@@ -835,7 +921,11 @@ mod tests {
                 String::from_utf8_lossy(body)
             );
         }
-        assert_eq!(Verdict::request_body("k"), br#"{"key":"k"}"#);
+        assert_eq!(Verdict::request_body("k"), b"token=k");
+        assert_eq!(
+            Verdict::request_body("a+b &=/\u{e9}"),
+            b"token=a%2Bb+%26%3D%2F%C3%A9"
+        );
     }
 
     #[test]
@@ -880,6 +970,55 @@ mod tests {
             h,
             "Bearer error=\"insufficient_scope\", scope=\"billing:write\", resource_metadata=\"https://api.example.com/.well-known/oauth-protected-resource/mcp\""
         );
+        // An API key scheme has a challenge too: every `401` needs one.
+        schemes.insert(
+            "key".to_string(),
+            Arc::new(Scheme::ApiKey(ApiKeyScheme {
+                name: "key".into(),
+                header: Some("x-api-key".into()),
+                query: None,
+                keys: ApiKeys::Static(vec!["k1".into()]),
+            })),
+        );
+        let unauthorized = |scheme: &str| AuthFailure::Unauthorized {
+            scheme: Some(scheme.into()),
+            reason: "missing credentials".into(),
+        };
+        assert_eq!(
+            www_authenticate(&unauthorized("key"), &schemes).as_deref(),
+            Some("ApiKey")
+        );
+        assert!(
+            www_authenticate(&unauthorized("jwt"), &schemes)
+                .unwrap()
+                .starts_with("Bearer resource_metadata=")
+        );
+        let resource = |url: &str| ProtectedResource {
+            resource: url.into(),
+            authorization_servers: vec![],
+            scopes_supported: vec![],
+            resource_name: None,
+        };
+        for (url, metadata, paths) in [
+            (
+                "https://api.example.com",
+                "https://api.example.com/.well-known/oauth-protected-resource",
+                1,
+            ),
+            (
+                "https://api.example.com/",
+                "https://api.example.com/.well-known/oauth-protected-resource",
+                1,
+            ),
+            (
+                "https://api.example.com:8443/a/b/?x=1",
+                "https://api.example.com:8443/.well-known/oauth-protected-resource/a/b",
+                2,
+            ),
+        ] {
+            assert_eq!(resource(url).metadata_url(), metadata, "{url}");
+            assert_eq!(resource(url).well_known_paths().len(), paths, "{url}");
+        }
         let Scheme::Jwt(jwt) = jwt_scheme().as_ref().clone() else {
             unreachable!()
         };
@@ -902,12 +1041,32 @@ mod tests {
             &EncodingKey::from_secret(b"secret").unwrap(),
         )
         .unwrap();
+        let Scheme::Jwt(mut scheme) = jwt_scheme().as_ref().clone() else {
+            unreachable!()
+        };
+        let kid = |scheme: &JwtScheme, header: &'static str, value: String| {
+            token_kid(scheme, &Req(vec![(header, value)]))
+        };
         assert_eq!(
-            token_kid(Some(&format!("Bearer {token}"))).as_deref(),
+            kid(&scheme, "authorization", format!("Bearer {token}")).as_deref(),
             Some("k1")
         );
-        assert_eq!(token_kid(Some("Bearer nope")), None);
-        assert_eq!(token_kid(None), None);
+        assert_eq!(kid(&scheme, "authorization", "Bearer nope".into()), None);
+        assert_eq!(
+            kid(&scheme, "authorization", format!("Basic {token}")),
+            None
+        );
+        assert_eq!(token_kid(&scheme, &Req(vec![])), None);
+        // A scheme on another header carries the bare token there.
+        scheme.header = "x-token".into();
+        assert_eq!(
+            kid(&scheme, "x-token", token.clone()).as_deref(),
+            Some("k1")
+        );
+        assert_eq!(
+            kid(&scheme, "authorization", format!("Bearer {token}")),
+            None
+        );
 
         let verifier = KeyVerifier {
             url: "https://keys.example/verify".into(),

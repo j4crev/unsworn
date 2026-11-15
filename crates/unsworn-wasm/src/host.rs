@@ -9,7 +9,7 @@ use http::{HeaderValue, StatusCode, header};
 use js_sys::{JSON, Uint8Array};
 use serde_json::{Map, Value};
 use unsworn_core::MaybeSend;
-use unsworn_core::pipeline::proxy::{ForwardInfo, rewrite, strip_hop_by_hop};
+use unsworn_core::pipeline::proxy::{ForwardInfo, response_headers, rewrite};
 use unsworn_core::pipeline::{
     self as core, BodyError, CallError, Deadline, FetchError, Host, Problem, ProxyRequest, Reply,
     StaticRequest, problem_response,
@@ -281,7 +281,8 @@ impl Host for WasmHost {
         match resolve(self.bridge.proxy(&js)).await {
             Ok(v) => {
                 let mut resp = response_from_js(&v);
-                strip_hop_by_hop(resp.headers_mut());
+                let version = resp.version();
+                response_headers(resp.headers_mut(), version);
                 resp
             }
             Err(e) => {
@@ -296,14 +297,18 @@ impl Host for WasmHost {
 
     async fn serve_static(&self, request: StaticRequest) -> core::Response<JsBody> {
         if request.method != "GET" && request.method != "HEAD" {
-            return problem(
-                StatusCode::METHOD_NOT_ALLOWED,
-                "static files only accept GET and HEAD",
+            return problem_response(
+                Problem::new(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "static files only accept GET and HEAD",
+                )
+                .header(header::ALLOW, "GET, HEAD"),
             );
         }
         let mut forwarded = http::HeaderMap::new();
         for name in [
             header::RANGE,
+            header::IF_RANGE,
             header::IF_MODIFIED_SINCE,
             header::IF_NONE_MATCH,
             header::ACCEPT_ENCODING,
