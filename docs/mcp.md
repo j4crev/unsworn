@@ -1,8 +1,8 @@
 # MCP servers with Unsworn
 
-> All three levels are implemented for servers and containers. Level 1 and
-> the shared building blocks shipped in v0.1.0; levels 2 and 3 are on
-> `main` until the next release.
+> All three levels are available for servers and containers. Level 1 and
+> the shared building blocks shipped in v0.1.0, and levels 2 and 3 in
+> v0.2.0.
 
 A remote [Model Context Protocol](https://modelcontextprotocol.io) (MCP)
 server lets AI agents call tools over HTTP. Running one in production needs

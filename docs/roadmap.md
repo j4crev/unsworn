@@ -6,7 +6,7 @@ deployment target is meant to look like, see
 
 | Version | Runs on | Status |
 |---|---|---|
-| v1 | Servers and containers | Available (v0.1.0) |
+| v1 | Servers and containers | Available (v0.2.0) |
 | v2 | Adds edge isolates | Planned |
 | v3 | Adds serverless functions | Planned |
 
