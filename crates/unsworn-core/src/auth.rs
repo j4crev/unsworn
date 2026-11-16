@@ -100,6 +100,26 @@ pub struct JwtScheme {
     pub leeway: u64,
     pub keys: JwtKeys,
     pub protected_resource: Option<ProtectedResource>,
+    /// Worked out from the fields above on first use, so they're set
+    /// before a scheme is used and left alone after. A clone starts empty.
+    pub(crate) cached: JwtCached,
+}
+
+/// What every request to a JWT scheme needs and no request changes. Each
+/// used to be rebuilt per request: the key is a SHA-256 and the settings
+/// are two allocations.
+#[derive(Debug, Default)]
+pub(crate) struct JwtCached {
+    cache_key: std::sync::OnceLock<String>,
+    validation: std::sync::OnceLock<Validation>,
+}
+
+impl Clone for JwtCached {
+    /// A clone is usually made to change a field, so it works these out
+    /// again.
+    fn clone(&self) -> JwtCached {
+        JwtCached::default()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -164,19 +184,35 @@ impl JwtScheme {
     /// of where they come from. A reload that changes the secret, the key
     /// file or the JWKS URL starts afresh, so a rotated key takes effect at
     /// once, and the old one stops being accepted.
-    pub fn cache_key(&self) -> String {
-        use sha2::{Digest, Sha256};
-        let (kind, material) = match &self.keys {
-            JwtKeys::Jwks(url) => ("jwks", url),
-            JwtKeys::Secret(secret) => ("secret", secret),
-            JwtKeys::PublicKey(pem) => ("pem", pem),
-        };
-        let mut hash = Sha256::new();
-        hash.update(kind.as_bytes());
-        hash.update([0]);
-        hash.update(material.as_bytes());
-        let hex: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
-        format!("{}|{hex}", self.name)
+    pub fn cache_key(&self) -> &str {
+        self.cached.cache_key.get_or_init(|| {
+            use sha2::{Digest, Sha256};
+            let (kind, material) = match &self.keys {
+                JwtKeys::Jwks(url) => ("jwks", url),
+                JwtKeys::Secret(secret) => ("secret", secret),
+                JwtKeys::PublicKey(pem) => ("pem", pem),
+            };
+            let mut hash = Sha256::new();
+            hash.update(kind.as_bytes());
+            hash.update([0]);
+            hash.update(material.as_bytes());
+            let hex: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+            format!("{}|{hex}", self.name)
+        })
+    }
+
+    /// How the token library is asked to check a token: the signature and
+    /// the algorithm only. `check_jwt` checks the claims itself.
+    fn validation(&self) -> &Validation {
+        self.cached.validation.get_or_init(|| {
+            let mut validation = Validation::new(Algorithm::HS256);
+            validation.algorithms = self.algorithms.clone();
+            validation.validate_exp = false;
+            validation.validate_nbf = false;
+            validation.validate_aud = false;
+            validation.required_spec_claims.clear();
+            validation
+        })
     }
 
     /// The token in the value of the scheme's header: after `Bearer` in
@@ -477,12 +513,7 @@ fn check_jwt(
     }
     let set = keys(&scheme.name).ok_or("signing keys aren't available yet")?;
 
-    let mut validation = Validation::new(header.alg);
-    validation.algorithms = scheme.algorithms.clone();
-    validation.validate_exp = false;
-    validation.validate_nbf = false;
-    validation.validate_aud = false;
-    validation.required_spec_claims.clear();
+    let validation = scheme.validation();
 
     let candidates = set.keys.iter().filter(|(kid, _, alg)| {
         let kid_ok = match (&header.kid, kid) {
@@ -494,7 +525,7 @@ fn check_jwt(
     let mut last_error = String::from("no key matches the token");
     let mut claims = None;
     for (_, key, _) in candidates {
-        match jsonwebtoken::decode::<Map<String, Value>>(token, key, &validation) {
+        match jsonwebtoken::decode::<Map<String, Value>>(token, key, validation) {
             Ok(data) => {
                 claims = Some(data.claims);
                 break;
@@ -682,6 +713,7 @@ mod tests {
                 scopes_supported: vec![],
                 resource_name: None,
             }),
+            cached: Default::default(),
         }))
     }
 
@@ -1093,8 +1125,10 @@ mod tests {
         let mut rotated = scheme.clone();
         rotated.keys = JwtKeys::Secret("rotated".into());
         assert_ne!(cached, rotated.cache_key());
-        rotated.keys = JwtKeys::Jwks("secret".into());
-        assert_ne!(cached, rotated.cache_key());
+        let mut moved = scheme.clone();
+        moved.keys = JwtKeys::Jwks("secret".into());
+        assert_ne!(cached, moved.cache_key());
+        assert_ne!(rotated.cache_key(), moved.cache_key());
 
         let verifier = KeyVerifier {
             url: "https://keys.example/verify".into(),

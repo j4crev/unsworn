@@ -514,6 +514,133 @@ pub fn parse_json(json: &[u8]) -> Result<Value, JsonError> {
     }
 }
 
+/// Checks what [`parse_json`] checks, without building the value: for a
+/// body that's passed on as the text it arrived as. About a quarter of the
+/// cost of parsing it.
+pub fn check_json(json: &[u8]) -> Result<(), JsonError> {
+    use serde::de::{Deserializer as _, Error, IgnoredAny, MapAccess, SeqAccess, Visitor};
+    use std::borrow::Cow;
+    use std::cell::RefCell;
+    use std::collections::HashSet;
+
+    /// An object's member name, borrowed from the document unless it has
+    /// escapes.
+    struct Name;
+
+    impl<'de> serde::de::DeserializeSeed<'de> for Name {
+        type Value = Cow<'de, str>;
+        fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Cow<'de, str>, D::Error> {
+            d.deserialize_str(self)
+        }
+    }
+
+    impl<'de> Visitor<'de> for Name {
+        type Value = Cow<'de, str>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a member name")
+        }
+        fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Cow<'de, str>, E> {
+            Ok(Cow::Borrowed(v))
+        }
+        fn visit_str<E>(self, v: &str) -> Result<Cow<'de, str>, E> {
+            Ok(Cow::Owned(v.to_owned()))
+        }
+    }
+
+    /// Objects with more members than this look names up in a set.
+    const SCAN: usize = 16;
+
+    #[derive(Default)]
+    struct Seen<'de> {
+        /// The member names of every object being read, innermost last,
+        /// in one list so an object doesn't cost an allocation.
+        names: Vec<Cow<'de, str>>,
+        repeated: Option<String>,
+    }
+
+    /// Reads a value and drops it, noting the first repeated member name.
+    struct Check<'a, 'de>(&'a RefCell<Seen<'de>>);
+
+    impl<'de> serde::de::DeserializeSeed<'de> for Check<'_, 'de> {
+        type Value = ();
+        fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+            d.deserialize_any(self)
+        }
+    }
+
+    impl<'de> Visitor<'de> for Check<'_, 'de> {
+        type Value = ();
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a JSON value")
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_str<E>(self, _: &str) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_unit<E>(self) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+            while seq.next_element_seed(Check(self.0))?.is_some() {}
+            Ok(())
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+            // This object's names are `names[start..]`, until there are
+            // enough of them to be worth a set.
+            let start = self.0.borrow().names.len();
+            let mut set: HashSet<Cow<'de, str>> = HashSet::new();
+            while let Some(name) = map.next_key_seed(Name)? {
+                let mut seen = self.0.borrow_mut();
+                let repeated = if set.is_empty() {
+                    seen.names[start..].contains(&name)
+                } else {
+                    set.contains(&name)
+                };
+                if repeated {
+                    seen.repeated = Some(name.into_owned());
+                    return Err(A::Error::custom("duplicate member"));
+                }
+                if !set.is_empty() {
+                    set.insert(name);
+                } else if seen.names.len() - start < SCAN {
+                    seen.names.push(name);
+                } else {
+                    set.extend(seen.names.drain(start..));
+                    set.insert(name);
+                }
+                drop(seen);
+                map.next_value_seed(Check(self.0))?;
+            }
+            self.0.borrow_mut().names.truncate(start);
+            Ok(())
+        }
+    }
+
+    let seen = RefCell::new(Seen::default());
+    let mut de = serde_json::Deserializer::from_slice(json);
+    let checked = de.deserialize_any(Check(&seen)).and_then(|()| de.end());
+    let found = seen.into_inner().repeated;
+    match (checked, found) {
+        (Ok(()), _) => Ok(()),
+        (Err(_), Some(key)) => match serde_json::from_slice::<IgnoredAny>(json) {
+            Ok(_) => Err(JsonError::Duplicate(key)),
+            Err(e) => Err(JsonError::Invalid(e)),
+        },
+        (Err(e), None) => Err(JsonError::Invalid(e)),
+    }
+}
+
 /// The first member name that appears twice in one object, anywhere in a
 /// JSON document. `None` for a document without one, or one that isn't
 /// JSON.
@@ -879,6 +1006,63 @@ mod tests {
         // A well-formed call is unaffected.
         let ok = call("get_forecast", json!({"city": "Lisbon", "days": [1, 2]}));
         assert_eq!(duplicate_key(&ok), None);
+    }
+
+    #[test]
+    fn checking_agrees_with_parsing() {
+        // `check_json` reads a body that's passed on unparsed, so it has to
+        // accept and refuse exactly what `parse_json` does.
+        let wide_ok: String = (0..40).map(|i| format!("\"k{i}\":{i},")).collect();
+        let wide_twice = format!("{{{wide_ok}\"k7\":0}}");
+        let wide_escaped = format!("{{{wide_ok}\"k\\u0037\":0}}");
+        let wide_ok = format!("{{{wide_ok}\"last\":0}}");
+        let docs: Vec<&[u8]> = vec![
+            br#"{"s":"a\u00e9\n","i":-7,"u":18446744073709551615,"f":1.5e3,"t":true,"n":null,"a":[1,[2,{"k":[]}],{}],"o":{"x":{"y":"z"}}}"#,
+            br#"{"a":1,"b":{"a":2},"c":[{"a":3}]}"#,
+            b"[]",
+            b"null",
+            b" 7 ",
+            br#""text""#,
+            wide_ok.as_bytes(),
+            // Repeats: at the top, nested, spelled with an escape, and in
+            // an object with more members than are scanned one by one.
+            br#"{"method":"a","method":"b"}"#,
+            br#"[{"x":[{"k":null,"k":null}]}]"#,
+            br#"{"name":1,"n\u0061me":2}"#,
+            wide_twice.as_bytes(),
+            wide_escaped.as_bytes(),
+            // Malformed, with and without a repeat before the fault.
+            b"",
+            b"{",
+            b"{} x",
+            br#"{"a":1,"a":2,"#,
+            br#"{"a":1,"a":2} x"#,
+            br#"{"a":1e999}"#,
+            br#"{"a":"\ud800"}"#,
+            b"{\"a\":\"\xff\"}",
+            b"{\"\xff\":1}",
+            b"{\"a\":\"line\nbreak\"}",
+            br#"[1,]"#,
+            br#"{"a":01}"#,
+        ];
+        let mut refused = 0;
+        for doc in docs {
+            let text = String::from_utf8_lossy(doc);
+            match (parse_json(doc), check_json(doc)) {
+                (Ok(_), Ok(())) => {}
+                (Err(JsonError::Duplicate(a)), Err(JsonError::Duplicate(b))) => {
+                    assert_eq!(a, b, "{text}");
+                    refused += 1;
+                }
+                (Err(JsonError::Invalid(_)), Err(JsonError::Invalid(_))) => refused += 1,
+                (parsed, checked) => panic!("{text}: parsed {parsed:?}, checked {checked:?}"),
+            }
+        }
+        assert_eq!(refused, 17);
+        // Nesting deeper than the parser allows is refused by both.
+        let deep = "[".repeat(200) + &"]".repeat(200);
+        assert!(parse_json(deep.as_bytes()).is_err());
+        assert!(check_json(deep.as_bytes()).is_err());
     }
 
     #[test]

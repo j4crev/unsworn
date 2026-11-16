@@ -126,8 +126,15 @@ anything before handlers added), `json`, `text`, `body`, `handler` and
   timeout passed), the handler's future is dropped. `req.cancelled()` and
   `req.is_cancelled()` are there for work it spawned.
 
-Each request runs as its own Tokio task. `run` starts a multi-threaded
-runtime; inside an existing one, call `unsworn_sdk::serve(handlers).await`.
+Each request runs as its own Tokio task. `run` starts Tokio's multi-threaded
+runtime, with a thread per CPU. `UNSWORN_WORKER_THREADS` in the runtime's
+`env` sets another number, and `1` gives a single-threaded runtime. That is
+worth trying when handlers are small and never block: Unsworn already runs
+several workers per runtime (`workers`), and a worker that keeps to one
+thread answers a small request for about half the CPU. On one thread, a
+handler that blocks or computes for long holds up the worker's other
+requests. Inside a runtime of your own, call
+`unsworn_sdk::serve(handlers).await`.
 
 ## Logging
 

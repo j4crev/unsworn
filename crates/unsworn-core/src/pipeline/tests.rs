@@ -1529,7 +1529,7 @@ fn mcp_tools_as_handlers() {
     let host = TestHost::new()
         .handler("tools/t.ts#weather", |req, _| {
             ok_json(
-                json!({ "city": req.json.as_ref().unwrap()["city"], "mcp": req.context["mcp"] }),
+                json!({ "city": req.json.as_ref().unwrap().to_value()["city"], "mcp": req.context["mcp"] }),
             )
         })
         .handler("tools/t.ts#deny", |_, _| {

@@ -196,6 +196,11 @@ impl Host for ServerHost {
     async fn read_body(&self, mut body: Body, max: u64) -> Result<Bytes, Problem> {
         // A plain loop rather than `Limited`, whose boxed error trips the
         // `Send` check on this future.
+        // The declared length, when there is one, sizes the buffer once
+        // instead of growing (and copying) it as the body arrives. A body
+        // that comes in one piece isn't copied at all.
+        let declared = http_body::Body::size_hint(&body).lower().min(max) as usize;
+        let mut first: Option<Bytes> = None;
         let mut out = bytes::BytesMut::new();
         while let Some(frame) = body.frame().await {
             let Ok(frame) = frame else {
@@ -204,17 +209,27 @@ impl Host for ServerHost {
                     "couldn't read the request body",
                 ));
             };
-            if let Ok(data) = frame.into_data() {
-                if (out.len() + data.len()) as u64 > max {
-                    return Err(Problem::new(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        format!("the body is larger than {max} bytes"),
-                    ));
+            let Ok(data) = frame.into_data() else {
+                continue;
+            };
+            let have = first.as_ref().map_or(0, Bytes::len) + out.len();
+            if (have + data.len()) as u64 > max {
+                return Err(Problem::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!("the body is larger than {max} bytes"),
+                ));
+            }
+            match first.take() {
+                None if out.is_empty() => first = Some(data),
+                None => out.extend_from_slice(&data),
+                Some(one) => {
+                    out.reserve(declared.max(one.len() + data.len()));
+                    out.extend_from_slice(&one);
+                    out.extend_from_slice(&data);
                 }
-                out.extend_from_slice(&data);
             }
         }
-        Ok(out.freeze())
+        Ok(first.unwrap_or_else(|| out.freeze()))
     }
 
     fn limit_body(&self, body: Body, max: u64) -> Body {

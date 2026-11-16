@@ -88,7 +88,7 @@ string chosen by Unsworn that is unique per worker connection.
 - `context`: auth claims plus anything added by before handlers. For MCP
   tool calls it also has `mcp` (see [MCP tool calls](#mcp-tool-calls)).
 - Body, at most one of:
-  - `json`: the parsed JSON body, when the request had a JSON body
+  - `json`: the JSON body, when the request had one, as the client sent it
   - `text`: a UTF-8 text body
   - `body_len`: the number of raw body bytes that follow (see each tier)
   - `"stream": true`: the body follows as `chunk` messages, on routes with

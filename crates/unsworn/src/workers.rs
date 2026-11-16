@@ -32,6 +32,11 @@ pub use unsworn_core::pipeline::{BODY_IDLE, BodyError, CallError};
 const STREAM_WINDOW: usize = 256 * 1024;
 /// Largest `chunk` sent for a streamed request body.
 const STREAM_CHUNK: usize = 64 * 1024;
+/// Bodies this large are written to a worker after their message instead
+/// of being copied in behind it.
+const WRITE_APART: usize = 16 * 1024;
+/// What a worker's reader keeps free for the next read, at least.
+const READ_SPARE: usize = 16 * 1024;
 
 /// What a handler call produced.
 pub enum Reply {
@@ -1354,14 +1359,28 @@ async fn write_loop<W: AsyncWrite + Unpin>(
     while let Some(frame) = rx.recv().await {
         buf.clear();
         let encoded = match protocol {
-            Protocol::Jsonl => proto::jsonl::encode(&frame, &mut buf),
-            Protocol::Framed | Protocol::Binary => proto::framed::encode(&frame, &mut buf),
+            Protocol::Jsonl => proto::jsonl::encode_head(&frame, &mut buf),
+            Protocol::Framed | Protocol::Binary => proto::framed::encode_head(&frame, &mut buf),
         };
         if let Err(e) = encoded {
             tracing::error!("can't encode message: {e}");
             continue;
         }
-        if writer.write_all(&buf).await.is_err() || writer.flush().await.is_err() {
+        // A small body goes out in the same write as its message. A large
+        // one is written from where it is, which saves copying it.
+        let apart = match &frame.body {
+            Some(body) if body.len() >= WRITE_APART => Some(body),
+            Some(body) => {
+                buf.extend_from_slice(body);
+                None
+            }
+            None => None,
+        };
+        let mut sent = writer.write_all(&buf).await;
+        if let (Ok(()), Some(body)) = (&sent, apart) {
+            sent = writer.write_all(body).await;
+        }
+        if sent.is_err() || writer.flush().await.is_err() {
             break;
         }
     }
@@ -1409,6 +1428,20 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
             }
             if self.eof {
                 return None;
+            }
+            // Room for the rest of a frame whose length is known, so a
+            // large one is read in a few reads into a buffer that doesn't
+            // have to grow (and be copied) on the way.
+            let frame_len = match (&self.decoder, self.buf.first_chunk::<4>()) {
+                (Decoder::Framed(_), Some(len)) => u32::from_be_bytes(*len) as usize + 4,
+                _ => 0,
+            };
+            let want = frame_len
+                .min(proto::DEFAULT_MAX_FRAME)
+                .saturating_sub(self.buf.len())
+                .max(READ_SPARE);
+            if self.buf.capacity() - self.buf.len() < want {
+                self.buf.reserve(want);
             }
             match self.reader.read_buf(&mut self.buf).await {
                 Ok(0) | Err(_) => {

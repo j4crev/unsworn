@@ -323,7 +323,7 @@ impl ToolCall<'_> {
                     query: bound.query,
                     raw_query: bound.raw_query,
                     headers: header_map(&self.trusted),
-                    json: bound.json,
+                    json: bound.json.map(Into::into),
                     ..Default::default()
                 }
             }
@@ -333,7 +333,7 @@ impl ToolCall<'_> {
                 path: parts.uri.path().to_string(),
                 raw_query: parts.uri.query().map(String::from),
                 headers: header_map(&self.trusted),
-                json: Some(self.args.clone()),
+                json: Some(self.args.clone().into()),
                 ..Default::default()
             },
         };
