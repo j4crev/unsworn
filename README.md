@@ -96,13 +96,17 @@ needs raw speed.
   redirects, proxies, cached responses and rejected requests never reach a handler.
 - **Handlers run in worker pools across all CPU cores,** without any
   clustering setup in your code.
-- **A slow endpoint can move to a faster language** without changing the API.
-  Replace `get.ts` with `get.rs`, and clients notice nothing except the
-  increased speed.
+- **A CPU-heavy endpoint can move to a faster language** without changing
+  the API. Replace `get.ts` with `get.rs`, rewrite the handler, and clients
+  notice nothing except the speed. In
+  [our benchmark](docs/benchmarks.md#a-handler-that-does-work), one search
+  handler costs 61 ms of CPU a request in Python, 1.2 ms in TypeScript on
+  Bun and 0.83 ms in Rust.
 
-A handler call does cross a process boundary, so a trivial endpoint won't
-beat the same code running directly on Bun, for example. The gains come from the points
-above.
+A handler call does cross a process boundary, and that costs about the same
+in every language. So a trivial endpoint won't beat the same code running
+directly on Bun, for example, and won't get faster by moving to Rust. The
+gains come from the points above.
 
 What Unsworn costs per request, for every route type, policy and SDK, is
 measured in [docs/benchmarks.md](docs/benchmarks.md).
