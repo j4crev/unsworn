@@ -37,7 +37,7 @@ import (
 )
 
 // Version is the SDK version.
-const Version = "0.3.0"
+const Version = "0.3.1"
 
 // ProtocolVersion is the Unsworn handler protocol version this SDK speaks.
 const ProtocolVersion = 1

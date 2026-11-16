@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = ["Request", "json", "text", "body", "content", "tool_error", "next", "PROTOCOL_VERSION"]
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 PROTOCOL_VERSION = 1
 
