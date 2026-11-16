@@ -37,8 +37,19 @@ type Write = (bytes: Uint8Array) => void;
 let codec: Codec;
 let write: Write;
 
+/** Bodies this large are written after their message instead of being copied in behind it. */
+const WRITE_APART = 16 * 1024;
+
 function send(message: Outgoing, body?: Uint8Array) {
-  write(codec.encode(message, body));
+  if (body === undefined || body.length < WRITE_APART) {
+    write(codec.encode(message, body));
+    return;
+  }
+  // Two writes in a row, with nothing awaited between them, stay together
+  // in the stream.
+  const [head, raw] = codec.encodeParts(message, body);
+  write(head);
+  if (raw) write(raw);
 }
 
 // ---------------------------------------------------------------------------
