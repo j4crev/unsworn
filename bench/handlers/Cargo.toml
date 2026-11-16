@@ -1,0 +1,18 @@
+[package]
+name = "unsworn-bench-handlers"
+description = "The Rust handler bench/run.py's \"work\" group calls."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "bench-search"
+path = "search.rs"
+
+[dependencies]
+unsworn-sdk = { path = "../../sdk/rust" }
+
+[lints]
+workspace = true

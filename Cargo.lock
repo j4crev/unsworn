@@ -2718,6 +2718,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "unsworn-bench-handlers"
+version = "0.3.1"
+dependencies = [
+ "unsworn-sdk",
+]
+
+[[package]]
 name = "unsworn-core"
 version = "0.3.1"
 dependencies = [

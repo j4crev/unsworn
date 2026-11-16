@@ -5,6 +5,13 @@ handler call, for each policy, and at startup. The harness is in
 [`bench/`](../bench), and every number here comes from one run of it
 against the released v0.3.1 binary, saved in
 [`bench/results/2026-11-16-v0.3.1-intel-core-i5-1145g7.json`](../bench/results/2026-11-16-v0.3.1-intel-core-i5-1145g7.json).
+The two handler tables ([Handler calls](#handler-calls) and
+[A handler that does work](#a-handler-that-does-work)) and the handler
+rows of the summary come from a second run of those two groups the same
+day, saved in
+[`bench/results/2026-11-16-v0.3.1-handlers-intel-core-i5-1145g7.json`](../bench/results/2026-11-16-v0.3.1-handlers-intel-core-i5-1145g7.json).
+It has the same binary, and the Rust SDK from the commit after v0.3.1
+that gives each Rust worker one thread by default.
 
 ## Summary
 
@@ -16,9 +23,15 @@ On two cores of a laptop CPU (an Intel i5-1145G7, details in
 | Answers a static `respond`, `redirect`, 404 or rejection | 131,000–166,000 | 21–26 µs | 0.16 ms (Go `net/http`: 0.14 ms) |
 | `proxy` to an existing app | 59,000 | 59 µs | 0.26 ms (the app directly: 0.14 ms) |
 | `proxy` with JWT and a rate limit | 48,000 | 75 µs | 0.27 ms |
-| Calls a TypeScript handler on Bun (Tier 2) | 62,000 | 58 µs | 0.23 ms (Bun on its own: 0.15 ms) |
-| Calls a Rust handler (Tier 2) | 47,000 | 79 µs | 0.16 ms |
-| Calls a Rust handler (Tier 1) | 59,000 | 62 µs | 0.21 ms |
+| Calls a TypeScript handler on Bun that only answers "hello" | 61,000 | 60 µs | 0.23 ms (Bun on its own: 0.15 ms) |
+| Calls a Rust handler that only answers "hello" | 68,000 | 54 µs | 0.23 ms |
+| Calls a TypeScript handler on Bun that searches 2,000 names | 3,300 | 1.2 ms | 1.3 ms at 20 req/s |
+| Calls the same search handler in Rust | 4,800 | 0.83 ms | 1.1 ms at 20 req/s |
+
+The "hello" rows measure the call into a handler, which costs about the
+same in every language. They say nothing about how fast a language runs
+your code. The search rows do: see
+[A handler that does work](#a-handler-that-does-work).
 
 - **Requests Unsworn answers itself cost 21 to 31 µs of CPU each,**
   against 17 µs for Go's standard library serving "hello".
@@ -35,9 +48,12 @@ On two cores of a laptop CPU (an Intel i5-1145G7, details in
   10,000. On a serverless function, the wasm core answers its first
   request about 135 ms after Node starts.
 - **A trivial handler won't beat its language on its own.** Bun serves
-  "hello" at 161,000 req/s on one core by itself, and at 62,000 through
+  "hello" at 162,000 req/s on one core by itself, and at 61,000 through
   Unsworn. What Unsworn adds is the rules in front of it, and the same
   rules for every language.
+- **The language matters once the handler does work.** One search
+  handler, written the same way in each language, costs 0.83 ms of CPU a
+  request in Rust, 1.2 ms in TypeScript on Bun and 61 ms in Python.
 
 ## How they're measured
 
@@ -75,7 +91,9 @@ machine.
 - Handlers are the [conformance handlers](conformance.md) each SDK ships
   with. `text` answers `201` with `hello`, `binary` echoes the request
   body, and `status` answers with the status it's asked for. The baselines
-  answer the same thing.
+  answer the same thing. The one exception is the search handler in
+  [`bench/handlers/`](../bench/handlers), described under
+  [A handler that does work](#a-handler-that-does-work).
 
 **How precise they are.** This is a laptop with a `powersave` CPU
 governor. The same scenario typically varied by about 10% between the
@@ -186,45 +204,97 @@ threads.
 
 | Scenario | Req/s | CPU µs/req | p50 ms | p99 ms | p50 ms @ 1k/s | p99 ms @ 1k/s | p99.9 ms @ 1k/s | Peak memory |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
-| Go on its own | 177,783 | 18.8 | 0.328 | 1.38 | 0.153 | 0.345 | 0.417 | 18 MB |
-| Bun on its own, 1 process | 160,859 | 4.7 | 0.381 | 0.766 | 0.145 | 0.330 | 0.378 | 36 MB |
-| Bun on its own, 4 processes (reusePort) | 237,324 | 10.8 | 0.128 | 0.533 | 0.146 | 0.304 | 0.392 | 144 MB |
-| Node on its own, 1 process | 84,116 | 10.2 | 0.730 | 1.02 | 0.158 | 0.415 | 0.519 | 90 MB |
-| Node on its own, 4 processes (cluster) | 156,840 | 21.8 | 0.381 | 1.09 | 0.167 | 0.455 | 0.552 | 419 MB |
-| Unsworn → TypeScript on Bun, Tier 2, 1 worker | 66,275 | 46.6 | 0.898 | 2.98 | 0.225 | 0.580 | 1.65 | 113 MB |
-| Unsworn → TypeScript on Bun, Tier 2, 4 workers | 62,066 | 58.1 | 0.928 | 5.18 | 0.228 | 0.568 | 0.800 | 346 MB |
-| Unsworn → TypeScript on Bun, Tier 1, 4 workers | 57,251 | 63.3 | 1.02 | 4.90 | 0.243 | 0.631 | 0.861 | 322 MB |
-| Unsworn → TypeScript on Node, Tier 2, 4 workers | 53,485 | 68.1 | 1.11 | 3.13 | 0.256 | 0.688 | 0.802 | 602 MB |
-| Unsworn → Python, Tier 2, 4 workers | 19,923 | 190 | 3.03 | 7.03 | 0.247 | 0.584 | 0.924 | 129 MB |
-| Unsworn → Python, Tier 1, 4 workers | 19,804 | 191 | 3.01 | 7.16 | 0.242 | 0.533 | 0.640 | 134 MB |
-| Unsworn → Python, no SDK, Tier 1, 4 workers | 40,211 | 83.6 | 1.60 | 8.39 | 0.272 | 0.617 | 0.744 | 88 MB |
-| Unsworn → Go, Tier 2, 4 workers | 42,056 | 87.6 | 1.44 | 4.39 | 0.206 | 0.397 | 0.643 | 102 MB |
-| Unsworn → Go, Tier 1, 4 workers | 40,459 | 91.1 | 1.49 | 4.30 | 0.135 | 0.333 | 0.429 | 100 MB |
-| Unsworn → Rust, Tier 2, 4 workers | 46,835 | 79.1 | 1.29 | 3.19 | 0.164 | 0.385 | 0.495 | 65 MB |
-| Unsworn → Rust, Tier 1, 4 workers | 59,075 | 62.2 | 1.02 | 2.73 | 0.214 | 0.494 | 0.698 | 61 MB |
+| Go on its own | 178,244 | 18.8 | 0.329 | 1.37 | 0.154 | 0.363 | 0.408 | 18 MB |
+| Bun on its own, 1 process | 161,788 | 4.6 | 0.380 | 0.745 | 0.146 | 0.363 | 0.408 | 36 MB |
+| Bun on its own, 4 processes (reusePort) | 235,284 | 10.6 | 0.131 | 0.518 | 0.149 | 0.326 | 0.366 | 144 MB |
+| Node on its own, 1 process | 83,019 | 10.3 | 0.736 | 1.00 | 0.156 | 0.393 | 0.588 | 90 MB |
+| Node on its own, 4 processes (cluster) | 156,092 | 22.0 | 0.419 | 1.28 | 0.170 | 0.375 | 0.577 | 411 MB |
+| Unsworn → TypeScript on Bun, Tier 2, 1 worker | 65,618 | 47.2 | 0.907 | 3.00 | 0.221 | 0.518 | 1.55 | 112 MB |
+| Unsworn → TypeScript on Bun, Tier 2, 4 workers | 60,836 | 59.6 | 0.950 | 5.36 | 0.227 | 0.603 | 0.785 | 348 MB |
+| Unsworn → TypeScript on Bun, Tier 1, 4 workers | 65,417 | 55.3 | 0.888 | 4.93 | 0.243 | 0.645 | 1.24 | 329 MB |
+| Unsworn → TypeScript on Node, Tier 2, 4 workers | 59,900 | 60.1 | 0.981 | 3.17 | 0.218 | 0.886 | 1.32 | 609 MB |
+| Unsworn → Python, Tier 2, 4 workers | 16,253 | 231 | 3.71 | 8.63 | 0.242 | 1.02 | 1.44 | 137 MB |
+| Unsworn → Python, Tier 1, 4 workers | 16,650 | 223 | 3.62 | 8.62 | 0.245 | 1.07 | 1.50 | 132 MB |
+| Unsworn → Python, no SDK, Tier 1, 4 workers | 31,935 | 101 | 2.02 | 10.41 | 0.227 | 0.833 | 1.21 | 93 MB |
+| Unsworn → Go, Tier 2, 4 workers | 34,968 | 104 | 1.71 | 4.81 | 0.159 | 0.642 | 1.16 | 108 MB |
+| Unsworn → Go, Tier 1, 4 workers | 37,511 | 94.9 | 1.58 | 4.54 | 0.135 | 0.534 | 1.24 | 108 MB |
+| Unsworn → Rust, Tier 2, 4 workers | 67,989 | 53.6 | 0.878 | 2.40 | 0.234 | 0.621 | 0.715 | 59 MB |
+| Unsworn → Rust, Tier 1, 4 workers | 75,722 | 47.4 | 0.794 | 2.20 | 0.211 | 0.600 | 1.15 | 60 MB |
+| Unsworn → Rust, 4 threads in each worker, Tier 2, 4 workers | 54,596 | 67.7 | 1.10 | 2.88 | 0.157 | 0.411 | 0.562 | 65 MB |
 
+- **These rows compare the SDKs, not the languages.** The handler does
+  nothing, so each row is Unsworn's side of the call plus that SDK's
+  reading and writing of one small message. Bun's is native code, which
+  is why TypeScript does as well here as Rust.
 - When the server isn't busy, a handler call adds up to about 0.1 ms over
   the language on its own.
-- At full load, a call costs 47 to 91 µs of CPU, Unsworn's side and the
-  worker's together, and four threads handle 40,000 to 66,000 calls a
+- At full load, a call costs 47 to 104 µs of CPU, Unsworn's side and the
+  worker's together, and four threads handle 35,000 to 76,000 calls a
   second in every SDK except Python's. Unsworn's own side is 40 to 50 µs
   of that whatever the language, so it sets the ceiling for a handler
   this small.
 - More workers don't help a handler this small: one Bun worker does as
   well as four. They matter for handlers that do real work.
-- **Tier 2 isn't faster than Tier 1 for small requests.** The two are
-  within the noise for Bun, Go and Python, and Rust is ahead on Tier 1
-  (59,000 against 47,000). Tier 2's advantage shows with large bodies (see
-  [Request bodies](#request-bodies)).
-- **The Python SDK costs twice what a worker without an SDK does** (190
-  against 84 µs per request). The difference is the SDK's own per-request
+- **Tier 2 isn't faster than Tier 1 for small requests.** Tier 1 came out
+  a little ahead for Bun, Go and Rust (76,000 against 68,000 for Rust),
+  which is about the size of the noise. Tier 2's advantage shows with
+  large bodies (see [Request bodies](#request-bodies)).
+- **The Python SDK costs twice what a worker without an SDK does** (231
+  against 101 µs per request). The difference is the SDK's own per-request
   work, which is worth profiling.
 - Memory is mostly the workers: four Node processes take about 600 MB,
-  four Bun processes about 350 MB, and four Rust processes about 65 MB.
-- The Rust rows use the SDK's default, Tokio's multi-threaded runtime.
-  `UNSWORN_WORKER_THREADS=1` isn't measured here; in a separate comparison
-  it took a handler this small from about 43,000 to 67,000 req/s on
-  Tier 2.
+  four Bun processes about 350 MB, and four Rust processes about 60 MB.
+- **A Rust worker uses one thread unless it's given more.** With
+  `UNSWORN_WORKER_THREADS=4`, the same handler costs 68 µs a call against
+  54 µs, and manages 55,000 calls a second against 68,000, because every
+  request crosses threads on its way in and out of the worker. The extra
+  threads do answer sooner when the server is nearly idle: 0.16 ms against
+  0.23 ms at 1,000 requests a second. Go's workers, which also run on
+  several threads, show the same 0.16 ms.
+- The Go and Python rows are 15 to 20% lower than in the full run earlier
+  the same day (42,000 and 20,000 req/s on Tier 2 then), with nothing
+  changed for them. That is this machine's variation between runs.
+
+### A handler that does work
+
+The handler above does nothing, so it can't show what a language costs.
+This one searches: it holds 2,000 product names in memory and answers
+with the five closest to `?q=` by edit distance, which takes about a
+quarter of a million steps of a loop in the handler's own code. It's
+written the same way in each language, in
+[`bench/handlers/`](../bench/handlers), and every version's answer is
+checked against the same expected result. Each runs on Tier 2 with 4
+workers. The latency columns are at 20 requests a second, a rate every
+language keeps up with.
+
+| Scenario | Req/s | CPU µs/req | p50 ms @ 20/s | p99 ms @ 20/s | Peak memory |
+|---|--:|--:|--:|--:|--:|
+| Unsworn → TypeScript on Bun | 3,306 | 1,202 | 1.31 | 1.71 | 211 MB |
+| Unsworn → TypeScript on Node | 2,302 | 1,732 | 1.55 | 2.01 | 459 MB |
+| Unsworn → Python | 66 | 60,599 | 21.90 | 540 | 121 MB |
+| Unsworn → Go | 4,181 | 949 | 1.10 | 1.48 | 109 MB |
+| Unsworn → Rust | 4,770 | 832 | 1.14 | 1.44 | 66 MB |
+
+- **Rust does this work for 0.83 ms of CPU, Go for 0.95 ms, Bun for
+  1.2 ms, Node for 1.7 ms and Python for 61 ms.** So moving this endpoint
+  from TypeScript on Bun to Rust gives 1.4 times the requests per core,
+  from Node 2.1 times, and from Python about 70 times.
+- The call into the handler is about 55 µs of each figure, which is why
+  it decides the "hello" rows above and hardly shows here.
+- One request on a quiet server takes 1.1 ms in Rust or Go, 1.3 ms on
+  Bun, 1.5 ms on Node and 22 ms in Python.
+- The Rust workers take 66 MB between them, a third of Bun's 211 MB and
+  a seventh of Node's 459 MB.
+- A loop over small integers is the kind of code JavaScript engines
+  compile well, so the gap between TypeScript and Rust is likely wider
+  for work that builds many objects or strings. Python code that needed
+  this speed would normally call a C library for it.
+- **Python's numbers are worse than its speed alone explains.** One
+  search takes 22 ms on its own, but 61 ms of CPU each at full load: the
+  SDK runs handlers on threads that share one interpreter lock. At 20
+  requests a second its p99 was 540 ms, and in one of the three runs its
+  p50 was 324 ms, though the four workers could handle 66 a second
+  between them. That hasn't been investigated.
 
 ### Policies
 
@@ -427,8 +497,8 @@ python3 bench/run.py report bench/results/<file>.json   # these tables, as markd
 another binary, such as a released one, set `UNSWORN_BIN` to its path.
 
 `run` takes `--only` with a comma-separated list of groups
-(`declarative`, `proxy`, `handlers`, `policies`, `mcp`, `routes`,
-`bodies`, `startup`), and `--quick` for a single 3-second pass to check the
+(`declarative`, `proxy`, `handlers`, `work`, `policies`, `mcp`,
+`routes`, `bodies`, `startup`), and `--quick` for a single 3-second pass to check the
 harness. It needs Go, Bun, Node and Python 3 for the handler groups, and
 Docker for the Caddy, nginx and Redis rows, which it skips without Docker.
 It waits for the machine to go quiet before it starts: anything else
