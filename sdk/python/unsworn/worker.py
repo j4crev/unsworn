@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import functools
 import importlib.util
 import inspect
 import json
 import logging
 import os
+import queue
 import sys
 import threading
+import time
 import traceback
 from typing import Any, Callable
 
@@ -165,10 +166,175 @@ class BodyStream:
             raise StopIteration from None
 
 
+class Threads:
+    """Runs sync handlers on threads, so one that blocks doesn't hold up the
+    worker's other requests.
+
+    It starts with one thread, which is the cheapest way to run handlers
+    that return quickly or compute: Python runs one thread at a time, so
+    with a thread per request the threads spend more time waking up and
+    passing the interpreter lock around than a small handler takes to run.
+
+    More threads only help when the ones there are wait on something, such
+    as a database. So while calls are queued, it checks every ``CHECK_EVERY``
+    seconds what happened since the last check. If no thread ran out of
+    calls, and the worker's threads together spent less than half that time
+    running or ready to run, then calls sat queued while Python was free to
+    run them: the threads were waiting inside handlers. Every queued call
+    then gets a thread of its own, up to ``limit`` threads. The kernel says
+    how long each thread ran (``schedstat``, Linux only); where it can't be
+    asked, that half of the test is skipped.
+
+    ``RESET_EVERY`` seconds after it grows, the extra threads are retired,
+    so a pool that grew for a burst of slow calls goes back to one thread.
+    If the calls still need threads it grows again within two checks, and
+    then waits twice as long before the next reset, up to ``RESET_MAX``."""
+
+    # Long enough for the kernel's figures to mean something: it updates a
+    # thread's running time at scheduler ticks, a few milliseconds apart.
+    CHECK_EVERY = 0.02
+    RESET_EVERY = 30.0
+    RESET_MAX = 3600.0
+    # Growing again this soon after a reset means the threads were in use.
+    REGROWN_WITHIN = 5.0
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, limit: int) -> None:
+        self.loop = loop
+        self.limit = max(limit, 1)
+        self.queue: queue.SimpleQueue = queue.SimpleQueue()
+        # Only the loop's thread touches what follows.
+        self.threads = 0
+        self.started = 0
+        self.unfinished = 0  # calls queued or running
+        self.checking = False
+        self.resetting = False
+        self.reset_every = self.RESET_EVERY
+        self.reset_at = float("-inf")
+        # An open schedstat file for the loop's thread and each handler thread.
+        self.clocks: dict[int, int] = {}
+        self.clocked = True
+        self._joined(threading.get_native_id())
+        # How often a thread found nothing queued. Threads add to it without
+        # a lock: a lost update still leaves it changed, which is all
+        # `_check` looks at.
+        self.idled = 0
+
+    def run(self, fn: Callable, *args: Any) -> asyncio.Future:
+        """Calls ``fn(*args)`` on a thread, in a copy of the caller's context.
+        If the returned future is cancelled before a thread gets to the
+        call, the call isn't made."""
+        future = self.loop.create_future()
+        self.unfinished += 1
+        self.queue.put((future, contextvars.copy_context(), fn, args))
+        if self.threads == 0:
+            self._start(1)
+        elif self.unfinished > self.threads and not self.checking and self.threads < self.limit:
+            self.checking = True
+            self.loop.call_later(self.CHECK_EVERY, self._check, None)
+        return future
+
+    def _start(self, n: int) -> None:
+        for _ in range(n):
+            self.threads += 1
+            self.started += 1
+            threading.Thread(target=self._thread, name=f"unsworn-handler-{self.started}", daemon=True).start()
+        if self.threads > 1 and not self.resetting:
+            regrown = self.loop.time() - self.reset_at < self.REGROWN_WITHIN
+            self.reset_every = min(self.reset_every * 2, self.RESET_MAX) if regrown else self.RESET_EVERY
+            self.resetting = True
+            self.loop.call_later(self.reset_every, self._reset)
+
+    def _check(self, before: tuple[int, int, int] | None) -> None:
+        self.checking = False
+        waiting = self.queue.qsize()
+        if waiting == 0 or self.threads >= self.limit:
+            return
+        now, busy, idled = time.monotonic_ns(), self._busy(), self.idled
+        if before is not None and before[2] == idled:
+            if busy is None or (busy - before[1]) * 2 < now - before[0]:
+                self._start(min(waiting, self.limit - self.threads))
+                return
+        self.checking = True
+        self.loop.call_later(self.CHECK_EVERY, self._check, (now, busy or 0, idled))
+
+    def _busy(self) -> int | None:
+        """Nanoseconds the worker's threads have spent running or ready to
+        run, or None if the kernel doesn't say."""
+        if not self.clocked:
+            return None
+        total = 0
+        try:
+            for fd in self.clocks.values():
+                ran, ready = os.pread(fd, 64, 0).split()[:2]
+                total += int(ran) + int(ready)
+        except (OSError, ValueError):
+            self.clocked = False
+            return None
+        return total
+
+    def _reset(self) -> None:
+        self.resetting = False
+        self.reset_at = self.loop.time()
+        for _ in range(self.threads - 1):
+            self.threads -= 1
+            self.queue.put(None)
+
+    def _joined(self, thread_id: int) -> None:
+        if not self.clocked:
+            return
+        try:
+            self.clocks[thread_id] = os.open(f"/proc/self/task/{thread_id}/schedstat", os.O_RDONLY)
+        except OSError:
+            self.clocked = False
+
+    def _left(self, thread_id: int) -> None:
+        fd = self.clocks.pop(thread_id, None)
+        if fd is not None:
+            os.close(fd)
+
+    def _thread(self) -> None:
+        thread_id = threading.get_native_id()
+        try:
+            self.loop.call_soon_threadsafe(self._joined, thread_id)
+            while True:
+                try:
+                    item = self.queue.get_nowait()
+                except queue.Empty:
+                    self.idled += 1
+                    item = self.queue.get()
+                if item is None:
+                    self.loop.call_soon_threadsafe(self._left, thread_id)
+                    return
+                future, context, fn, args = item
+                result = error = None
+                if not future.cancelled():
+                    try:
+                        result = context.run(fn, *args)
+                    except BaseException as e:  # noqa: BLE001 - raised where the future is awaited
+                        error = e
+                self.loop.call_soon_threadsafe(self._finish, future, result, error)
+                del item, future, context, fn, args, result, error
+        except RuntimeError:  # the loop has closed
+            return
+
+    def _finish(self, future: asyncio.Future, result: Any, error: BaseException | None) -> None:
+        self.unfinished -= 1
+        if future.done():
+            return
+        if error is None:
+            future.set_result(result)
+        elif isinstance(error, StopIteration):
+            # A future can't raise StopIteration.
+            future.set_exception(RuntimeError("StopIteration raised on a handler thread"))
+        else:
+            future.set_exception(error)
+
+
 class Worker:
     def __init__(self, codec: Any, write: Callable[[bytes], Any]) -> None:
         self.codec = codec
         self.write = write
+        self.threads = Threads(asyncio.get_running_loop(), MAX_IN_FLIGHT)
         self.tasks: dict[str, asyncio.Task] = {}
         self.requests: dict[str, Request] = {}
         self.bodies: dict[str, BodyStream] = {}
@@ -244,9 +410,7 @@ class Worker:
             if inspect.iscoroutinefunction(fn):
                 result = await fn(req, ctx)
             else:
-                loop = asyncio.get_running_loop()
-                call = functools.partial(contextvars.copy_context().run, fn, req, ctx)
-                result = await loop.run_in_executor(None, call)
+                result = await self.threads.run(fn, req, ctx)
                 if inspect.isawaitable(result):
                     result = await result
             await self.reply(rid, result, req)
@@ -299,11 +463,10 @@ class Worker:
                 self.send({"type": "end", "id": rid})
             elif hasattr(payload, "__iter__"):
                 self.send({**base, "stream": True})
-                loop = asyncio.get_running_loop()
                 it = iter(payload)
                 done = object()
                 while True:
-                    chunk = await loop.run_in_executor(None, next, it, done)
+                    chunk = await self.threads.run(next, it, done)
                     if chunk is done or req.cancelled:
                         break
                     self._chunk(rid, chunk)

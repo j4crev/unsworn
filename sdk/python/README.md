@@ -74,7 +74,17 @@ dict with `auth` (verified claims) and anything `before` handlers added.
 On routes with `stream_body = true`, `req.stream` yields the body in chunks
 as it arrives: `async for chunk in req.stream`, or `for` in a sync handler.
 
-Sync handlers run in a thread pool, so they don't block other requests.
+Sync handlers run on threads, so one that blocks doesn't hold up other
+requests. A worker starts with one handler thread, which is the cheapest way
+to run handlers that return quickly or compute, since Python runs one thread
+at a time. When calls are queued and the threads are waiting on something,
+such as a database, it adds a thread for each queued call, up to
+`UNSWORN_MAX_IN_FLIGHT` (32 by default, set in the runtime's `env`). That
+takes it up to 40 ms the first time, and it retires the extra threads again
+after a while. Telling a waiting thread from a busy one needs Linux; on
+other systems queued calls get threads whenever none has run out of work.
+Handlers that compute in parallel use the runtime's `workers`, one process
+each.
 `print()` output goes to stderr, which Unsworn collects into its logs.
 
 ## Logging

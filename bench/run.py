@@ -773,6 +773,20 @@ def oha(s: S, seconds: float) -> dict:
     }
 
 
+def settle(server, timeout=15.0):
+    """Waits for the server to finish what the throughput run left behind.
+    wrk stops with requests in flight, and a handler that can't be
+    interrupted (a sync Python one) runs them to the end. The latency run
+    would queue behind them."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        before = server.cpu_s()
+        time.sleep(0.25)
+        after = server.cpu_s()
+        if before is None or after is None or after - before < 0.01:
+            return
+
+
 def measure(s: S, server) -> dict:
     check(s)
     wrk(s, ARGS.warmup)
@@ -796,6 +810,7 @@ def measure(s: S, server) -> dict:
         result["throughput"]["cores_used"] = (cpu_after - cpu_before) / ARGS.duration
     result["rss_load_kb"] = peak[0]
     if s.rate and not ARGS.no_latency:
+        settle(server)
         result["latency"] = oha(s, ARGS.duration)
     return result
 
