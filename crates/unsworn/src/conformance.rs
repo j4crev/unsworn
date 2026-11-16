@@ -173,7 +173,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
     let mut ctx = Map::new();
     ctx.insert("tenant".into(), json!("acme"));
     req.context = ctx;
-    req.json = Some(json!({"name": "Ada", "n": 1.5}));
+    req.json = Some(json!({"name": "Ada", "n": 1.5}).into());
     let r = s.call(req, None, Duration::from_secs(5)).await;
     let res = expect_response(r).and_then(|(resp, body)| {
         if resp.status != 200 {

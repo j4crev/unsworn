@@ -274,7 +274,7 @@ fn start(
         raw_query: msg.raw_query,
         headers: msg.headers,
         ctx: msg.context,
-        json: msg.json,
+        json: msg.json.map(unsworn_proto::Json::into_value),
         text: msg.text,
         body,
         stream,

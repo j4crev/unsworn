@@ -494,12 +494,9 @@ async fn prepare<H: Host>(
     }
 
     // MCP reads its own JSON-RPC body, with JSON-RPC errors.
-    let json_body = if is_mcp {
-        None
-    } else {
-        check_body(route, &parts.headers, body_bytes.as_deref()).map_err(problem_response)?
-    };
-    let raw_body = if json_body.is_some() {
+    let is_json = !is_mcp
+        && check_body(route, &parts.headers, body_bytes.as_deref()).map_err(problem_response)?;
+    let raw_body = if is_json {
         None
     } else {
         body_bytes.clone().filter(|b| !b.is_empty())
@@ -524,7 +521,11 @@ async fn prepare<H: Host>(
         } else {
             Default::default()
         },
-        json: json_body,
+        // The checked body, as the text it arrived as.
+        json: body_bytes
+            .clone()
+            .filter(|_| is_json && for_a_handler)
+            .map(unsworn_proto::Json::raw),
         ..Default::default()
     };
     Ok(Prepared {

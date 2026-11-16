@@ -195,13 +195,17 @@ pub fn check_content_length(headers: &HeaderMap, max_body: u64) -> Result<(), Pr
     }
 }
 
-/// Parses a JSON body and validates it against the route's body schema.
-/// Returns the parsed JSON, if the body is JSON.
+/// Checks a JSON body: that it's well-formed, and that it matches the
+/// route's body schema if there is one. Returns whether the body is JSON.
+///
+/// The parsed value isn't kept. A handler is sent the body as it arrived
+/// (see `unsworn_proto::Json`), so only a body with a schema to check is
+/// built in memory at all.
 pub fn check_body(
     route: &Route,
     headers: &HeaderMap,
     body: Option<&[u8]>,
-) -> Result<Option<Value>, Problem> {
+) -> Result<bool, Problem> {
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -213,6 +217,7 @@ pub fn check_body(
     let is_json = media_type == "application/json" || media_type.ends_with("+json");
     let empty_body = body.is_none_or(<[u8]>::is_empty);
     let mut json_body = None;
+    let mut checked = false;
     if let Some(bytes) = body
         && !empty_body
         && is_json
@@ -221,8 +226,15 @@ pub fn check_body(
         // counts. This one keeps the last, and an upstream behind a `proxy`
         // route gets the body as it was sent, so it could act on a value
         // the body schema never saw.
-        match crate::mcp::rpc::parse_json(bytes) {
-            Ok(v) => json_body = Some(v),
+        let parsed = match &route.validation.body {
+            Some(_) => crate::mcp::rpc::parse_json(bytes).map(Some),
+            None => crate::mcp::rpc::check_json(bytes).map(|()| None),
+        };
+        match parsed {
+            Ok(v) => {
+                json_body = v;
+                checked = true;
+            }
             Err(JsonError::Invalid(e)) => {
                 return Err(Problem::new(
                     StatusCode::BAD_REQUEST,
@@ -259,7 +271,7 @@ pub fn check_body(
             );
         }
     }
-    Ok(json_body)
+    Ok(checked)
 }
 
 /// Request headers as the handler protocol carries them: one value per

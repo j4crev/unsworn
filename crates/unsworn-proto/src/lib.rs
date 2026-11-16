@@ -131,8 +131,8 @@ pub struct Request {
     pub headers: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub context: Map<String, Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub json: Option<Value>,
+    #[serde(default, skip_serializing_if = "json_apart")]
+    pub json: Option<Json>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -142,6 +142,137 @@ pub struct Request {
     pub stream: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline_ms: Option<u64>,
+}
+
+/// A request's JSON body.
+///
+/// Unsworn checks a body without keeping what it parsed, and sends the
+/// text it received: building a value only to write it out again cost
+/// several times what reading the body did. A decoded message always holds
+/// a [`Json::Value`].
+#[derive(Debug, Clone)]
+pub enum Json {
+    Value(Value),
+    /// A JSON document as text, written into the message as it is. Make
+    /// one with [`Json::raw`].
+    Raw(RawJson),
+}
+
+/// The text of a JSON document. See [`Json::raw`].
+#[derive(Debug, Clone)]
+pub struct RawJson(Bytes);
+
+thread_local! {
+    /// Set while [`message_json`] encodes a request whose raw `json` it
+    /// writes itself.
+    static JSON_APART: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn json_apart(json: &Option<Json>) -> bool {
+    match json {
+        None => true,
+        Some(Json::Raw(_)) => JSON_APART.get(),
+        Some(Json::Value(_)) => false,
+    }
+}
+
+/// Appends a message as JSON. A request's raw `json` is copied in as it
+/// is: serializing it like any other member reads the whole document again
+/// to make sure it's JSON, which [`Json::raw`] already promises.
+fn message_json(message: &Message, out: &mut Vec<u8>) -> Result<(), serde_json::Error> {
+    let raw = match message {
+        Message::Request(Request {
+            json: Some(Json::Raw(raw)),
+            ..
+        }) => raw,
+        _ => return serde_json::to_writer(out, message),
+    };
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            JSON_APART.set(false);
+        }
+    }
+    JSON_APART.set(true);
+    let reset = Reset;
+    serde_json::to_writer(&mut *out, message)?;
+    drop(reset);
+    // A request is an object with other members, so this is its last brace.
+    out.pop();
+    out.extend_from_slice(b",\"json\":");
+    out.extend_from_slice(&raw.0);
+    out.push(b'}');
+    Ok(())
+}
+
+impl Json {
+    /// `text` must be one valid JSON document: it's written into the
+    /// message unchecked.
+    pub fn raw(text: Bytes) -> Json {
+        // Tier 1 ends a message at a line feed. In valid JSON one can only
+        // be whitespace between tokens, so a space says the same.
+        if text.contains(&b'\n') {
+            let mut text = text.to_vec();
+            for byte in &mut text {
+                if *byte == b'\n' {
+                    *byte = b' ';
+                }
+            }
+            return Json::Raw(RawJson(text.into()));
+        }
+        Json::Raw(RawJson(text))
+    }
+
+    pub fn to_value(&self) -> Value {
+        match self {
+            Json::Value(v) => v.clone(),
+            Json::Raw(text) => serde_json::from_slice(&text.0).unwrap_or(Value::Null),
+        }
+    }
+
+    pub fn into_value(self) -> Value {
+        match self {
+            Json::Value(v) => v,
+            raw => raw.to_value(),
+        }
+    }
+}
+
+impl From<Value> for Json {
+    fn from(value: Value) -> Json {
+        Json::Value(value)
+    }
+}
+
+impl PartialEq for Json {
+    fn eq(&self, other: &Json) -> bool {
+        match (self, other) {
+            (Json::Value(a), Json::Value(b)) => a == b,
+            _ => self.to_value() == other.to_value(),
+        }
+    }
+}
+
+impl Serialize for Json {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Json::Value(v) => v.serialize(serializer),
+            // Any serializer but this crate's encoders: checked, and
+            // `null` if it turns out not to be JSON.
+            Json::Raw(text) => {
+                match serde_json::from_slice::<&serde_json::value::RawValue>(&text.0) {
+                    Ok(raw) => raw.serialize(serializer),
+                    Err(_) => serializer.serialize_unit(),
+                }
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Json {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Json, D::Error> {
+        Value::deserialize(d).map(Json::Value)
+    }
 }
 
 /// One or several values for a response header.
@@ -402,12 +533,19 @@ pub mod jsonl {
 
     /// Appends the encoded frame to `out`.
     pub fn encode(frame: &Frame, out: &mut Vec<u8>) -> Result<(), EncodeError> {
-        check_body(frame)?;
-        serde_json::to_writer(&mut *out, &frame.message)?;
-        out.push(b'\n');
+        encode_head(frame, out)?;
         if let Some(body) = &frame.body {
             out.extend_from_slice(body);
         }
+        Ok(())
+    }
+
+    /// Appends everything but the raw body, for a sender that writes a
+    /// large body after it instead of copying it in.
+    pub fn encode_head(frame: &Frame, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        check_body(frame)?;
+        message_json(&frame.message, out)?;
+        out.push(b'\n');
         Ok(())
     }
 
@@ -507,17 +645,31 @@ pub mod framed {
 
     /// Appends the encoded frame to `out`.
     pub fn encode(frame: &Frame, out: &mut Vec<u8>) -> Result<(), EncodeError> {
-        check_body(frame)?;
-        let json = serde_json::to_vec(&frame.message)?;
-        let body_len = frame.body.as_ref().map_or(0, Bytes::len);
-        let frame_len = 4 + json.len() + body_len;
-        let frame_len = u32::try_from(frame_len).map_err(|_| EncodeError::TooLarge(frame_len))?;
-        out.extend_from_slice(&frame_len.to_be_bytes());
-        out.extend_from_slice(&(json.len() as u32).to_be_bytes());
-        out.extend_from_slice(&json);
+        encode_head(frame, out)?;
         if let Some(body) = &frame.body {
             out.extend_from_slice(body);
         }
+        Ok(())
+    }
+
+    /// Appends everything but the raw body, for a sender that writes a
+    /// large body after it instead of copying it in.
+    pub fn encode_head(frame: &Frame, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        check_body(frame)?;
+        // The lengths go in front, so they're filled in once the message
+        // behind them has been written.
+        let start = out.len();
+        out.extend_from_slice(&[0; 8]);
+        message_json(&frame.message, out)?;
+        let json_len = out.len() - start - 8;
+        let body_len = frame.body.as_ref().map_or(0, Bytes::len);
+        let frame_len = 4 + json_len + body_len;
+        let Ok(frame_len) = u32::try_from(frame_len) else {
+            out.truncate(start);
+            return Err(EncodeError::TooLarge(frame_len));
+        };
+        out[start..start + 4].copy_from_slice(&frame_len.to_be_bytes());
+        out[start + 4..start + 8].copy_from_slice(&(json_len as u32).to_be_bytes());
         Ok(())
     }
 
@@ -646,6 +798,60 @@ mod tests {
                 stream_body: false,
                 sdk: None
             })
+        );
+    }
+
+    #[test]
+    fn raw_json_is_sent_as_it_is() {
+        let text = "{\"b\": [1,\n 2.50, 1e2],\n\"a\":\"x\\ny\"}";
+        let message = Message::Request(Request {
+            id: "r-1".into(),
+            json: Some(Json::raw(Bytes::from(text))),
+            ..Default::default()
+        });
+        for framed in [false, true] {
+            let frame = Frame::new(message.clone());
+            let mut bytes = Vec::new();
+            if framed {
+                framed::encode(&frame, &mut bytes).unwrap();
+            } else {
+                jsonl::encode(&frame, &mut bytes).unwrap();
+                assert_eq!(bytes.iter().filter(|b| **b == b'\n').count(), 1);
+            }
+            let sent = String::from_utf8_lossy(&bytes).into_owned();
+            // Member order and number spelling are the sender's.
+            assert!(
+                sent.contains(r#""json":{"b": [1,  2.50, 1e2], "a":"x\ny"}"#),
+                "{sent}"
+            );
+            let mut buf = BytesMut::from(&bytes[..]);
+            let decoded = if framed {
+                framed::Decoder::default().decode(&mut buf)
+            } else {
+                jsonl::Decoder::default().decode(&mut buf)
+            };
+            let Message::Request(request) = decoded.unwrap().unwrap().message else {
+                panic!("expected a request")
+            };
+            assert_eq!(
+                request.json,
+                Some(Json::Value(json!({"b": [1, 2.5, 100.0], "a": "x\ny"})))
+            );
+        }
+        // Serialized as a value, text that isn't JSON becomes `null`.
+        let broken = Request {
+            json: Some(Json::raw(Bytes::from_static(b"{\"a\":"))),
+            ..Default::default()
+        };
+        assert_eq!(serde_json::to_value(&broken).unwrap()["json"], Value::Null);
+        // And a request serialized any other way still carries its body.
+        let Message::Request(request) = message else {
+            unreachable!()
+        };
+        let plain = serde_json::to_string(&request).unwrap();
+        assert!(
+            plain.contains(r#""json":{"b": [1,  2.50, 1e2], "a":"x\ny"}"#),
+            "{plain}"
         );
     }
 
