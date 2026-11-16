@@ -100,8 +100,8 @@ needs raw speed.
   the API. Replace `get.ts` with `get.rs`, rewrite the handler, and clients
   notice nothing except the speed. In
   [our benchmark](docs/benchmarks.md#a-handler-that-does-work), one search
-  handler costs 61 ms of CPU a request in Python, 1.2 ms in TypeScript on
-  Bun and 0.83 ms in Rust.
+  handler costs 53 ms of CPU a request in Python, 1.2 ms in TypeScript on
+  Bun and 0.84 ms in Rust.
 
 A handler call does cross a process boundary, and that costs about the same
 in every language. So a trivial endpoint won't beat the same code running
