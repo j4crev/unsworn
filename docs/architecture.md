@@ -188,10 +188,13 @@ workers    = 2
 | Tier | Transport | Encoding | SDK required | Purpose |
 |---|---|---|---|---|
 | 1 | stdin/stdout | JSON lines, optional raw body bytes | No | Universal: any language, including future ones |
-| 2 | Unix socket | Length-prefixed frames: JSON message plus raw body bytes | Yes | Speed: multiplexing, zero-copy bodies, streaming |
+| 2 | Unix socket | Length-prefixed frames: JSON message plus raw body bytes | Yes | Large bodies, and a worker whose stdout stays its own |
 
 Both tiers carry the **same message model**, so the router has one dispatch
-pipeline with two codecs. Plain HTTP services are covered by the built-in
+pipeline with two codecs. Neither is the fast one across the board: for
+small requests Tier 1 is slightly ahead in every SDK, and from about 64 KB
+of body Tier 2 is ahead by 15 to 30% in most of them (see
+[benchmarks](benchmarks.md)). Plain HTTP services are covered by the built-in
 `proxy` route type instead of a third tier.
 
 The **portable contract is the handler signature** provided by each language

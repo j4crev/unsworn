@@ -208,5 +208,6 @@ startup instead of failing the first request.
 
 The worker reads `UNSWORN_TRANSPORT` and speaks either tier. Tier 1 (stdio)
 points `os.Stdout` at stderr, so `fmt.Println` output ends up in Unsworn's
-logs. Tier 2 (`protocol = "framed"`) is recommended for Go.
+logs. Tier 2 (`protocol = "framed"`) leaves stdout alone. For Go the two
+perform about the same, with Tier 1 slightly ahead for small requests.
 
