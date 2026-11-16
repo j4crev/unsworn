@@ -4,6 +4,13 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("the unsworn server runs on Linux only");
 
+// The released binary is a static musl build, and musl's allocator takes
+// one lock for every thread, which cost 25 to 40% of throughput under
+// load. mimalloc doesn't. On glibc it's about level on static routes and
+// uses about 10% less CPU on proxied requests and handler calls.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod build;
 mod commands;
 mod conformance;
