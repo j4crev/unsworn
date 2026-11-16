@@ -126,15 +126,20 @@ anything before handlers added), `json`, `text`, `body`, `handler` and
   timeout passed), the handler's future is dropped. `req.cancelled()` and
   `req.is_cancelled()` are there for work it spawned.
 
-Each request runs as its own Tokio task. `run` starts Tokio's multi-threaded
-runtime, with a thread per CPU. `UNSWORN_WORKER_THREADS` in the runtime's
-`env` sets another number, and `1` gives a single-threaded runtime. That is
-worth trying when handlers are small and never block: Unsworn already runs
-several workers per runtime (`workers`), and a worker that keeps to one
-thread answers a small request for about half the CPU. On one thread, a
-handler that blocks or computes for long holds up the worker's other
-requests. Inside a runtime of your own, call
-`unsworn_sdk::serve(handlers).await`.
+Each request runs as its own Tokio task, and `run` starts a single-threaded
+Tokio runtime for them, so a worker uses one thread, as a Bun, Node or
+Python worker does. Unsworn runs several workers per runtime (`workers`,
+one per CPU core up to four by default), and those are what use the machine's cores.
+
+On one thread, a handler that blocks or computes for long holds up the
+worker's other requests. Move that work off the thread with
+`tokio::task::spawn_blocking`, or set `UNSWORN_WORKER_THREADS` in the
+runtime's `env` to give every worker a multi-threaded runtime with that many
+threads. More threads cost a small handler about a quarter more CPU,
+because every request then crosses threads on its way in and out, though
+they answer a little sooner when the server is nearly idle (see the
+[benchmarks](../../docs/benchmarks.md#handler-calls)).
+Inside a runtime of your own, call `unsworn_sdk::serve(handlers).await`.
 
 ## Logging
 

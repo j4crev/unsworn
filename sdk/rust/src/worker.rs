@@ -18,24 +18,24 @@ use crate::handlers::Handlers;
 use crate::{Body, Cancel, Reply, Request};
 
 /// Runs the worker until Unsworn closes the connection, then exits the
-/// process. Call it from `main`; it starts its own Tokio runtime.
+/// process. Call it from `main`; it starts its own Tokio runtime, with one
+/// thread unless `UNSWORN_WORKER_THREADS` asks for more.
 pub fn run(handlers: Handlers) -> ! {
-    // Tokio's multi-threaded runtime unless `UNSWORN_WORKER_THREADS` says
-    // otherwise. One thread is worth asking for when handlers are small:
-    // on several threads every request crosses threads twice (reader to
-    // handler task to writer), which costs more in wakeups than a small
-    // handler costs to run.
+    // One thread unless `UNSWORN_WORKER_THREADS` asks for more. Unsworn
+    // already runs several workers per runtime, so the cores are used
+    // either way, and on several threads every request crosses threads
+    // twice (reader to handler task to writer), which costs a small
+    // handler more in wakeups than it costs to run.
     let threads = std::env::var("UNSWORN_WORKER_THREADS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok());
     let mut builder = match threads {
-        Some(0 | 1) => tokio::runtime::Builder::new_current_thread(),
-        Some(threads) => {
+        Some(threads) if threads > 1 => {
             let mut builder = tokio::runtime::Builder::new_multi_thread();
             builder.worker_threads(threads);
             builder
         }
-        None => tokio::runtime::Builder::new_multi_thread(),
+        _ => tokio::runtime::Builder::new_current_thread(),
     };
     let runtime = builder
         .enable_all()
