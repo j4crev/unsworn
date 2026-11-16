@@ -1469,6 +1469,7 @@ impl<'h> Compiler<'h> {
                         leeway: j.leeway.map_or(30, |d| d.0.as_secs()),
                         keys,
                         protected_resource,
+                        cached: Default::default(),
                     })
                 }
                 RawAuthScheme::ApiKey(k) => {

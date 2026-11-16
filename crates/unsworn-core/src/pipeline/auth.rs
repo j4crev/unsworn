@@ -3,7 +3,7 @@
 //! synchronous [`authenticate`].
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -57,14 +57,17 @@ struct KeyEntry {
 /// every request.
 pub struct KeyCache {
     entries: Mutex<HashMap<String, Arc<futures_util::lock::Mutex<KeyEntry>>>>,
-    snapshot: Mutex<HashMap<String, Arc<KeySet>>>,
+    /// Read by every request to a JWT route, and written only when keys
+    /// load. Behind a mutex, requests on different threads queued for it
+    /// twice each, which cost more than checking the token did.
+    snapshot: RwLock<HashMap<String, Arc<KeySet>>>,
 }
 
 impl Default for KeyCache {
     fn default() -> Self {
         KeyCache {
             entries: Mutex::new(HashMap::new()),
-            snapshot: Mutex::new(HashMap::new()),
+            snapshot: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -73,9 +76,9 @@ impl KeyCache {
     /// The loaded keys for a scheme.
     pub fn get(&self, scheme: &JwtScheme) -> Option<Arc<KeySet>> {
         self.snapshot
-            .lock()
+            .read()
             .unwrap()
-            .get(&scheme.cache_key())
+            .get(scheme.cache_key())
             .cloned()
     }
 
@@ -84,12 +87,12 @@ impl KeyCache {
         let Scheme::Jwt(jwt) = scheme else {
             return;
         };
-        let cache_key = jwt.cache_key();
-        let loaded = self.snapshot.lock().unwrap().contains_key(&cache_key);
+        let loaded = self.snapshot.read().unwrap().contains_key(jwt.cache_key());
         // A secret or key file never changes once loaded.
         if loaded && !matches!(jwt.keys, JwtKeys::Jwks(_)) {
             return;
         }
+        let cache_key = jwt.cache_key().to_string();
         let slot = self
             .entries
             .lock()
@@ -138,7 +141,7 @@ impl KeyCache {
             Ok(set) => {
                 let set = Arc::new(set);
                 entry.set = Some(set.clone());
-                self.snapshot.lock().unwrap().insert(cache_key, set);
+                self.snapshot.write().unwrap().insert(cache_key, set);
             }
             Err(e) => tracing::error!(scheme = %jwt.name, "can't load signing keys: {e}"),
         }
@@ -263,9 +266,10 @@ pub(super) async fn authenticate_request<H: Host>(
         .filter_map(|alt| project.schemes.get(&alt.scheme).cloned())
         .collect();
     for scheme in &schemes {
+        // Only a JWKS is refetched for a key id it doesn't have.
         let kid = match scheme.as_ref() {
-            Scheme::Jwt(jwt) => token_kid(jwt, &creds),
-            Scheme::ApiKey(_) => None,
+            Scheme::Jwt(jwt) if matches!(jwt.keys, JwtKeys::Jwks(_)) => token_kid(jwt, &creds),
+            _ => None,
         };
         keys.ensure(host, scheme, kid.as_deref()).await;
     }
