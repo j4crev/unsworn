@@ -20,7 +20,24 @@ use crate::{Body, Cancel, Reply, Request};
 /// Runs the worker until Unsworn closes the connection, then exits the
 /// process. Call it from `main`; it starts its own Tokio runtime.
 pub fn run(handlers: Handlers) -> ! {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    // Tokio's multi-threaded runtime unless `UNSWORN_WORKER_THREADS` says
+    // otherwise. One thread is worth asking for when handlers are small:
+    // on several threads every request crosses threads twice (reader to
+    // handler task to writer), which costs more in wakeups than a small
+    // handler costs to run.
+    let threads = std::env::var("UNSWORN_WORKER_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok());
+    let mut builder = match threads {
+        Some(0 | 1) => tokio::runtime::Builder::new_current_thread(),
+        Some(threads) => {
+            let mut builder = tokio::runtime::Builder::new_multi_thread();
+            builder.worker_threads(threads);
+            builder
+        }
+        None => tokio::runtime::Builder::new_multi_thread(),
+    };
+    let runtime = builder
         .enable_all()
         .build()
         .expect("unsworn: can't start the Tokio runtime");
@@ -57,13 +74,36 @@ pub async fn serve(handlers: Handlers) -> io::Result<()> {
         }
         std::fs::File::from_raw_fd(fd)
     };
-    run_loop(
-        handlers,
-        tokio::io::stdin(),
-        tokio::fs::File::from_std(protocol),
-        false,
-    )
-    .await
+    // Unsworn connects both with pipes, which can be read and written
+    // without blocking. Tokio's `stdin` and `File` hand every read and
+    // write to a thread pool instead, a thread hop each way per request,
+    // so those are only for a worker started by hand with files.
+    use tokio::net::unix::pipe;
+    // SAFETY: fd 0 stays open for the life of the process; the duplicate
+    // is owned by the File.
+    let stdin = unsafe {
+        let fd = libc::dup(0);
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        std::fs::File::from_raw_fd(fd)
+    };
+    let pipes = (
+        stdin.try_clone().and_then(pipe::Receiver::from_file),
+        protocol.try_clone().and_then(pipe::Sender::from_file),
+    );
+    match pipes {
+        (Ok(read), Ok(write)) => run_loop(handlers, read, write, false).await,
+        _ => {
+            run_loop(
+                handlers,
+                tokio::io::stdin(),
+                tokio::fs::File::from_std(protocol),
+                false,
+            )
+            .await
+        }
+    }
 }
 
 #[derive(Clone)]
