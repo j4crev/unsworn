@@ -381,6 +381,12 @@ path    = "/status"
 method  = "POST"
 handler = "{file}#status"
 runtime = "bench"
+
+[[route]]
+path    = "/echo"
+method  = "POST"
+handler = "{file}#echo"
+runtime = "bench"
 """
 
 
@@ -493,6 +499,7 @@ class S:
     rate: int | None = 1000  # fixed-rate latency run; None skips it
     conns: int = 64
     needs: str | None = None  # "docker"
+    same_back: bool = True  # a "bodies" scenario answering 200 sends the body back unchanged
 
 
 def scenarios() -> list[S]:
@@ -617,6 +624,13 @@ def scenarios() -> list[S]:
         ("Unsworn → Go, Tier 2", "unsworn:handlers:go-framed:4", "/status?code=204", 204),
     ]:
         out.append(S("bodies", f"64 KB JSON: {name}", server, path, "POST", json_h, "64 KB JSON", expect, rate=None))
+    # The same body sent back as the response's `json`, inside the small
+    # object the conformance `echo` handler answers with.
+    for name, server in [
+        ("Unsworn → Bun, Tier 2", "unsworn:handlers:bun-framed:4"),
+        ("Unsworn → Go, Tier 2", "unsworn:handlers:go-framed:4"),
+    ]:
+        out.append(S("bodies", f"64 KB JSON, sent back as JSON: {name}", server, "/echo", "POST", json_h, "64 KB JSON", rate=None, same_back=False))
     return out
 
 
@@ -631,8 +645,11 @@ def check(s: S):
         status, data = request(s.path, s.method, s.headers, body)
     if status != s.expect:
         raise RuntimeError(f"{s.name}: expected {s.expect}, got {status}: {data[:300]!r}")
-    if s.body and s.group == "bodies" and s.expect == 200 and data != body:
-        raise RuntimeError(f"{s.name}: the echoed body doesn't match")
+    if s.body and s.group == "bodies" and s.expect == 200:
+        if s.same_back and data != body:
+            raise RuntimeError(f"{s.name}: the echoed body doesn't match")
+        if not s.same_back and json.loads(data).get("json") != json.loads(body):
+            raise RuntimeError(f"{s.name}: the JSON sent back doesn't match")
 
 
 def wrk(s: S, seconds: float) -> dict:

@@ -348,7 +348,7 @@ async fn send_reply(out: &Out, id: &str, reply: Reply, cancel: &Cancel) {
         }
         Body::Empty => out.send(Frame::new(Message::Response(response))),
         Body::Json(Ok(value)) => {
-            response.json = Some(value);
+            response.json = Some(value.into());
             out.send(Frame::new(Message::Response(response)));
         }
         Body::Json(Err(e)) => out.error(id, format!("can't encode the JSON reply: {e}")),

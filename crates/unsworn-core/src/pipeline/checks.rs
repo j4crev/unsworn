@@ -835,7 +835,7 @@ mod tests {
     #[test]
     fn handler_heads() {
         let mut r = unsworn_proto::Response::new("1", 201);
-        r.json = Some(serde_json::json!({}));
+        r.json = Some(serde_json::json!({}).into());
         let (status, headers) = response_head(&r).unwrap();
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(headers[header::CONTENT_TYPE], "application/json");

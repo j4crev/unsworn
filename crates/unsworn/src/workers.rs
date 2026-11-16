@@ -801,9 +801,7 @@ impl Pool {
                     } else {
                         let body = match (body, &response.json, &response.text) {
                             (Some(b), _, _) => ReplyBody::Bytes(b),
-                            (None, Some(j), _) => ReplyBody::Bytes(Bytes::from(
-                                serde_json::to_vec(j).unwrap_or_default(),
-                            )),
+                            (None, Some(j), _) => ReplyBody::Bytes(j.to_bytes()),
                             (None, None, Some(t)) => ReplyBody::Bytes(Bytes::from(t.clone())),
                             _ => ReplyBody::Empty,
                         };
