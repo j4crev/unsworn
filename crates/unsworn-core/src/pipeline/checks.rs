@@ -1,5 +1,6 @@
 //! The checks and conversions a request goes through, as pure functions.
 
+use crate::mcp::rpc::JsonError;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -216,24 +217,24 @@ pub fn check_body(
         && !empty_body
         && is_json
     {
-        match serde_json::from_slice::<Value>(bytes) {
+        // Parsers disagree about which of two members with one name
+        // counts. This one keeps the last, and an upstream behind a `proxy`
+        // route gets the body as it was sent, so it could act on a value
+        // the body schema never saw.
+        match crate::mcp::rpc::parse_json(bytes) {
             Ok(v) => json_body = Some(v),
-            Err(e) => {
+            Err(JsonError::Invalid(e)) => {
                 return Err(Problem::new(
                     StatusCode::BAD_REQUEST,
                     format!("the body isn't valid JSON: {e}"),
                 ));
             }
-        }
-        // Parsers disagree about which of two members with one name
-        // counts. This one keeps the last, and an upstream behind a `proxy`
-        // route gets the body as it was sent, so it could act on a value
-        // the body schema never saw.
-        if let Some(key) = crate::mcp::rpc::duplicate_key(bytes) {
-            return Err(Problem::new(
-                StatusCode::BAD_REQUEST,
-                format!("the member \"{key}\" appears more than once in an object in the body"),
-            ));
+            Err(JsonError::Duplicate(key)) => {
+                return Err(Problem::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("the member \"{key}\" appears more than once in an object in the body"),
+                ));
+            }
         }
     }
     if let Some(rule) = &route.validation.body {

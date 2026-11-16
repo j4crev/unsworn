@@ -227,17 +227,15 @@ pub fn read(body: &[u8], headers: &Headers) -> Result<Message, Rejected> {
         id: id.cloned(),
         error,
     };
-    let value: Value = serde_json::from_slice(body).map_err(|e| {
-        reject(
-            None,
-            RpcError::new(PARSE_ERROR, format!("Parse error: {e}")),
-        )
-    })?;
     // Parsers disagree about which of two members with one name counts.
     // A proxied server gets these bytes as they are, so it could run a
     // different tool, with different arguments, than the one checked here.
-    if let Some(key) = duplicate_key(body) {
-        return Err(reject(
+    let value = parse_json(body).map_err(|e| match e {
+        JsonError::Invalid(e) => reject(
+            None,
+            RpcError::new(PARSE_ERROR, format!("Parse error: {e}")),
+        ),
+        JsonError::Duplicate(key) => reject(
             None,
             RpcError::new(
                 INVALID_REQUEST,
@@ -245,8 +243,8 @@ pub fn read(body: &[u8], headers: &Headers) -> Result<Message, Rejected> {
                     "Invalid request: the member \"{key}\" appears more than once in an object"
                 ),
             ),
-        ));
-    }
+        ),
+    })?;
     let Some(obj) = value.as_object() else {
         let what = if value.is_array() {
             "batches aren't supported; send one message per request"
@@ -424,70 +422,106 @@ pub fn read(body: &[u8], headers: &Headers) -> Result<Message, Rejected> {
     })
 }
 
-/// The first member name that appears twice in one object, anywhere in a
-/// JSON document. `None` for a document without one, or one that isn't
-/// JSON.
-pub fn duplicate_key(json: &[u8]) -> Option<String> {
+/// Why a document isn't acceptable JSON.
+#[derive(Debug)]
+pub enum JsonError {
+    /// It isn't valid JSON.
+    Invalid(serde_json::Error),
+    /// An object in it has two members with this name.
+    Duplicate(String),
+}
+
+/// Parses a JSON document, refusing one in which an object has two members
+/// with the same name. One pass does both: a body used to be parsed once
+/// for its value and again to look for repeats, which doubled the cost of
+/// every JSON request.
+pub fn parse_json(json: &[u8]) -> Result<Value, JsonError> {
     use serde::de::{Deserializer as _, Error, IgnoredAny, MapAccess, SeqAccess, Visitor};
     use std::cell::RefCell;
 
-    /// Walks a value, noting the first repeated member name in `found`.
-    struct Walk<'a>(&'a RefCell<Option<String>>);
+    /// Builds a value, noting the first repeated member name in `found`.
+    struct Build<'a>(&'a RefCell<Option<String>>);
 
-    impl<'de> serde::de::DeserializeSeed<'de> for Walk<'_> {
-        type Value = ();
-        fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+    impl<'de> serde::de::DeserializeSeed<'de> for Build<'_> {
+        type Value = Value;
+        fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Value, D::Error> {
             d.deserialize_any(self)
         }
     }
 
-    impl<'de> Visitor<'de> for Walk<'_> {
-        type Value = ();
+    impl<'de> Visitor<'de> for Build<'_> {
+        type Value = Value;
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("a JSON value")
         }
-        fn visit_bool<E>(self, _: bool) -> Result<(), E> {
-            Ok(())
+        fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+            Ok(Value::Bool(v))
         }
-        fn visit_i64<E>(self, _: i64) -> Result<(), E> {
-            Ok(())
+        fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+            Ok(Value::Number(v.into()))
         }
-        fn visit_u64<E>(self, _: u64) -> Result<(), E> {
-            Ok(())
+        fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+            Ok(Value::Number(v.into()))
         }
-        fn visit_f64<E>(self, _: f64) -> Result<(), E> {
-            Ok(())
+        fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
+            Ok(serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number))
         }
-        fn visit_str<E>(self, _: &str) -> Result<(), E> {
-            Ok(())
+        fn visit_str<E>(self, v: &str) -> Result<Value, E> {
+            Ok(Value::String(v.to_owned()))
         }
-        fn visit_unit<E>(self) -> Result<(), E> {
-            Ok(())
+        fn visit_string<E>(self, v: String) -> Result<Value, E> {
+            Ok(Value::String(v))
         }
-        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-            while seq.next_element_seed(Walk(self.0))?.is_some() {}
-            Ok(())
+        fn visit_unit<E>(self) -> Result<Value, E> {
+            Ok(Value::Null)
         }
-        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-            let mut seen = std::collections::HashSet::new();
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+            let mut items = Vec::new();
+            while let Some(item) = seq.next_element_seed(Build(self.0))? {
+                items.push(item);
+            }
+            Ok(Value::Array(items))
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+            let mut members = Map::new();
             while let Some(key) = map.next_key::<String>()? {
-                if seen.contains(&key) {
+                if members.contains_key(&key) {
                     *self.0.borrow_mut() = Some(key);
-                    // Nothing after the first one matters.
-                    map.next_value::<IgnoredAny>()?;
                     return Err(A::Error::custom("duplicate member"));
                 }
-                seen.insert(key);
-                map.next_value_seed(Walk(self.0))?;
+                let value = map.next_value_seed(Build(self.0))?;
+                members.insert(key, value);
             }
-            Ok(())
+            Ok(Value::Object(members))
         }
     }
 
     let found = RefCell::new(None);
     let mut de = serde_json::Deserializer::from_slice(json);
-    let _ = de.deserialize_any(Walk(&found));
-    found.into_inner()
+    let parsed = de.deserialize_any(Build(&found)).and_then(|v| {
+        de.end()?;
+        Ok(v)
+    });
+    match (parsed, found.into_inner()) {
+        (Ok(value), _) => Ok(value),
+        // A repeat in a document that's also malformed further on is
+        // reported as malformed, as it always was.
+        (Err(_), Some(key)) => match serde_json::from_slice::<IgnoredAny>(json) {
+            Ok(_) => Err(JsonError::Duplicate(key)),
+            Err(e) => Err(JsonError::Invalid(e)),
+        },
+        (Err(e), None) => Err(JsonError::Invalid(e)),
+    }
+}
+
+/// The first member name that appears twice in one object, anywhere in a
+/// JSON document. `None` for a document without one, or one that isn't
+/// JSON.
+pub fn duplicate_key(json: &[u8]) -> Option<String> {
+    match parse_json(json) {
+        Err(JsonError::Duplicate(key)) => Some(key),
+        _ => None,
+    }
 }
 
 /// Checks the `Mcp-Param-*` headers a tool declares against its arguments.
@@ -823,6 +857,25 @@ mod tests {
             assert_eq!(duplicate_key(doc).as_deref(), Some(key));
         }
         assert_eq!(duplicate_key(b"{"), None);
+
+        // One pass gives the value `serde_json` would, for every kind of value.
+        let doc = br#"{"s":"a\u00e9\n","i":-7,"u":18446744073709551615,"f":1.5e3,"t":true,"n":null,"a":[1,[2,{"k":[]}],{}],"o":{"x":{"y":"z"}}}"#;
+        assert_eq!(
+            parse_json(doc).unwrap(),
+            serde_json::from_slice::<Value>(doc).unwrap()
+        );
+        // Anything after the document is an error, as it is for `serde_json`.
+        assert!(matches!(parse_json(b"{} x"), Err(JsonError::Invalid(_))));
+        assert!(matches!(parse_json(b""), Err(JsonError::Invalid(_))));
+        // A repeat in a document that's malformed further on is malformed.
+        assert!(matches!(
+            parse_json(br#"{"a":1,"a":2,"#),
+            Err(JsonError::Invalid(_))
+        ));
+        assert!(matches!(
+            parse_json(br#"{"a":1,"a":2} x"#),
+            Err(JsonError::Invalid(_))
+        ));
         // A well-formed call is unaffected.
         let ok = call("get_forecast", json!({"city": "Lisbon", "days": [1, 2]}));
         assert_eq!(duplicate_key(&ok), None);
