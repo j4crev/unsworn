@@ -16,7 +16,7 @@ serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "io-util", "io-std", "net", "fs", "sync", "time", "macros"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std", "tracing-log"] }
-unsworn-proto = { version = "0.3.0", path = "../../crates/unsworn-proto" }
+unsworn-proto = { version = "0.3.1", path = "../../crates/unsworn-proto" }
 
 [lints]
 workspace = true

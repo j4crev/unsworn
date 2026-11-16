@@ -1,6 +1,6 @@
 {
   "name": "@unswornjs/sdk",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Write Unsworn handlers in JavaScript or TypeScript (Bun, Node, Deno), and run Unsworn projects on Cloudflare Workers and serverless functions.",
   "license": "MIT",
   "type": "module",
