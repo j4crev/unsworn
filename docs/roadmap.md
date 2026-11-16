@@ -6,9 +6,9 @@ deployment target is meant to look like, see
 
 | Version | Runs on | Status |
 |---|---|---|
-| v1 | Servers and containers | Available (v0.2.0) |
-| v2 | Adds edge isolates | Built: Cloudflare Workers, in the next release |
-| v3 | Adds serverless functions | Built: Vercel, Netlify and AWS Lambda, in the next release |
+| v1 | Servers and containers | Available (v0.3.0) |
+| v2 | Adds edge isolates | Available (v0.3.0): Cloudflare Workers |
+| v3 | Adds serverless functions | Available (v0.3.0): Vercel, Netlify and AWS Lambda |
 
 ## v2: edge isolates
 

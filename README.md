@@ -255,8 +255,8 @@ different way. See [`docs/architecture.md`](docs/architecture.md).
 | Platform type | Examples | How Unsworn runs | Version |
 |---|---|---|---|
 | **Servers and containers** | Any VPS or bare metal, Docker, Kubernetes, Fly.io, Railway, Render, Google Cloud Run, AWS ECS/Fargate, Cloudflare Containers | The `unsworn` binary plus worker processes, from an official base image | v1 (available) |
-| **Edge isolates** | Cloudflare Workers | `unsworn build --target cloudflare`: the core runs as WebAssembly in the Worker, and JS/TS handlers are bundled in and called directly ([guide](docs/cloudflare.md)) | v2 (built, next release) |
-| **Serverless functions** | Vercel Functions, AWS Lambda, Netlify Functions | `unsworn build --target vercel`, `netlify` or `lambda`: one function runs the whole project, with the core as WebAssembly and JS/TS handlers bundled in and called directly ([guide](docs/serverless.md)) | v3 (built, next release) |
+| **Edge isolates** | Cloudflare Workers | `unsworn build --target cloudflare`: the core runs as WebAssembly in the Worker, and JS/TS handlers are bundled in and called directly ([guide](docs/cloudflare.md)) | v2 (v0.3.0) |
+| **Serverless functions** | Vercel Functions, AWS Lambda, Netlify Functions | `unsworn build --target vercel`, `netlify` or `lambda`: one function runs the whole project, with the core as WebAssembly and JS/TS handlers bundled in and called directly ([guide](docs/serverless.md)) | v3 (v0.3.0) |
 
 Some features need shared state on stateless platforms, such as rate limits
 and caches. `unsworn check --target <platform>` reports what a config needs on
