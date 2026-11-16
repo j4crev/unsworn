@@ -182,5 +182,7 @@ startup instead of failing the first request.
 
 The worker reads `UNSWORN_TRANSPORT` and speaks either tier. Tier 1 (stdio)
 points file descriptor 1 at stderr, so `println!` output ends up in
-Unsworn's logs. Tier 2 (`protocol = "framed"`) is recommended.
+Unsworn's logs. Tier 2 (`protocol = "framed"`) leaves stdout alone and is
+faster for bodies of about 64 KB and more. Tier 1 is slightly faster for
+small requests.
 

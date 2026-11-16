@@ -754,7 +754,7 @@ async fn run_action<H: Host>(
                     let rule = route.validation.response.as_ref();
                     if mode != ResponseValidation::Off
                         && let (Some(rule), Some(json)) = (rule, &response.json)
-                        && let Err(errors) = rule.check(json, "response")
+                        && let Err(errors) = rule.check(&json.to_value(), "response")
                     {
                         tracing::warn!(route = %route.path, ?errors, "response doesn't match its schema");
                         if mode == ResponseValidation::Enforce {
@@ -906,9 +906,7 @@ fn to_http<B>(response: unsworn_proto::Response, body: Body<B>) -> Response<B> {
         Err(p) => return problem_response(p),
     };
     let body = match (body, &response.json, &response.text) {
-        (Body::Empty, Some(json), _) => {
-            Body::Bytes(serde_json::to_vec(json).unwrap_or_default().into())
-        }
+        (Body::Empty, Some(json), _) => Body::Bytes(json.to_bytes()),
         (Body::Empty, None, Some(text)) => Body::Bytes(Bytes::from(text.clone())),
         (body, _, _) => body,
     };

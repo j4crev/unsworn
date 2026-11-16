@@ -180,7 +180,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
             return Err(format!("status {}", resp.status));
         }
         let v: Value = match resp.json {
-            Some(j) => j,
+            Some(j) => j.into_value(),
             None => {
                 serde_json::from_slice(&body_bytes(body)).map_err(|e| format!("not JSON: {e}"))?
             }
@@ -419,7 +419,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
             Err(format!("status {} (want 200)", resp.status))
         } else if resp.mcp_content.as_ref() != Some(&want) {
             Err(format!("mcp_content {:?} (want {want})", resp.mcp_content))
-        } else if resp.json != Some(json!({ "ok": true })) {
+        } else if resp.json != Some(json!({ "ok": true }).into()) {
             Err(format!("json {:?} (want {{\"ok\": true}})", resp.json))
         } else {
             Ok(())
@@ -445,10 +445,11 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
             "protocol_version": "2026-07-28",
             "client": "conformance-client"
         });
-        if resp.json.as_ref() == Some(&want) {
+        let got = resp.json.map(unsworn_proto::Json::into_value);
+        if got.as_ref() == Some(&want) {
             Ok(())
         } else {
-            Err(format!("json {:?} (want {want})", resp.json))
+            Err(format!("json {got:?} (want {want})"))
         }
     });
     s.report("MCP call details from `context.mcp`", res);

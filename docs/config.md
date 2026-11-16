@@ -134,6 +134,9 @@ protocol   = "jsonl"              # no SDK needed
 ```
 
 Runtime names are arbitrary. Unsworn knows nothing about any specific language.
+With an SDK either `protocol` works, and the handler code is the same. `"jsonl"`
+is slightly faster for small requests. `"framed"` is faster once bodies reach
+about 64 KB, and leaves the worker's stdout to the handler.
 `protocol = "binary"`, the name used before 0.2, still works as an alias for
 `"framed"`, with a warning. Commands run through `sh -c` in the project root. `build` runs once, before
 the runtime's first workers start, and again on each reload.

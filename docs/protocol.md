@@ -107,7 +107,8 @@ string chosen by Unsworn that is unique per worker connection.
 - `headers`: optional.
 - Body, at most one of `json`, `text`, `body_len`, or `"stream": true`.
   Unsworn sets `content-type` for `json` and `text` unless a header overrides
-  it.
+  it. `json` goes to the client as the worker wrote it: the same member
+  order, spacing and number spelling.
 
 ### `continue` (worker → Unsworn, `before` phase only)
 

@@ -24,7 +24,8 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const DEFAULT_MAX_FRAME: usize = 64 * 1024 * 1024;
 
 /// A protocol message. Serialized with a `type` field naming the variant.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Read one with [`Message::from_json`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
     Ready(Ready),
@@ -40,11 +41,50 @@ pub enum Message {
     Log(Log),
     Ack(Ack),
     /// A message type this version doesn't know. Receivers ignore it.
-    #[serde(other)]
     Unknown,
 }
 
 impl Message {
+    /// Reads a message from its JSON text.
+    ///
+    /// The `type` is found first and the message is then read as that type
+    /// alone. Reading it as "any message" has serde hold every member in
+    /// memory until it has seen the `type`, which for a response with a
+    /// large `json` cost more than everything else done with it.
+    pub fn from_json(json: &[u8]) -> Result<Message, serde_json::Error> {
+        #[derive(Deserialize)]
+        struct Type<'a> {
+            #[serde(rename = "type", borrow)]
+            name: std::borrow::Cow<'a, str>,
+        }
+        let read;
+        let name = match type_in_front(json) {
+            Some(name) => name,
+            None => {
+                read = serde_json::from_slice::<Type>(json)?;
+                &*read.name
+            }
+        };
+        Ok(match name {
+            "ready" => Message::Ready(serde_json::from_slice(json)?),
+            "request" => Message::Request(serde_json::from_slice(json)?),
+            "response" => Message::Response(serde_json::from_slice(json)?),
+            "continue" => Message::Continue(serde_json::from_slice(json)?),
+            "chunk" => Message::Chunk(serde_json::from_slice(json)?),
+            "end" => Message::End(serde_json::from_slice(json)?),
+            "cancel" => Message::Cancel(serde_json::from_slice(json)?),
+            "error" => Message::Error(serde_json::from_slice(json)?),
+            "verify" => Message::Verify(serde_json::from_slice(json)?),
+            "verified" => Message::Verified(serde_json::from_slice(json)?),
+            "log" => Message::Log(serde_json::from_slice(json)?),
+            "ack" => Message::Ack(serde_json::from_slice(json)?),
+            _ => {
+                serde_json::from_slice::<serde::de::IgnoredAny>(json)?;
+                Message::Unknown
+            }
+        })
+    }
+
     /// The request id this message refers to, if any.
     pub fn id(&self) -> Option<&str> {
         match self {
@@ -84,6 +124,25 @@ impl Message {
         *slot = len;
         Ok(())
     }
+}
+
+/// The `type` of a message that starts with it, as every SDK writes them:
+/// `{"type":"response",` or `{"type": "response",`. Saves reading the
+/// message once just to find it.
+fn type_in_front(json: &[u8]) -> Option<&str> {
+    fn spaces(mut text: &[u8]) -> &[u8] {
+        while let [b' ', rest @ ..] = text {
+            text = rest;
+        }
+        text
+    }
+    let rest = spaces(json.strip_prefix(b"{")?);
+    let rest = spaces(rest.strip_prefix(b"\"type\"")?);
+    let rest = spaces(rest.strip_prefix(b":")?);
+    let rest = rest.strip_prefix(b"\"")?;
+    let end = rest.iter().position(|b| *b == b'"')?;
+    let name = std::str::from_utf8(&rest[..end]).ok()?;
+    (!name.contains('\\')).then_some(name)
 }
 
 /// Sent by the worker when it is ready. Workers speak first.
@@ -144,12 +203,13 @@ pub struct Request {
     pub deadline_ms: Option<u64>,
 }
 
-/// A request's JSON body.
+/// A request's JSON body, or the JSON a response answers with.
 ///
-/// Unsworn checks a body without keeping what it parsed, and sends the
-/// text it received: building a value only to write it out again cost
-/// several times what reading the body did. A decoded message always holds
-/// a [`Json::Value`].
+/// Unsworn checks a request body without keeping what it parsed, and sends
+/// the text it received: building a value only to write it out again cost
+/// several times what reading the body did. The same goes for a response's
+/// `json`, which is kept as the text the handler sent. A decoded request
+/// holds a [`Json::Value`], and a decoded response a [`Json::Raw`].
 #[derive(Debug, Clone)]
 pub enum Json {
     Value(Value),
@@ -236,6 +296,20 @@ impl Json {
             raw => raw.to_value(),
         }
     }
+
+    /// The document as JSON text.
+    pub fn to_bytes(&self) -> Bytes {
+        match self {
+            Json::Value(v) => serde_json::to_vec(v).unwrap_or_default().into(),
+            Json::Raw(text) => text.0.clone(),
+        }
+    }
+}
+
+/// Reads a `json` member as the text it was written in.
+fn raw_json<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Json>, D::Error> {
+    let raw = Option::<Box<serde_json::value::RawValue>>::deserialize(d)?;
+    Ok(raw.map(|raw| Json::raw(String::from(Box::<str>::from(raw)).into())))
 }
 
 impl From<Value> for Json {
@@ -300,8 +374,14 @@ pub struct Response {
     pub status: u16,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, HeaderValues>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub json: Option<Value>,
+    /// Decoded as the text the handler sent, which goes to the client as
+    /// it is.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "raw_json"
+    )]
+    pub json: Option<Json>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -604,11 +684,10 @@ pub mod jsonl {
                 if line.iter().all(u8::is_ascii_whitespace) {
                     continue;
                 }
-                let message: Message =
-                    serde_json::from_slice(line).map_err(|e| DecodeError::Invalid {
-                        snippet: snippet(line),
-                        error: e.to_string(),
-                    })?;
+                let message = Message::from_json(line).map_err(|e| DecodeError::Invalid {
+                    snippet: snippet(line),
+                    error: e.to_string(),
+                })?;
                 match message.body_len() {
                     Some(len) if len > 0 => {
                         let len = len as usize;
@@ -723,11 +802,10 @@ pub mod framed {
                 });
             }
             let json = frame.split_to(json_len);
-            let message: Message =
-                serde_json::from_slice(&json).map_err(|e| DecodeError::Invalid {
-                    snippet: snippet(&json),
-                    error: e.to_string(),
-                })?;
+            let message = Message::from_json(&json).map_err(|e| DecodeError::Invalid {
+                snippet: snippet(&json),
+                error: e.to_string(),
+            })?;
             let body = frame.freeze();
             let declared = message.body_len().unwrap_or(0) as usize;
             if declared != body.len() {
@@ -787,8 +865,8 @@ mod tests {
         assert_eq!(value["params"]["id"], 42);
         assert!(value.get("query").is_none(), "empty maps are omitted");
 
-        let ready: Message =
-            serde_json::from_str(r#"{"type":"ready","protocol":1,"future_field":true}"#).unwrap();
+        let ready =
+            Message::from_json(br#"{"type":"ready","protocol":1,"future_field":true}"#).unwrap();
         assert_eq!(
             ready,
             Message::Ready(Ready {
@@ -857,8 +935,57 @@ mod tests {
 
     #[test]
     fn unknown_message_types_are_tolerated() {
-        let msg: Message = serde_json::from_str(r#"{"type":"telemetry","level":"info"}"#).unwrap();
+        let msg = Message::from_json(br#"{"type":"telemetry","level":"info"}"#).unwrap();
         assert_eq!(msg, Message::Unknown);
+        assert!(Message::from_json(br#"{"type":"telemetry","level":}"#).is_err());
+        assert!(Message::from_json(br#"{"level":"info"}"#).is_err());
+    }
+
+    #[test]
+    fn the_type_is_found_wherever_it_is() {
+        for text in [
+            r#"{"type":"response","id":"r-1","status":200}"#,
+            r#"{"id":"r-1","status":200,"type":"response"}"#,
+            r#" { "type" : "response", "id": "r-1", "status": 200 }"#,
+            r#"{"type": "response", "id": "r-1", "status": 200}"#,
+            "{\n\t\"type\": \"response\", \"id\": \"r-1\", \"status\": 200}",
+            r#"{"type":"\u0072esponse","id":"r-1","status":200}"#,
+        ] {
+            let msg = Message::from_json(text.as_bytes()).unwrap();
+            assert_eq!(msg, Message::Response(Response::new("r-1", 200)), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_response_keeps_its_json_as_sent() {
+        let text =
+            r#"{"type":"response","id":"r-1","status":200,"json":{"b": 1.0,  "a":[1e2,"\u00e9"]}}"#;
+        let Message::Response(response) = Message::from_json(text.as_bytes()).unwrap() else {
+            panic!("expected a response")
+        };
+        let json = response.json.as_ref().expect("json");
+        assert_eq!(&json.to_bytes()[..], br#"{"b": 1.0,  "a":[1e2,"\u00e9"]}"#);
+        assert_eq!(json.to_value(), json!({"b": 1.0, "a": [100.0, "é"]}));
+        // Written out again, it's the same text.
+        let again = serde_json::to_string(&Message::Response(response)).unwrap();
+        assert!(
+            again.ends_with(r#""json":{"b": 1.0,  "a":[1e2,"\u00e9"]}}"#),
+            "{again}"
+        );
+
+        // `null` is no JSON at all, and bad JSON is refused.
+        let none =
+            Message::from_json(br#"{"type":"response","id":"r-1","status":200,"json":null}"#);
+        assert_eq!(none.unwrap(), Message::Response(Response::new("r-1", 200)));
+        assert!(
+            Message::from_json(br#"{"type":"response","id":"r-1","status":200,"json":{"a":}}"#)
+                .is_err()
+        );
+
+        // A response held as a value, as the edge build has it.
+        let value = json!({"id": "r-1", "status": 200, "json": {"a": [1, 2]}});
+        let response: Response = serde_json::from_value(value).unwrap();
+        assert_eq!(response.json.unwrap().to_value(), json!({"a": [1, 2]}));
     }
 
     #[test]
@@ -944,16 +1071,15 @@ mod tests {
 
     #[test]
     fn log_levels_parse_leniently() {
-        let log: Message =
-            serde_json::from_str(r#"{"type":"log","level":"WARNING","message":"hi","id":"r-1"}"#)
+        let log =
+            Message::from_json(br#"{"type":"log","level":"WARNING","message":"hi","id":"r-1"}"#)
                 .unwrap();
         let Message::Log(log) = log else {
             panic!("expected a log message")
         };
         assert_eq!(log.level, LogLevel::Warn);
         assert_eq!(log.id.as_deref(), Some("r-1"));
-        let log: Message =
-            serde_json::from_str(r#"{"type":"log","level":"loud","message":"hi"}"#).unwrap();
+        let log = Message::from_json(br#"{"type":"log","level":"loud","message":"hi"}"#).unwrap();
         assert!(matches!(
             log,
             Message::Log(Log {

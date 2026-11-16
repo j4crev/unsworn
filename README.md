@@ -225,8 +225,8 @@ All of this is configured in `unsworn.toml`, with no code:
   at the edge and in serverless functions.
 - **Any language can join.** The universal protocol is JSON lines over
   stdin/stdout, so a language with no SDK, even one that doesn't exist yet,
-  works on day one. Official SDKs use a faster framed protocol over a Unix
-  socket.
+  works on day one. Official SDKs also speak a framed protocol over a Unix
+  socket, which handles large bodies faster.
 - **Custom middleware is just more handlers.** A `before` handler, in any
   language, can add context such as the current tenant, or reject a request.
 - **Mistakes surface early.** `unsworn check` validates config and routes

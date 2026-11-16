@@ -384,12 +384,13 @@ impl ToolCall<'_> {
             }
         };
         let ok = (200..300).contains(&response.status);
+        let json = response.json.as_ref().map(unsworn_proto::Json::to_value);
         let mode = ctx.project.server.response_validation;
         if ok
             && mode != ResponseValidation::Off
             && let Some(rule) = &route.validation.response
         {
-            let problem = match &response.json {
+            let problem = match &json {
                 None => Some("it declares `output` but returned no JSON".to_string()),
                 Some(j) => rule.check(j, "result").err().map(|errors| {
                     errors
@@ -408,7 +409,7 @@ impl ToolCall<'_> {
         }
         let result = rpc::call_result(rpc::Reply {
             status: response.status,
-            json: response.json.as_ref(),
+            json: json.as_ref(),
             text: response.text.as_deref(),
             mcp_content: response.mcp_content.as_ref(),
             other_body: response.body_len.is_some() || response.stream,

@@ -360,7 +360,7 @@ command = "bun run worker.ts"
 
 fn ok_json(value: Value) -> Result<Reply<Bytes>, CallError> {
     let mut response = unsworn_proto::Response::new("", 200);
-    response.json = Some(value);
+    response.json = Some(value.into());
     Ok(Reply::Response {
         response,
         body: Body::Empty,
@@ -630,7 +630,7 @@ fn handlers_get_validated_requests() {
             match req.headers.get("x-tenant").map(String::as_str) {
                 Some("blocked") => {
                     let mut response = unsworn_proto::Response::new("", 403);
-                    response.json = Some(json!({ "detail": "blocked" }));
+                    response.json = Some(json!({ "detail": "blocked" }).into());
                     Ok(Reply::Response {
                         response,
                         body: Body::Empty,
@@ -879,7 +879,7 @@ fn caching() {
                 "cache-control".into(),
                 unsworn_proto::HeaderValues::One("private".into()),
             );
-            response.json = Some(json!({}));
+            response.json = Some(json!({}).into());
             Ok(Reply::Response {
                 response,
                 body: Body::Empty,
@@ -1028,7 +1028,7 @@ fn cache_keeps_sessions_and_before_handlers() {
                 "vary".into(),
                 unsworn_proto::HeaderValues::One("Accept-Encoding, Cookie".into()),
             );
-            response.json = Some(json!({ "n": n2.fetch_add(1, Ordering::SeqCst) }));
+            response.json = Some(json!({ "n": n2.fetch_add(1, Ordering::SeqCst) }).into());
             Ok(Reply::Response {
                 response,
                 body: Body::Empty,
@@ -1039,7 +1039,7 @@ fn cache_keeps_sessions_and_before_handlers() {
                 Ok(Reply::Continue(Map::new()))
             } else {
                 let mut response = unsworn_proto::Response::new("", 403);
-                response.json = Some(json!({ "error": "members only" }));
+                response.json = Some(json!({ "error": "members only" }).into());
                 Ok(Reply::Response {
                     response,
                     body: Body::Empty,
@@ -1534,7 +1534,7 @@ fn mcp_tools_as_handlers() {
         })
         .handler("tools/t.ts#deny", |_, _| {
             let mut response = unsworn_proto::Response::new("", 403);
-            response.json = Some(json!({ "detail": "not on weekends" }));
+            response.json = Some(json!({ "detail": "not on weekends" }).into());
             Ok(Reply::Response {
                 response,
                 body: Body::Empty,
