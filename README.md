@@ -11,6 +11,12 @@ needs real logic goes to a **handler**, a plain function in whatever language
 suits that endpoint. The same handlers can also be offered to AI agents as
 MCP tools.
 
+## AI Usage and Security Disclosure
+
+**Latest release built with Fable 5.2 Medium and Opus 5.5 High**
+
+**Last Security Audit on 2026-11-15 by Fable 5.2 Medium, followed by Opus 5.5 High**
+
 ## Why Unsworn
 
 ### Your API's rules live outside your code
@@ -98,17 +104,17 @@ A handler call does cross a process boundary, so a trivial endpoint won't
 beat the same code running directly on Bun, for example. The gains come from the points
 above.
 
-Measured on two cores of a laptop CPU, over loopback
-([details and every scenario](docs/benchmarks.md)):
+Measured with the released v0.3.0 binary on two cores of a laptop CPU, over
+loopback ([details and every scenario](docs/benchmarks.md)):
 
 | What Unsworn does | Requests/s | p50 latency at 1,000 req/s |
 |---|--:|--:|
-| Static `respond`, redirect, 404 or rejection | 144,000–183,000 | 0.16 ms, the same as Go's `net/http` |
-| `proxy` in front of an existing app | 61,000 | 0.33 ms (the app directly: 0.15 ms) |
-| Call a TypeScript handler on Bun | 61,000 | 0.25 ms (Bun on its own: 0.15 ms) |
-| Call a Rust handler | 46,000 | 0.19 ms |
+| Static `respond`, redirect, 404 or rejection | 113,000–144,000 | 0.16 ms (Go's `net/http`: 0.09 ms) |
+| `proxy` in front of an existing app | 58,000 | 0.29 ms (the app directly: 0.13 ms) |
+| Call a TypeScript handler on Bun | 60,000 | 0.21 ms (Bun on its own: 0.15 ms) |
+| Call a Rust handler | 47,000 | 0.20 ms |
 
-Most policies add 1.5 to 4 µs of CPU per request, JWT 17 µs. Matching is as
+Most policies add 1 to 3 µs of CPU per request, JWT 19 µs. Matching is as
 fast with 10,000 routes as with 10, and the binary is ready to serve in
 3 ms.
 

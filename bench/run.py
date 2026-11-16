@@ -285,6 +285,13 @@ def order_body() -> bytes:
     ).encode()
 
 
+def json_body(size: int) -> bytes:
+    """About `size` bytes of JSON: an array of small objects, as API payloads tend to be."""
+    item = lambda i: {"id": i, "name": f"widget-{i}", "tags": ["a", "b", "c"], "price": 9.99}
+    per_item = len(json.dumps(item(1000))) + 2
+    return json.dumps({"items": [item(i) for i in range(size // per_item)]}).encode()
+
+
 BODIES: dict[str, bytes] = {}
 
 
@@ -296,6 +303,7 @@ def make_bodies():
             "1 KB": rnd.randbytes(1024),
             "64 KB": rnd.randbytes(64 * 1024),
             "1 MB": rnd.randbytes(1024 * 1024),
+            "64 KB JSON": json_body(64 * 1024),
             "mcp-call-text": mcp_body("tools/call", {"name": "text", "arguments": {}}),
             "mcp-call-echo": mcp_body("tools/call", {"name": "echo", "arguments": {"id": 42, "name": "widget"}}),
             "mcp-list": mcp_body("tools/list", {}),
@@ -366,6 +374,12 @@ runtime = "bench"
 path    = "/binary"
 method  = "POST"
 handler = "{file}#binary"
+runtime = "bench"
+
+[[route]]
+path    = "/status"
+method  = "POST"
+handler = "{file}#status"
 runtime = "bench"
 """
 
@@ -592,6 +606,17 @@ def scenarios() -> list[S]:
             ("Unsworn → Go, Tier 1", "unsworn:handlers:go-jsonl:4", "/binary"),
         ]:
             out.append(S("bodies", f"{size}: {name}", server, path, "POST", octet, size, rate=None, conns=conns))
+    # A JSON body. For a handler, Unsworn parses it and sends it on as the
+    # request's `json`, and the handler answers 204 without sending it back.
+    # A `proxy` route without a body schema passes it through unread.
+    json_h = {"Content-Type": "application/json"}
+    for name, server, path, expect in [
+        ("Go on its own", "go", "/echo", 200),
+        ("Unsworn `proxy` → Go", "unsworn:proxy", "/echo", 200),
+        ("Unsworn → Bun, Tier 2", "unsworn:handlers:bun-framed:4", "/status?code=204", 204),
+        ("Unsworn → Go, Tier 2", "unsworn:handlers:go-framed:4", "/status?code=204", 204),
+    ]:
+        out.append(S("bodies", f"64 KB JSON: {name}", server, path, "POST", json_h, "64 KB JSON", expect, rate=None))
     return out
 
 
@@ -606,7 +631,7 @@ def check(s: S):
         status, data = request(s.path, s.method, s.headers, body)
     if status != s.expect:
         raise RuntimeError(f"{s.name}: expected {s.expect}, got {status}: {data[:300]!r}")
-    if s.body and s.group == "bodies" and data != body:
+    if s.body and s.group == "bodies" and s.expect == 200 and data != body:
         raise RuntimeError(f"{s.name}: the echoed body doesn't match")
 
 
@@ -786,6 +811,7 @@ def metadata(docker: bool) -> dict:
         "commit": cmd_out(["git", "rev-parse", "--short", "HEAD"]),
         "dirty": bool(subprocess.run(["git", "status", "--porcelain", "--", "crates", "sdk"], capture_output=True, text=True, cwd=REPO).stdout.strip()),
         "unsworn": cmd_out([str(UNSWORN), "--version"]),
+        "binary": cmd_out(["file", "-b", str(UNSWORN)]).split(", BuildID")[0],
         "cpu": cpu,
         "logical_cpus": os.cpu_count(),
         "physical_cores": len(physical_cores()),
