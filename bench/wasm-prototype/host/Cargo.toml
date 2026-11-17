@@ -1,0 +1,16 @@
+# Times calls into ../guest, as WebAssembly and natively. See ../README.md.
+[package]
+name = "host"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+wasmtime = "=50.0.2"
+guest = { path = "../guest" }
+
+[profile.release]
+opt-level = 3
+
+# Not part of the repository's workspace.
+[workspace]

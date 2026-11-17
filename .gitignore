@@ -6,3 +6,6 @@ __pycache__/
 node_modules/
 # Built by crates/unsworn-wasm/build.sh
 /sdk/js/wasm/
+# The WebAssembly prototype builds on its own.
+/bench/wasm-prototype/*/target
+/bench/wasm-prototype/*/Cargo.lock
