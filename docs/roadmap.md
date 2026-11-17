@@ -137,7 +137,9 @@ on the way out. In the order planned:
    worker, but code that computes runs half as fast as it does natively.
    So it would suit handlers that do little, and not the one that's in
    Rust for speed. It also needs wasmtime, a dependency of about 170
-   packages. Not built: whether that trade is worth it is still open.
+   packages. Not built, and not planned for now: the trade isn't worth
+   it until people ask for it. The prototype stays, so the numbers can be
+   taken again.
 6. **One deployment.**
    - ~~**A container image target.**~~ Done: `unsworn build --target
      image` writes a Dockerfile for the project, with each runtime at the
