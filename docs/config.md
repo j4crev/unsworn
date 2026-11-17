@@ -990,9 +990,11 @@ path = "/assets/{*rest}"
 auth = "none"                 # except these
 ```
 
-A path that slips past the entry that opens it now meets the stricter
-policy, not the looser one. `unsworn check` warns about an entry that adds
-`auth` or `ip` inside an open catch-all.
+The entry for `/assets/{*rest}` is for part of what the catch-all serves, so
+its `auth` wins there: `/assets` and everything under it are open, and
+every other path still needs a token. A path that slips past the entry that
+opens it now meets the stricter policy, not the looser one. `unsworn check`
+warns about an entry that adds `auth` or `ip` inside an open catch-all.
 
 For OpenAPI routes, policy values here override what the spec implies.
 
@@ -1007,13 +1009,21 @@ For OpenAPI routes, policy values here override what the spec implies.
    1. `[defaults]`
    2. the OpenAPI spec
    3. `_policies.toml` files, outermost folder first
-   4. prefix entries, shorter prefixes first
-   5. exact entries
+   4. prefix entries that cover the whole route, shorter prefixes first
+   5. the route's own policies, and exact entries for its path
+   6. for a catch-all route, prefix entries for some of its paths, shorter
+      prefixes first, then exact entries for one path inside it
 
    Within any one of these, the sets named in `use` apply first, in order,
    then that layer's own values. So `/api/{*rest}` can require `jwt` for
    everything, and an exact entry for `/api/public/status` can set
    `auth = "none"`.
+
+   A catch-all route is the one case where a prefix entry is the more
+   specific of the two. `/assets/{*rest}` covers a part of what `/{*rest}`
+   serves, so its values win there over the ones on the `/{*rest}` route.
+   The other way round, `/{*rest}` covers all of a route at
+   `/assets/{*rest}` or `/users/{id}`, and that route's own values win.
 4. **`unsworn routes --policies`** prints the final, merged policies for
    each route and which layer set each value, so nothing about the merge
    has to be worked out by hand.
