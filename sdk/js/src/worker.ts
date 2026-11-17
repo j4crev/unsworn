@@ -13,7 +13,15 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { connect } from "node:net";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { type Callable, handlerRequest, outcome, pickHandler, splitRef, toBytes } from "./handler.ts";
+import {
+  BadJson,
+  type Callable,
+  handlerRequest,
+  outcome,
+  pickHandler,
+  splitRef,
+  toBytes,
+} from "./handler.ts";
 import {
   type Codec,
   FramedCodec,
@@ -29,6 +37,9 @@ const root = process.env.UNSWORN_ROOT ?? process.cwd();
 const transport = process.env.UNSWORN_TRANSPORT ?? "stdio";
 const maxInFlight = Number(process.env.UNSWORN_MAX_IN_FLIGHT ?? 64);
 const dev = process.env.UNSWORN_DEV === "1";
+// Set by Unsworn versions that take a JSON body as the raw bytes after a
+// message (`body_json`), in both directions.
+const rawJson = process.env.UNSWORN_RAW_JSON === "1";
 // Set by Unsworn versions that accept `log` messages. Without it, logs go to stderr.
 const logLevel = process.env.UNSWORN_LOG_LEVEL;
 
@@ -192,6 +203,13 @@ async function reply(id: string, result: unknown, signal: AbortSignal) {
   } else if (out.stream) {
     send({ type: "response", id, ...out.response, stream: true });
     await streamBody(id, out.stream, signal);
+  } else if (rawJson && out.response.json !== undefined) {
+    // Written out here and sent as the raw body, which Unsworn passes on
+    // without reading it.
+    const { json, ...rest } = out.response;
+    const text = JSON.stringify(json);
+    if (text === undefined) send({ type: "response", id, ...rest });
+    else send({ type: "response", id, ...rest, body_json: true }, encoder.encode(text));
   } else {
     send({ type: "response", id, ...out.response }, out.body);
   }
@@ -203,7 +221,8 @@ async function handle(msg: RequestMessage, body: Uint8Array | undefined) {
   try {
     const fn = await resolveHandler(msg.handler);
     const req = handlerRequest(msg, {
-      body,
+      body: msg.body_json ? undefined : body,
+      json: msg.body_json ? body : undefined,
       stream: bodies.get(msg.id)?.stream,
       signal: controller.signal,
       log: logger(() => msg.id),
@@ -211,7 +230,24 @@ async function handle(msg: RequestMessage, body: Uint8Array | undefined) {
     const result = await currentId.run(msg.id, () => fn(req, msg.context ?? {}));
     await reply(msg.id, result, controller.signal);
   } catch (err) {
-    if (!controller.signal.aborted) {
+    if (controller.signal.aborted) {
+      // Nobody is waiting for an answer.
+    } else if (err instanceof BadJson) {
+      // The body was sent as JSON and isn't. Unsworn left it for the
+      // handler to read, so this is the 400 it would have answered with.
+      send({
+        type: "response",
+        id: msg.id,
+        status: 400,
+        headers: { "content-type": "application/problem+json" },
+        json: {
+          type: "about:blank",
+          title: "Bad Request",
+          status: 400,
+          detail: `the body isn't valid JSON: ${err.message}`,
+        },
+      });
+    } else {
       const message = err instanceof Error ? (dev && err.stack ? err.stack : err.message) : String(err);
       console.error(`[${msg.handler}]`, err);
       send({ type: "error", id: msg.id, message });
@@ -271,6 +307,7 @@ function ready() {
     max_in_flight: maxInFlight,
     verify: true,
     stream_body: true,
+    raw_json: rawJson,
     sdk: "unsworn-js/0.3.1",
   });
 }

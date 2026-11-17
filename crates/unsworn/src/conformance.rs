@@ -173,7 +173,12 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
     let mut ctx = Map::new();
     ctx.insert("tenant".into(), json!("acme"));
     req.context = ctx;
-    req.json = Some(json!({"name": "Ada", "n": 1.5}).into());
+    // As a request body arrives: text nothing has read. A worker whose
+    // `ready` has `raw_json` gets it as the raw body, and any other inside
+    // the message.
+    req.json = Some(unsworn_proto::Json::unchecked(Bytes::from_static(
+        br#"{"name": "Ada", "n": 1.5}"#,
+    )));
     let r = s.call(req, None, Duration::from_secs(5)).await;
     let res = expect_response(r).and_then(|(resp, body)| {
         if resp.status != 200 {
@@ -217,6 +222,22 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
         "params, query, headers, context and JSON body arrive with their types",
         res,
     );
+
+    // A body sent as JSON that isn't: Unsworn answers for a worker that
+    // gets its JSON inside the message, and a worker that parses the raw
+    // body answers itself.
+    let mut req = s.request("echo");
+    req.json = Some(unsworn_proto::Json::unchecked(Bytes::from_static(
+        br#"{"name": "#,
+    )));
+    let res = match s.call(req, None, Duration::from_secs(5)).await {
+        Err(CallError::BadJson(_)) => Ok(()),
+        r => expect_response(r).and_then(|(resp, _)| match resp.status {
+            400 => Ok(()),
+            status => Err(format!("status {status} (want 400)")),
+        }),
+    };
+    s.report("a body that isn't JSON is answered with 400", res);
 
     // text + headers
     let r = s

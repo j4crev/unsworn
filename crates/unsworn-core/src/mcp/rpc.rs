@@ -485,12 +485,17 @@ pub fn parse_json(json: &[u8]) -> Result<Value, JsonError> {
         fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
             let mut members = Map::new();
             while let Some(key) = map.next_key::<String>()? {
-                if members.contains_key(&key) {
-                    *self.0.borrow_mut() = Some(key);
-                    return Err(A::Error::custom("duplicate member"));
-                }
                 let value = map.next_value_seed(Build(self.0))?;
-                members.insert(key, value);
+                // One lookup both finds a repeat and places the member.
+                match members.entry(key) {
+                    serde_json::map::Entry::Vacant(place) => {
+                        place.insert(value);
+                    }
+                    serde_json::map::Entry::Occupied(taken) => {
+                        *self.0.borrow_mut() = Some(taken.key().clone());
+                        return Err(A::Error::custom("duplicate member"));
+                    }
+                }
             }
             Ok(Value::Object(members))
         }

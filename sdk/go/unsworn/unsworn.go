@@ -154,13 +154,25 @@ func (r *Request) QueryInt(name string) (int64, bool) {
 	return asInt(r.Query[name])
 }
 
-// Bind decodes the JSON body into v.
+// Bind decodes the JSON body into v. If the body isn't JSON at all, return
+// Bind's error from the handler and the client gets a 400.
 func (r *Request) Bind(v any) error {
 	if len(r.JSON) == 0 {
 		return errors.New("unsworn: the request has no JSON body")
 	}
-	return json.Unmarshal(r.JSON, v)
+	err := json.Unmarshal(r.JSON, v)
+	var syntax *json.SyntaxError
+	if errors.As(err, &syntax) {
+		return &badJSONError{err: err}
+	}
+	return err
 }
+
+// badJSONError is Bind's error for a body that was sent as JSON and isn't.
+type badJSONError struct{ err error }
+
+func (e *badJSONError) Error() string { return "unsworn: the body isn't valid JSON: " + e.err.Error() }
+func (e *badJSONError) Unwrap() error { return e.err }
 
 // BindParams decodes the path parameters into v, a pointer to a struct or map.
 func (r *Request) BindParams(v any) error { return rebind(r.Params, v) }

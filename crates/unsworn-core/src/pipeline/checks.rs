@@ -195,17 +195,55 @@ pub fn check_content_length(headers: &HeaderMap, max_body: u64) -> Result<(), Pr
     }
 }
 
+/// What [`check_body`] found a request's body to be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonBody {
+    /// Not JSON, or empty.
+    No,
+    /// JSON, read and found well-formed.
+    Checked,
+    /// Sent as JSON and not read. See [`check_body`].
+    Unread,
+}
+
+/// The `400` for a body that was sent as JSON and isn't, or that has an
+/// object with two members of one name.
+pub fn bad_json(e: JsonError) -> Problem {
+    match e {
+        JsonError::Invalid(e) => Problem::new(
+            StatusCode::BAD_REQUEST,
+            format!("the body isn't valid JSON: {e}"),
+        ),
+        JsonError::Duplicate(key) => Problem::new(
+            StatusCode::BAD_REQUEST,
+            format!("the member \"{key}\" appears more than once in an object in the body"),
+        ),
+    }
+}
+
+/// Checks JSON text the way [`check_body`] does, for a host that left a
+/// body unread and then has to write it into a message after all. `Err`
+/// has the `400`'s detail.
+pub fn check_json_text(text: &[u8]) -> Result<(), String> {
+    crate::mcp::rpc::check_json(text).map_err(|e| bad_json(e).detail)
+}
+
 /// Checks a JSON body: that it's well-formed, and that it matches the
-/// route's body schema if there is one. Returns whether the body is JSON.
+/// route's body schema if there is one.
 ///
 /// The parsed value isn't kept. A handler is sent the body as it arrived
 /// (see `unsworn_proto::Json`), so only a body with a schema to check is
 /// built in memory at all.
+///
+/// With `may_leave_unread`, a body with no schema to check isn't read
+/// here: its one reader is the handler it's going to, which parses it
+/// anyway and answers `400` if it can't.
 pub fn check_body(
     route: &Route,
     headers: &HeaderMap,
     body: Option<&[u8]>,
-) -> Result<bool, Problem> {
+    may_leave_unread: bool,
+) -> Result<JsonBody, Problem> {
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -217,11 +255,14 @@ pub fn check_body(
     let is_json = media_type == "application/json" || media_type.ends_with("+json");
     let empty_body = body.is_none_or(<[u8]>::is_empty);
     let mut json_body = None;
-    let mut checked = false;
+    let mut found = JsonBody::No;
     if let Some(bytes) = body
         && !empty_body
         && is_json
     {
+        if may_leave_unread && route.validation.body.is_none() {
+            return Ok(JsonBody::Unread);
+        }
         // Parsers disagree about which of two members with one name
         // counts. This one keeps the last, and an upstream behind a `proxy`
         // route gets the body as it was sent, so it could act on a value
@@ -230,24 +271,8 @@ pub fn check_body(
             Some(_) => crate::mcp::rpc::parse_json(bytes).map(Some),
             None => crate::mcp::rpc::check_json(bytes).map(|()| None),
         };
-        match parsed {
-            Ok(v) => {
-                json_body = v;
-                checked = true;
-            }
-            Err(JsonError::Invalid(e)) => {
-                return Err(Problem::new(
-                    StatusCode::BAD_REQUEST,
-                    format!("the body isn't valid JSON: {e}"),
-                ));
-            }
-            Err(JsonError::Duplicate(key)) => {
-                return Err(Problem::new(
-                    StatusCode::BAD_REQUEST,
-                    format!("the member \"{key}\" appears more than once in an object in the body"),
-                ));
-            }
-        }
+        json_body = parsed.map_err(bad_json)?;
+        found = JsonBody::Checked;
     }
     if let Some(rule) = &route.validation.body {
         if empty_body {
@@ -271,7 +296,7 @@ pub fn check_body(
             );
         }
     }
-    Ok(checked)
+    Ok(found)
 }
 
 /// Request headers as the handler protocol carries them: one value per

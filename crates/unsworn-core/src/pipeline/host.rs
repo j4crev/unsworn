@@ -90,6 +90,10 @@ pub enum CallError {
     Handler(String),
     /// A streamed request body failed: too large, stalled or unreadable.
     Body(BodyError),
+    /// The request's JSON body, which the pipeline left unread, turned out
+    /// not to be JSON when the host had to read it. Holds the `400`'s
+    /// detail.
+    BadJson(String),
 }
 
 impl std::fmt::Display for CallError {
@@ -105,6 +109,7 @@ impl std::fmt::Display for CallError {
                 write!(f, "the request body stalled for {}s", BODY_IDLE.as_secs())
             }
             CallError::Body(BodyError::Read) => write!(f, "couldn't read the request body"),
+            CallError::BadJson(detail) => f.write_str(detail),
         }
     }
 }
@@ -232,6 +237,14 @@ pub trait Host: MaybeSync {
         timeout: Duration,
         limit: usize,
     ) -> impl Future<Output = Result<http::Response<Bytes>, FetchError>> + MaybeSend;
+
+    /// Whether `call` takes a request whose `json` is text nobody has read
+    /// (`unsworn_proto::Json::unchecked`): because the handler's worker
+    /// parses it from the raw body, or because the host checks it first
+    /// when a worker needs it inside the message.
+    fn takes_unread_json(&self) -> bool {
+        false
+    }
 
     /// Runs `future` for at most `timeout`. `None` when it ran out of time.
     fn timeout<F>(

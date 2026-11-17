@@ -45,6 +45,9 @@ export function fetchAdapter(app: FetchApp, fetchArgs?: () => unknown[]): Callab
     let body: BodyInit | undefined;
     if (req.method !== "GET" && req.method !== "HEAD") {
       if (req.stream) body = req.stream;
+      // The JSON as it arrived, when there is such a thing: the app parses
+      // it itself.
+      else if (req[RAW_JSON]) body = req[RAW_JSON];
       else if (req.json !== undefined) body = JSON.stringify(req.json);
       else if (req.text !== undefined) body = req.text;
       else if (req.body) body = req.body;
@@ -80,12 +83,29 @@ export interface RequestFields {
   text?: string;
 }
 
-/** The `req` a handler gets. */
+/** On a `req` whose JSON body arrived as bytes: those bytes. */
+export const RAW_JSON = Symbol.for("unsworn.rawJson");
+
+/** Thrown by `req.json` when the body was sent as JSON and isn't. */
+export class BadJson extends Error {}
+
+const decoder = new TextDecoder();
+
+/**
+ * The `req` a handler gets. With `extra.json`, the body's JSON text,
+ * `req.json` is parsed from it when a handler first reads it.
+ */
 export function handlerRequest(
   msg: RequestFields,
-  extra: { body?: Uint8Array; stream?: ReadableStream<Uint8Array>; signal: AbortSignal; log: unknown },
+  extra: {
+    body?: Uint8Array;
+    json?: Uint8Array;
+    stream?: ReadableStream<Uint8Array>;
+    signal: AbortSignal;
+    log: unknown;
+  },
 ) {
-  return {
+  const req = {
     method: msg.method,
     path: msg.path,
     route: msg.route,
@@ -102,6 +122,32 @@ export function handlerRequest(
     phase: msg.phase ?? "handle",
     log: extra.log,
   };
+  const raw = extra.json;
+  if (raw) {
+    let parsed: unknown;
+    let read = false;
+    Object.defineProperty(req, "json", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        if (!read) {
+          try {
+            parsed = JSON.parse(decoder.decode(raw));
+          } catch (err) {
+            throw new BadJson(err instanceof Error ? err.message : String(err));
+          }
+          read = true;
+        }
+        return parsed;
+      },
+      set(value: unknown) {
+        parsed = value;
+        read = true;
+      },
+    });
+    Object.defineProperty(req, RAW_JSON, { value: raw });
+  }
+  return req;
 }
 
 /** The fields of a protocol `response` message, without `id` or a body. */

@@ -17,7 +17,7 @@ async fn echo(req: Request) -> Result {
         "params": req.params,
         "query": req.query,
         "context": req.ctx,
-        "json": req.json,
+        "json": req.json()?,
         "header": req.header("x-test"),
     })))
 }

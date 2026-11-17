@@ -113,13 +113,18 @@ async fn get_forecast(req: Request) -> Result {
 
 `req` has `method`, `path`, `route`, `params`, `query`, `raw_query`,
 `headers` (lowercase names), `ctx` (verified claims under `"auth"`, plus
-anything before handlers added), `json`, `text`, `body`, `handler` and
-`phase`.
+anything before handlers added), `text`, `body`, `handler` and `phase`.
+
+- `req.body_json::<T>()` reads the JSON body into a type of yours, and
+  `req.json()?` gives it as a `serde_json::Value` (`None` when there is no
+  JSON body). Either reads the body when it's called, not before: a
+  handler that never asks doesn't pay for parsing it. If the body turns
+  out not to be JSON, the error they return gives the client a `400` when
+  the handler returns it with `?`.
 
 - `req.param::<T>("id")` and `req.query_value::<T>("limit")` read and convert
   single values.
-- `req.params::<T>()`, `req.query::<T>()` and `req.body_json::<T>()`
-  deserialize into a struct.
+- `req.params::<T>()` and `req.query::<T>()` deserialize into a struct.
 - On routes with `stream_body = true`, `req.body_stream()` returns the body
   as a `Stream` of chunks as it arrives.
 - When Unsworn cancels a request (the client went away or the route's

@@ -23,6 +23,9 @@ ROOT = os.environ.get("UNSWORN_ROOT", os.getcwd())
 TRANSPORT = os.environ.get("UNSWORN_TRANSPORT", "stdio")
 MAX_IN_FLIGHT = int(os.environ.get("UNSWORN_MAX_IN_FLIGHT", "32"))
 DEV = os.environ.get("UNSWORN_DEV") == "1"
+# Set by Unsworn versions that take a JSON body as the raw bytes after a
+# message (``body_json``), in both directions.
+RAW_JSON = os.environ.get("UNSWORN_RAW_JSON") == "1"
 # Set by Unsworn versions that accept `log` messages. Without it, logging
 # keeps Python's defaults (stderr).
 LOG_LEVEL = os.environ.get("UNSWORN_LOG_LEVEL")
@@ -124,6 +127,31 @@ def _install_logging(worker: "Worker") -> None:
     root = logging.getLogger()
     root.addHandler(LogHandler(worker, asyncio.get_running_loop()))
     root.setLevel(_LEVELS.get(LOG_LEVEL, logging.CRITICAL + 1))
+
+
+class BadJson(ValueError):
+    """The request's body was sent as JSON and isn't."""
+
+
+class _RawJsonRequest(Request):
+    """A request whose JSON body arrived as bytes. ``json`` is parsed from
+    them when a handler first reads it."""
+
+    @property
+    def json(self) -> Any:
+        raw = self.__dict__.get("_raw_json")
+        if raw is not None:
+            try:
+                self.__dict__["_json"] = json.loads(raw)
+            except ValueError as e:
+                raise BadJson(str(e)) from None
+            self.__dict__["_raw_json"] = None
+        return self.__dict__.get("_json")
+
+    @json.setter
+    def json(self, value: Any) -> None:
+        self.__dict__["_json"] = value
+        self.__dict__["_raw_json"] = None
 
 
 class BodyStream:
@@ -386,7 +414,8 @@ class Worker:
 
     async def handle(self, msg: dict, raw: bytes | None) -> None:
         rid = msg["id"]
-        req = Request(
+        body_json = bool(msg.get("body_json")) and raw is not None
+        req = (_RawJsonRequest if body_json else Request)(
             method=msg.get("method", ""),
             path=msg.get("path", ""),
             route=msg.get("route", ""),
@@ -398,9 +427,11 @@ class Worker:
             headers=msg.get("headers") or {},
             json=msg.get("json"),
             text=msg.get("text"),
-            body=raw,
+            body=None if body_json else raw,
             stream=self.bodies.get(rid),
         )
+        if body_json:
+            req.__dict__["_raw_json"] = raw
         self.requests[rid] = req
         ctx = msg.get("context") or {}
         # Each task has its own context, so this only tags this request's logs.
@@ -416,6 +447,25 @@ class Worker:
             await self.reply(rid, result, req)
         except asyncio.CancelledError:
             return
+        except BadJson as e:
+            if req.cancelled:
+                return
+            # Unsworn left the body for the handler to read, so this is the
+            # 400 it would have answered with.
+            self.send(
+                {
+                    "type": "response",
+                    "id": rid,
+                    "status": 400,
+                    "headers": {"content-type": "application/problem+json"},
+                    "json": {
+                        "type": "about:blank",
+                        "title": "Bad Request",
+                        "status": 400,
+                        "detail": f"the body isn't valid JSON: {e}",
+                    },
+                }
+            )
         except Exception as e:  # noqa: BLE001 - reported back to Unsworn
             if req.cancelled:
                 return
@@ -444,7 +494,12 @@ class Worker:
             base["headers"] = result["headers"]
         if "mcp_content" in result:
             base["mcp_content"] = result["mcp_content"]
-        if "json" in result:
+        if "json" in result and RAW_JSON:
+            # Written out here and sent as the raw body, which Unsworn
+            # passes on without reading it.
+            text = json.dumps(result["json"], separators=(",", ":")).encode()
+            self.send({**base, "body_json": True}, text)
+        elif "json" in result:
             self.send({**base, "json": result["json"]})
         elif "text" in result:
             self.send({**base, "text": str(result["text"])})
@@ -490,6 +545,7 @@ def _ready() -> dict:
         "max_in_flight": MAX_IN_FLIGHT,
         "verify": True,
         "stream_body": True,
+        "raw_json": RAW_JSON,
         "sdk": f"unsworn-python/{__version__}",
     }
 

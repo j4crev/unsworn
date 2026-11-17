@@ -525,8 +525,17 @@ upstream could act on a value that wasn't checked:
   With `?limit=10&limit=999999`, Unsworn would check one value, while Go's
   `Query().Get` and Flask's `args.get` read the first. Declare it as an
   array (`type = "array"`) to accept repeats.
-- **A JSON body may not have two members with the same name** in one
-  object, such as `{"role": "user", "role": "admin"}`.
+- **A JSON body Unsworn reads may not have two members with the same
+  name** in one object, such as `{"role": "user", "role": "admin"}`.
+
+Unsworn reads a JSON body when the route has a `body` schema or `before`
+handlers: the schema, each `before` handler and the route's handler would
+otherwise each be free to read it differently. A body with neither goes to
+the route's handler as it arrived, and the handler's SDK parses it when the
+handler first asks for it. A body that isn't JSON then gets its `400` from
+the SDK, with the same kind of error body, and a handler that never reads
+the body never finds out. A worker without an SDK, or with one from before
+this, still gets JSON that Unsworn has read first.
 
 ### Policies
 

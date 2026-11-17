@@ -32,7 +32,7 @@ Each handler is called by name (`<file>#<name>`). Every request arrives with
 
 | Name | Phase | Must |
 |---|---|---|
-| `echo` | handle | Respond `200` with a JSON body: `{ "method", "params", "query", "context", "json", "header" }`, where `header` is the value of the request's `x-test` header and the rest are copied from the request. |
+| `echo` | handle | Respond `200` with a JSON body: `{ "method", "params", "query", "context", "json", "header" }`, where `header` is the value of the request's `x-test` header and the rest are copied from the request. A worker whose `ready` has `raw_json` answers `400` if the body isn't JSON (an SDK does this when the handler reads the body). |
 | `text` | handle | Respond `201` with the text body `hello` and the header `x-conformance: yes`. |
 | `binary` | handle | Respond `200` with the request's raw body bytes as the raw response body. |
 | `status` | handle | Respond with the status in `query.code` (a number) and no body. |
@@ -57,6 +57,9 @@ that check.
 - the worker starts and sends `ready` with protocol `1`
 - `verify` reports `does_not_exist`, and only it, as missing
 - params, query, headers, context and the JSON body arrive with their types
+- a body sent as JSON that isn't gets a `400`: from Unsworn for a worker
+  that gets JSON inside the message, and from `echo` itself for a worker
+  whose `ready` has `raw_json`, when it reads the body
 - text responses with a status and headers
 - raw binary bodies in both directions
 - status codes
