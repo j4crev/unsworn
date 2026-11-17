@@ -20,6 +20,7 @@ mod plan;
 mod scale;
 mod server;
 mod store;
+mod top;
 mod workers;
 
 use std::path::PathBuf;
@@ -140,6 +141,26 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Show what each route costs on a running server: requests, latency,
+    /// and the handler's share of time and CPU. Busiest handlers first.
+    Top {
+        /// Where the server's stats are: its admin listener. Default:
+        /// `[server].admin_listen`, or where `unsworn dev` listens.
+        #[arg(long)]
+        addr: Option<String>,
+        /// Print totals since the server started, once, and exit.
+        #[arg(long)]
+        once: bool,
+        /// Print the server's numbers as JSON, once, and exit.
+        #[arg(long)]
+        json: bool,
+        /// Seconds between updates.
+        #[arg(long, short, default_value_t = 2.0)]
+        interval: f64,
+        /// The most routes to list.
+        #[arg(short = 'n', default_value_t = 25)]
+        limit: usize,
+    },
     /// Print the OpenAPI document for the routes Unsworn serves.
     Openapi {
         /// Write to a file instead of stdout.
@@ -257,6 +278,23 @@ fn main() -> ExitCode {
             output.as_deref(),
             package.as_deref(),
             check,
+        ),
+        Command::Top {
+            addr,
+            once,
+            json,
+            interval,
+            limit,
+        } => top::run(
+            &root,
+            &config,
+            top::Options {
+                addr,
+                once,
+                json,
+                interval,
+                limit,
+            },
         ),
         Command::Openapi { output } => commands::openapi(&root, &config, output.as_deref()),
         Command::Conformance {

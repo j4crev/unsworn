@@ -662,6 +662,29 @@ pub struct RawRoute {
 
     /// Offer the route as an MCP tool too.
     pub mcp: Option<RawRouteTool>,
+
+    /// A second handler that gets a copy of each request, to compare with
+    /// the route's own: a handler reference, or `{ handler, runtime, sample }`.
+    /// Clients only ever get the route's own answer.
+    pub shadow: Option<RawShadow>,
+}
+
+/// `shadow` on a `[[route]]`.
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum RawShadow {
+    Handler(String),
+    Full(RawShadowFull),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawShadowFull {
+    pub handler: String,
+    /// The runtime, when the handler file's extension doesn't say.
+    pub runtime: Option<String>,
+    /// The share of requests to copy, from 0 to 1. Default: 1, all of them.
+    pub sample: Option<f64>,
 }
 
 /// `mcp = { tool = "get_user", description = "..." }` on a `[[route]]`:

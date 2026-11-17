@@ -2,7 +2,7 @@
 //! and metrics.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -191,12 +191,52 @@ pub fn thread_slots() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
 }
 
+/// How many buckets a series sorts its requests' durations into: four
+/// for each doubling from 50 µs, which reaches past an hour.
+pub const BUCKETS: usize = 104;
+
+/// The bucket a duration falls in.
+fn bucket(elapsed: Duration) -> usize {
+    let micros = elapsed.as_micros() as f64;
+    if micros < 50.0 {
+        return 0;
+    }
+    (((micros / 50.0).log2() * 4.0) as usize + 1).min(BUCKETS - 1)
+}
+
+/// The longest duration a bucket holds, in milliseconds.
+pub fn bucket_bound_ms(index: usize) -> f64 {
+    0.05 * 2f64.powf(index as f64 / 4.0)
+}
+
 /// One route's requests with one method and status.
 struct Series {
     method: &'static str,
     status: u16,
     count: u64,
     seconds: f64,
+    /// The part of `seconds` spent waiting for handlers: the route's own
+    /// and any `before` handlers.
+    handler_seconds: f64,
+    /// The runtime that ran the route's handler, if one did.
+    runtime: Option<Arc<str>>,
+    /// How many requests took each length of time.
+    buckets: Box<[u64; BUCKETS]>,
+}
+
+/// One route's requests with one method, whatever their status. See
+/// [`Metrics::routes`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RouteStats {
+    pub method: &'static str,
+    pub route: String,
+    pub runtime: Option<String>,
+    pub count: u64,
+    /// Those answered `500` or above.
+    pub errors: u64,
+    pub seconds: f64,
+    pub handler_seconds: f64,
+    pub buckets: Vec<u64>,
 }
 
 /// Request counts and durations, exposed in Prometheus format. Each thread
@@ -214,7 +254,17 @@ impl Default for Metrics {
 }
 
 impl Metrics {
-    pub fn record(&self, method: &str, route: &str, status: u16, elapsed: Duration) {
+    /// Counts one request. `handler` is how much of `elapsed` went to
+    /// waiting for handlers, and `runtime` the one that ran the route's.
+    pub fn record(
+        &self,
+        method: &str,
+        route: &str,
+        status: u16,
+        elapsed: Duration,
+        handler: Duration,
+        runtime: Option<&Arc<str>>,
+    ) {
         // A client can send any token as a method. Each one would be a new
         // series, kept for the life of the process.
         let method = KNOWN_METHODS
@@ -229,35 +279,84 @@ impl Metrics {
             Some(series) => series,
             None => shard.entry(route.into()).or_default(),
         };
-        let seconds = elapsed.as_secs_f64();
-        match series
-            .iter_mut()
-            .find(|s| s.status == status && s.method == method)
-        {
-            Some(s) => {
-                s.count += 1;
-                s.seconds += seconds;
-            }
-            None => series.push(Series {
+        let found = series
+            .iter()
+            .position(|s| s.status == status && s.method == method);
+        let index = found.unwrap_or_else(|| {
+            series.push(Series {
                 method,
                 status,
-                count: 1,
-                seconds,
-            }),
+                count: 0,
+                seconds: 0.0,
+                handler_seconds: 0.0,
+                runtime: None,
+                buckets: Box::new([0; BUCKETS]),
+            });
+            series.len() - 1
+        });
+        let s = &mut series[index];
+        s.count += 1;
+        s.seconds += elapsed.as_secs_f64();
+        s.handler_seconds += handler.as_secs_f64();
+        s.buckets[bucket(elapsed)] += 1;
+        if s.runtime.is_none()
+            && let Some(runtime) = runtime
+        {
+            s.runtime = Some(runtime.clone());
         }
     }
 
-    /// Every series' count and total seconds, by method, route and status.
-    fn totals(&self) -> std::collections::BTreeMap<(&'static str, String, u16), (u64, f64)> {
+    /// Every route's requests so far, by route and method, for
+    /// `/_unsworn/stats`.
+    pub fn routes(&self) -> Vec<RouteStats> {
+        let mut found: std::collections::BTreeMap<(String, &'static str), RouteStats> =
+            std::collections::BTreeMap::new();
+        for shard in &self.shards {
+            for (route, series) in shard.lock().unwrap().iter() {
+                for s in series {
+                    let stats = found
+                        .entry((route.to_string(), s.method))
+                        .or_insert_with(|| RouteStats {
+                            method: s.method,
+                            route: route.to_string(),
+                            runtime: None,
+                            count: 0,
+                            errors: 0,
+                            seconds: 0.0,
+                            handler_seconds: 0.0,
+                            buckets: vec![0; BUCKETS],
+                        });
+                    stats.count += s.count;
+                    if s.status >= 500 {
+                        stats.errors += s.count;
+                    }
+                    stats.seconds += s.seconds;
+                    stats.handler_seconds += s.handler_seconds;
+                    for (total, n) in stats.buckets.iter_mut().zip(s.buckets.iter()) {
+                        *total += n;
+                    }
+                    if stats.runtime.is_none() {
+                        stats.runtime = s.runtime.as_deref().map(String::from);
+                    }
+                }
+            }
+        }
+        found.into_values().collect()
+    }
+
+    /// Every series' count, total seconds and seconds in handlers, by
+    /// method, route and status.
+    fn totals(&self) -> std::collections::BTreeMap<(&'static str, String, u16), (u64, f64, f64)> {
         let mut totals = std::collections::BTreeMap::new();
         for shard in &self.shards {
             for (route, series) in shard.lock().unwrap().iter() {
                 for s in series {
                     let total = totals
                         .entry((s.method, route.to_string(), s.status))
-                        .or_insert((0, 0.0));
+                        .or_insert((0, 0.0, 0.0));
                     total.0 += s.count;
                     total.1 += s.seconds;
+                    total.2 += s.handler_seconds;
                 }
             }
         }
@@ -269,7 +368,7 @@ impl Metrics {
         out.push_str("# HELP unsworn_requests_total Requests handled.\n");
         out.push_str("# TYPE unsworn_requests_total counter\n");
         let rows = self.totals();
-        for ((method, route, status), (count, _)) in &rows {
+        for ((method, route, status), (count, _, _)) in &rows {
             out.push_str(&format!(
                 "unsworn_requests_total{{method=\"{method}\",route=\"{}\",status=\"{status}\"}} {count}\n",
                 escape(route)
@@ -277,9 +376,19 @@ impl Metrics {
         }
         out.push_str("# HELP unsworn_request_duration_seconds_sum Total time spent on requests.\n");
         out.push_str("# TYPE unsworn_request_duration_seconds_sum counter\n");
-        for ((method, route, status), (_, secs)) in &rows {
+        for ((method, route, status), (_, secs, _)) in &rows {
             out.push_str(&format!(
                 "unsworn_request_duration_seconds_sum{{method=\"{method}\",route=\"{}\",status=\"{status}\"}} {secs:.6}\n",
+                escape(route)
+            ));
+        }
+        out.push_str(
+            "# HELP unsworn_handler_duration_seconds_sum The part of that time spent waiting for handlers.\n",
+        );
+        out.push_str("# TYPE unsworn_handler_duration_seconds_sum counter\n");
+        for ((method, route, status), (_, _, secs)) in rows.iter().filter(|(_, v)| v.2 > 0.0) {
+            out.push_str(&format!(
+                "unsworn_handler_duration_seconds_sum{{method=\"{method}\",route=\"{}\",status=\"{status}\"}} {secs:.6}\n",
                 escape(route)
             ));
         }
@@ -314,6 +423,83 @@ impl Metrics {
     }
 }
 
+/// How a route's shadow handler has done against the route's own.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ShadowStats {
+    pub method: String,
+    pub route: String,
+    /// The shadow handler, and the runtime that runs it.
+    pub handler: String,
+    pub runtime: String,
+    /// Requests both handlers answered.
+    pub compared: u64,
+    /// Those they answered the same.
+    pub same: u64,
+    /// Requests the shadow failed, timed out on or couldn't take.
+    pub failed: u64,
+    /// The time the route's own handler took for those requests, and the
+    /// shadow's.
+    pub primary_seconds: f64,
+    pub shadow_seconds: f64,
+    /// Where the latest pair of answers that differed did.
+    pub last_difference: Option<String>,
+}
+
+/// Every route's [`ShadowStats`].
+#[derive(Default)]
+pub struct Shadows {
+    rows: Mutex<std::collections::BTreeMap<(String, String), ShadowStats>>,
+}
+
+impl Shadows {
+    /// Counts one copied request. `outcome` is whether the shadow's answer
+    /// was the same, or `None` when it gave none. Returns how many of the
+    /// route's requests have gone wrong so far, this one included, when
+    /// this one did.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record(
+        &self,
+        method: &str,
+        route: &str,
+        handler: &str,
+        runtime: &str,
+        outcome: Option<Result<(), &str>>,
+        primary: Duration,
+        shadow: Duration,
+    ) -> Option<u64> {
+        let mut rows = self.rows.lock().unwrap();
+        let row = rows
+            .entry((route.to_string(), method.to_string()))
+            .or_insert_with(|| ShadowStats {
+                method: method.to_string(),
+                route: route.to_string(),
+                ..ShadowStats::default()
+            });
+        // A reload may have pointed the route at another shadow.
+        if row.handler != handler {
+            row.handler = handler.to_string();
+            row.runtime = runtime.to_string();
+        }
+        match outcome {
+            None => row.failed += 1,
+            Some(result) => {
+                row.compared += 1;
+                row.primary_seconds += primary.as_secs_f64();
+                row.shadow_seconds += shadow.as_secs_f64();
+                match result {
+                    Ok(()) => row.same += 1,
+                    Err(what) => row.last_difference = Some(what.to_string()),
+                }
+            }
+        }
+        matches!(outcome, None | Some(Err(_))).then(|| row.failed + row.compared - row.same)
+    }
+
+    pub fn all(&self) -> Vec<ShadowStats> {
+        self.rows.lock().unwrap().values().cloned().collect()
+    }
+}
+
 fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -326,7 +512,7 @@ mod tests {
     fn unknown_methods_share_one_series() {
         let metrics = Metrics::default();
         for method in ["GET", "PROPFIND", "AAAA", "AAAB"] {
-            metrics.record(method, "(none)", 404, Duration::ZERO);
+            metrics.record(method, "(none)", 404, Duration::ZERO, Duration::ZERO, None);
         }
         let series = metrics.totals();
         assert_eq!(series.len(), 2);

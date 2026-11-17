@@ -148,7 +148,8 @@ which calls back into the binary for I/O.
     enforce).
 11. **Transform and respond.** Header rules apply, the cache is filled and the
     response is sent.
-12. **Observe.** The access log and metrics record the request.
+12. **Observe.** The access log and metrics record the request, with how
+    long of it was spent waiting for handlers.
 
 A rejected request stops at the step that rejects it, and a cache hit stops
 at step 9. Routes with a `respond`, `redirect`, `static` or `proxy` action
@@ -320,6 +321,7 @@ from a per-target capability table (`unsworn-core/src/targets.rs`).
 | `unsworn dev` | Serve with file watching, handler rebuilds and verbose errors. |
 | `unsworn check [--deep] [--target <t>]` | Validate config and routes and report target capability gaps. `--deep` also starts workers to verify handler names. |
 | `unsworn routes [--policies]` | Print the resolved route table and the source of each route. `--policies` adds each route's merged policies and where each value came from. |
+| `unsworn top [--once]` | Show each route's requests, latency and handler CPU on a running server, from its admin listener. See [`top.md`](top.md). |
 | `unsworn plan [--check]` | Write what every route and MCP tool enforces to `unsworn.plan`. `--check` fails when the file is out of date. See [`plan.md`](plan.md). |
 | `unsworn diff [<base>] [--fail-on <looser\|any>]` | Compare the rules with those at a git revision or in another directory, marking the changes that let more requests through. |
 | `unsworn openapi` | Emit the OpenAPI document. |

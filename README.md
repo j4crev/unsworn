@@ -137,6 +137,11 @@ const vector = await ctx.call("embed", { text: req.query.q });   // embed is Pyt
   [our benchmark](docs/benchmarks.md#a-handler-that-does-work), one search
   handler costs 53 ms of CPU a request in Python, 1.2 ms in TypeScript on
   Bun and 0.84 ms in Rust.
+- **You can see which endpoint that is, and try the rewrite first.**
+  [`unsworn top`](docs/top.md) lists each route's latency and its
+  handler's CPU on a running server. [`shadow`](docs/shadow.md) sends a
+  copy of a route's requests to the new handler and compares its answers
+  with the old one's, while clients keep getting the old one's.
 
 A handler call does cross a process boundary, and that costs about the same
 in every language. So a trivial endpoint won't beat the same code running
@@ -243,7 +248,7 @@ All of this is configured in `unsworn.toml`, with no code:
 | Security | JWT/JWKS, API keys, CORS, IP allow and deny lists, body size limits, outbound services with credentials handlers never hold |
 | Traffic | rate limits, timeouts, response caching |
 | Contracts | params, query, header and body validation (JSON Schema), OpenAPI input and output |
-| Ops | access logs, Prometheus metrics, request IDs, health checks, config hot reload |
+| Ops | access logs, Prometheus metrics, per-route cost (`unsworn top`), shadow handlers, request IDs, health checks, config hot reload |
 
 ## How it works
 
@@ -275,6 +280,7 @@ All of this is configured in `unsworn.toml`, with no code:
 Details: [architecture](docs/architecture.md), [config](docs/config.md),
 [plan and diff](docs/plan.md), [generated types](docs/types.md),
 [functions](docs/functions.md), [outbound services](docs/outbound.md),
+[`top`](docs/top.md), [`shadow`](docs/shadow.md),
 [protocol](docs/protocol.md),
 [conformance](docs/conformance.md), [MCP](docs/mcp.md),
 [benchmarks](docs/benchmarks.md) and [roadmap](docs/roadmap.md).
@@ -348,6 +354,7 @@ unsworn dev         # serves it, reloads on changes, verifies handler names
 | `unsworn routes` | Print the route table and each route's source, including MCP tools; `--policies` shows merged policies and each tool's arguments |
 | `unsworn plan` | Write what every route and tool enforces to `unsworn.plan`, to commit with the config; `--check` fails when it's out of date |
 | `unsworn diff` | Show what changed in the rules since a git revision (or another directory), marking what got looser; `--fail-on looser` for CI |
+| `unsworn top` | Show each route's requests, latency and its handler's share of time and CPU on a running server, costliest first |
 | `unsworn gen` | Write typed request models for handlers (TypeScript, Python, Go, Rust) from each route's schemas; `--check` fails when one is out of date |
 | `unsworn openapi` | Print the OpenAPI document for what Unsworn serves |
 | `unsworn build` | Bundle the project for a deployment target: `--target cloudflare` makes a Cloudflare Worker, and `vercel`, `netlify` and `lambda` make a function for each |

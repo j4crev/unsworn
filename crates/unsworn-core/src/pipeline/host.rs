@@ -256,6 +256,14 @@ pub trait Host: MaybeSync {
         F: Future + MaybeSend,
         F::Output: MaybeSend;
 
+    /// Sends a copy of a request to a route's shadow handler and compares
+    /// its answer with the one the route's own handler gave, without
+    /// making the response wait. See [`super::shadow`]. A host that
+    /// doesn't run shadows leaves this as it is.
+    fn shadow(&self, call: super::shadow::ShadowCall) {
+        let _ = call;
+    }
+
     /// Runs `future` without making the response wait for it, such as a
     /// write to a remote store. A host may run it before returning when
     /// that's cheap, as the binary does for its in-memory store, so the

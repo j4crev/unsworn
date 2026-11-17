@@ -125,10 +125,11 @@ on the way out. In the order planned:
      Still open: keeping a handler from opening its own connections
      (Landlock, a network namespace), which the platform has to do for
      now, and streamed bodies.
-4. **Choosing a language by measurement.** Per-route latency and CPU,
-   split between Unsworn and the handler (`unsworn top`), and a `shadow`
-   handler that gets a copy of a route's traffic so a rewrite can be
-   compared before it takes over.
+4. ~~**Choosing a language by measurement.**~~ Done: `unsworn top` shows
+   each route's latency and its handler's share of time and CPU on a
+   running server ([`top.md`](top.md)), and a route's `shadow` handler
+   gets a copy of its requests so a rewrite's answers can be compared
+   before it takes over ([`shadow.md`](shadow.md)).
 5. **WebAssembly handlers** called in the server's process, and from the
    core on edge targets.
 6. **A container image target** (`unsworn build --target image`), and the

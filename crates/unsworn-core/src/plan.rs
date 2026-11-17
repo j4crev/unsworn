@@ -760,6 +760,16 @@ fn route_entry(project: &Project, route: &Route, method: &str) -> Entry {
     if let Some(t) = project.route_tool(route.id) {
         e.plain("mcp_tool", tool_summary(t));
     }
+    if let Some(s) = &route.shadow {
+        let share = match s.every {
+            1 => String::new(),
+            n => format!("; 1 request in {n}"),
+        };
+        e.plain(
+            "shadow",
+            format!("{} ({}){share}", s.handler.raw, s.handler.runtime),
+        );
+    }
     let own = parse_pattern(&route.path);
     policies(
         &mut e,

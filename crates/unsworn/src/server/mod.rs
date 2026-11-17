@@ -48,6 +48,8 @@ pub struct Shared {
     /// in-memory rate limits and cache entries.
     pub store: ArcSwap<Store>,
     pub metrics: Metrics,
+    /// How routes' shadow handlers have compared with their own.
+    pub shadows: support::Shadows,
     /// JWT keys, kept across reloads.
     pub keys: Arc<KeyCache>,
     pub dev: bool,
@@ -58,6 +60,8 @@ pub struct Shared {
     request_id_prefix: String,
     generations: AtomicU64,
     sockets: SocketDir,
+    /// When the server started, for `/_unsworn/stats`.
+    pub started: std::time::Instant,
 }
 
 impl Shared {
@@ -187,6 +191,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         upstreams: upstream::Upstreams::new(),
         store: ArcSwap::from_pointee(store),
         metrics: Metrics::default(),
+        shadows: support::Shadows::default(),
         keys,
         dev: opts.dev,
         build: opts.build,
@@ -195,6 +200,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         request_id_prefix: format!("{:x}-", std::process::id()),
         generations: AtomicU64::new(1),
         sockets,
+        started: std::time::Instant::now(),
     });
 
     // Periodic cleanup of expired cache entries and idle rate-limit buckets.
@@ -624,6 +630,8 @@ async fn admin_server(listener: TcpListener, shared: Arc<Shared>) {
                 async move {
                     let resp: Response<Body> = if req.uri().path() == "/_unsworn/health" {
                         host::health(&shared, &shared.generation.load(), true)
+                    } else if req.uri().path() == "/_unsworn/stats" {
+                        host::stats(&shared).await
                     } else if req.uri().path() == "/_unsworn/metrics" {
                         let runtimes = shared.generation.load().pools.health();
                         let store = shared.store.load();

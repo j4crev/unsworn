@@ -75,7 +75,7 @@ timeout             = "30s"          # default for every route
 trailing_slash      = "redirect"     # "redirect" | "strict" | "ignore"
 compression         = true           # br, zstd or gzip, from Accept-Encoding
 trusted_proxies     = ["10.0.0.0/8"] # trust X-Forwarded-For from these ("all" trusts any)
-admin_listen        = "127.0.0.1:9090"  # optional: /_unsworn/metrics (Prometheus) and health details
+admin_listen        = "127.0.0.1:9090"  # optional: metrics (Prometheus), health details, and what `unsworn top` reads
 response_validation = "log"          # "off" | "log" | "enforce", for `response` schemas
 shutdown_timeout    = "10s"          # how long to wait for open requests on shutdown
 max_connections     = 10000          # the most connections open at once (the default)
@@ -643,6 +643,7 @@ cache      = { ttl = "30s", vary = ["Authorization"] }  # one entry per value of
 timeout    = "5s"
 max_body   = "10MB"
 stream_body = true                    # handler reads the body as it arrives
+shadow     = "src/users.rs#get"       # a second handler to compare with; see shadow.md
 headers    = { set = { "Cache-Control" = "no-store" }, remove = ["Server"] }
 before     = ["src/auth.ts#tenant"]   # handlers that run first, in order
 use        = ["public_cached"]        # named policy sets, applied in order

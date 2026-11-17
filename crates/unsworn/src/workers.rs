@@ -304,6 +304,29 @@ pub struct Pool {
     /// Every pool of the project, set when it has functions for handlers
     /// to call.
     peers: std::sync::OnceLock<std::sync::Weak<Pools>>,
+    /// The runtime's name, to hand out without copying it.
+    name: Arc<str>,
+    /// CPU time its workers have used, for `unsworn top`.
+    cpu: Mutex<CpuSeen>,
+}
+
+/// A pool's CPU time so far. A worker's is read from `/proc` while it
+/// runs, so what an exited one had used is kept from the last look.
+#[derive(Default)]
+struct CpuSeen {
+    /// Ticks at the last look, by process.
+    workers: HashMap<u32, u64>,
+    /// Ticks of processes that have gone.
+    gone: u64,
+}
+
+/// What a runtime's workers have used so far.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RuntimeUsage {
+    pub name: String,
+    pub workers: usize,
+    pub cpu_seconds: f64,
+    pub memory_kb: u64,
 }
 
 /// The pools for every runtime in a project.
@@ -379,6 +402,12 @@ impl Pools {
 
     pub fn get(&self, runtime: &str) -> Option<&Arc<Pool>> {
         self.pools.get(runtime)
+    }
+
+    /// What each runtime's workers have used so far. Reads `/proc`, so
+    /// call it off the async threads.
+    pub fn usage(&self) -> Vec<RuntimeUsage> {
+        self.pools.values().map(|p| p.usage()).collect()
     }
 
     /// Starts runtimes marked `eager`. Returns errors, including handlers
@@ -748,6 +777,7 @@ impl Pool {
         opts: PoolOptions,
     ) -> Arc<Pool> {
         let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+        let name = runtime.name.as_str().to_owned();
         let min = runtime.workers.min.max(1) as usize;
         let max = runtime.workers.most(cores).max(min);
         Arc::new(Pool {
@@ -767,7 +797,48 @@ impl Pool {
             growing: AtomicBool::new(false),
             waited: AtomicBool::new(false),
             peers: std::sync::OnceLock::new(),
+            name: Arc::from(name),
+            cpu: Mutex::default(),
         })
+    }
+
+    /// The runtime's name.
+    pub fn name(&self) -> Arc<str> {
+        self.name.clone()
+    }
+
+    /// What this runtime's workers have used so far. Reads `/proc`.
+    fn usage(&self) -> RuntimeUsage {
+        let pids: Vec<u32> = self
+            .workers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|w| w.pid)
+            .collect();
+        let mut cpu = self.cpu.lock().unwrap();
+        let mut now = HashMap::new();
+        let mut memory_kb = 0;
+        for pid in &pids {
+            if let Some(ticks) = scale::tree_ticks(*pid) {
+                now.insert(*pid, ticks);
+            }
+            memory_kb += scale::tree_memory_kb(*pid);
+        }
+        let gone: u64 = cpu
+            .workers
+            .iter()
+            .filter(|(pid, _)| !now.contains_key(pid))
+            .map(|(_, ticks)| ticks)
+            .sum();
+        cpu.gone += gone;
+        cpu.workers = now;
+        RuntimeUsage {
+            name: self.runtime.name.clone(),
+            workers: pids.len(),
+            cpu_seconds: scale::seconds(cpu.gone + cpu.workers.values().sum::<u64>()),
+            memory_kb,
+        }
     }
 
     /// Whether this runtime's workers answer `verify`.
