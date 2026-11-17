@@ -1,10 +1,12 @@
 //! The HTTP server: listeners, reloads and shutdown.
 
+pub mod access;
 mod compress;
 mod host;
 mod proxy;
 mod static_files;
 pub mod support;
+mod upstream;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -39,6 +41,9 @@ pub struct Generation {
 pub struct Shared {
     pub generation: ArcSwap<Generation>,
     pub client: HttpClient,
+    /// Connections to `http://` and Unix-socket upstreams, which most
+    /// proxied requests use. `client` has the rest.
+    pub upstreams: Arc<upstream::Upstreams>,
     /// Rebuilt on reload only when `[store]` changes, so reloads keep
     /// in-memory rate limits and cache entries.
     pub store: ArcSwap<Store>,
@@ -49,17 +54,21 @@ pub struct Shared {
     build: bool,
     pub root: PathBuf,
     request_ids: AtomicU64,
+    /// `<process id>-`, in hex, which every generated request id starts with.
+    request_id_prefix: String,
     generations: AtomicU64,
     sockets: SocketDir,
 }
 
 impl Shared {
-    pub fn next_request_id(&self) -> String {
-        format!(
-            "{:x}-{:x}",
-            std::process::id(),
-            self.request_ids.fetch_add(1, Ordering::Relaxed)
-        )
+    /// An id for a request that arrived without one: this process's id,
+    /// then a count.
+    pub fn next_request_id(&self) -> http::HeaderValue {
+        use std::fmt::Write;
+        let mut id = String::with_capacity(self.request_id_prefix.len() + 16);
+        id.push_str(&self.request_id_prefix);
+        let _ = write!(id, "{:x}", self.request_ids.fetch_add(1, Ordering::Relaxed));
+        http::HeaderValue::try_from(id).unwrap_or_else(|_| http::HeaderValue::from_static("-"))
     }
 }
 
@@ -172,6 +181,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
     let shared = Arc::new(Shared {
         generation: ArcSwap::from_pointee(generation),
         client: support::build_client(),
+        upstreams: upstream::Upstreams::new(),
         store: ArcSwap::from_pointee(store),
         metrics: Metrics::default(),
         keys,
@@ -179,6 +189,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         build: opts.build,
         root: opts.root.clone(),
         request_ids: AtomicU64::new(1),
+        request_id_prefix: format!("{:x}-", std::process::id()),
         generations: AtomicU64::new(1),
         sockets,
     });
@@ -382,7 +393,11 @@ async fn serve_connection<I>(
         hyper::service::service_fn(move |mut req: Request<Incoming>| {
             seen.store(true, Ordering::Relaxed);
             let shared = shared.clone();
-            req.extensions_mut().insert(tunnel.clone());
+            // Only a request that asks to switch protocols can become a
+            // tunnel.
+            if req.headers().contains_key(http::header::UPGRADE) {
+                req.extensions_mut().insert(tunnel.clone());
+            }
             async move {
                 let accept = req.headers().get(http::header::ACCEPT_ENCODING).cloned();
                 let method = req.method().clone();

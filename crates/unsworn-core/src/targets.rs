@@ -51,6 +51,7 @@ fn cloudflare(project: &Project) -> Vec<Diagnostic> {
         &mut out,
     );
     js_handlers_only(project, "cloudflare", "a Worker", &mut out);
+    no_unix_upstreams(project, "cloudflare", &mut out);
     out
 }
 
@@ -102,6 +103,7 @@ fn functions(project: &Project, target: &str) -> Vec<Diagnostic> {
         &mut out,
     );
     js_handlers_only(project, target, "a Node function", &mut out);
+    no_unix_upstreams(project, target, &mut out);
     out
 }
 
@@ -159,6 +161,42 @@ fn js_handlers_only(project: &Project, target: &str, place: &str, out: &mut Vec<
                 );
             }
         }
+    }
+}
+
+/// A proxy's upstream on a Unix socket is on the machine the binary runs
+/// on, which these targets don't have.
+fn no_unix_upstreams(project: &Project, target: &str, out: &mut Vec<Diagnostic>) {
+    let unix = |proxy: &crate::project::Proxy| {
+        proxy
+            .upstreams
+            .iter()
+            .any(|u| u.starts_with(crate::project::UNIX_UPSTREAM))
+    };
+    let hint = "use the upstream's http:// or https:// URL";
+    for route in &project.routes {
+        if let crate::project::Action::Proxy(proxy) = &route.action
+            && unix(proxy)
+        {
+            out.push(
+                Diagnostic::error(
+                    format!("{}.proxy", route.source.loc()),
+                    format!("a Unix socket can't be reached from {target}"),
+                )
+                .hint(hint),
+            );
+        }
+    }
+    if let Some(proxy) = project.mcp.as_ref().and_then(|mcp| mcp.proxy.as_ref())
+        && unix(proxy)
+    {
+        out.push(
+            Diagnostic::error(
+                "[mcp].proxy",
+                format!("a Unix socket can't be reached from {target}"),
+            )
+            .hint(hint),
+        );
     }
 }
 
@@ -288,5 +326,19 @@ before = ["src/a.ts#check"]
         );
         assert_eq!(check(&p, "server"), vec![]);
         assert!(check(&p, "nope")[0].is_error());
+
+        let unix = project("[[route]]\npath = \"/{*rest}\"\nproxy = \"unix:/run/app.sock\"\n");
+        assert_eq!(check(&unix, "server"), vec![]);
+        for target in ["cloudflare", "vercel"] {
+            let errors: Vec<_> = check(&unix, target)
+                .into_iter()
+                .filter(|d| d.is_error())
+                .map(|d| d.message)
+                .collect();
+            assert_eq!(
+                errors,
+                [format!("a Unix socket can't be reached from {target}")]
+            );
+        }
     }
 }

@@ -4,22 +4,24 @@ use http::{Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
 use unsworn_core::pipeline::proxy::{ForwardInfo, is_upgrade, response_headers, rewrite};
-use unsworn_core::project::Proxy;
+use unsworn_core::project::{Proxy, Target};
 
-use super::support::{Body, BoxError, HttpClient, Tunnel, problem, problem_response};
+use super::Shared;
+use super::support::{Body, BoxError, Tunnel, problem, problem_response};
+use super::upstream::Peer;
 
 /// Forwards a request to one of the proxy's upstreams.
 pub fn forward(
-    client: HttpClient,
+    shared: std::sync::Arc<Shared>,
     proxy: std::sync::Arc<Proxy>,
     req: Request<Body>,
     info: ForwardInfo,
 ) -> futures_util::future::BoxFuture<'static, Response<Body>> {
-    Box::pin(forward_inner(client, proxy, req, info))
+    Box::pin(forward_inner(shared, proxy, req, info))
 }
 
 async fn forward_inner(
-    client: HttpClient,
+    shared: std::sync::Arc<Shared>,
     proxy: std::sync::Arc<Proxy>,
     mut req: Request<Body>,
     info: ForwardInfo,
@@ -28,13 +30,30 @@ async fn forward_inner(
     let tunnel = req.extensions().get::<Tunnel>().cloned();
     let client_upgrade = upgrade.then(|| hyper::upgrade::on(&mut req));
     let (mut parts, body) = req.into_parts();
-    let upstream = match rewrite(&proxy, &mut parts, &info) {
-        Ok(u) => u,
+    let index = match rewrite(&proxy, &mut parts, &info) {
+        Ok(index) => index,
         Err(p) => return problem_response(p),
     };
+    let upstream = &proxy.upstreams[index];
     let req = Request::from_parts(parts, body);
 
-    let mut resp = match client.request(req).await {
+    // Plain HTTP/1.1 goes over a connection this thread keeps. The general
+    // client has TLS and HTTP/2.
+    let peer = match proxy.target(index) {
+        Target::Unix(path) => Some(Peer::Unix(path.clone())),
+        _ if req.uri().scheme() == Some(&http::uri::Scheme::HTTP) => {
+            req.uri().authority().cloned().map(Peer::Tcp)
+        }
+        _ => None,
+    };
+    let sent = match peer {
+        Some(peer) => shared.upstreams.send(peer, req).await,
+        None => match shared.client.request(req).await {
+            Ok(resp) => Ok(resp.map(|body| body.map_err(BoxError::from).boxed_unsync())),
+            Err(e) => Err(BoxError::from(e)),
+        },
+    };
+    let mut resp = match sent {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(upstream = %upstream, "proxy error: {e}");
@@ -72,8 +91,5 @@ async fn forward_inner(
 
     let (mut parts, body) = resp.into_parts();
     response_headers(&mut parts.headers, parts.version);
-    Response::from_parts(
-        parts,
-        body.map_err(|e| -> BoxError { Box::new(e) }).boxed_unsync(),
-    )
+    Response::from_parts(parts, body)
 }

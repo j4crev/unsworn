@@ -271,14 +271,14 @@ impl Host for WasmHost {
         let info = ForwardInfo {
             client_ip: request.client_ip,
             tls: self.tls,
-            request_id: Some(self.request_id.clone()),
+            request_id: http::HeaderValue::from_str(&self.request_id).ok(),
             // The platform gives the client's address, and the forwarding
             // headers the request arrived with may be the client's own, so
             // the upstream gets fresh ones.
             trusted_peer: false,
         };
         let upstream = match rewrite(&request.proxy, &mut parts, &info) {
-            Ok(u) => u,
+            Ok(index) => request.proxy.upstreams[index].as_str(),
             Err(p) => return problem_response(p),
         };
         let js = request_to_js(&parts, body_to_js(body));

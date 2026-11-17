@@ -169,36 +169,106 @@ const KNOWN_METHODS: &[&str] = &[
     "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE",
 ];
 
-/// Request counts and durations, exposed in Prometheus format.
-#[derive(Default)]
+/// A small number for the calling thread, the same every time: its place
+/// in state that's kept per thread so threads don't wait on each other.
+pub fn thread_slot() -> usize {
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static THREADS: AtomicUsize = AtomicUsize::new(0);
+    thread_local! {
+        static SLOT: Cell<usize> = const { Cell::new(usize::MAX) };
+    }
+    SLOT.with(|slot| {
+        if slot.get() == usize::MAX {
+            slot.set(THREADS.fetch_add(1, Ordering::Relaxed));
+        }
+        slot.get()
+    })
+}
+
+/// How many slots per-thread state should have.
+pub fn thread_slots() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
+/// One route's requests with one method and status.
+struct Series {
+    method: &'static str,
+    status: u16,
+    count: u64,
+    seconds: f64,
+}
+
+/// Request counts and durations, exposed in Prometheus format. Each thread
+/// counts in its own map (see [`thread_slot`]), and `render` adds them up.
 pub struct Metrics {
-    requests: Mutex<HashMap<(String, String, u16), (u64, f64)>>,
+    shards: Box<[Mutex<HashMap<Box<str>, Vec<Series>>>]>,
+}
+
+impl Default for Metrics {
+    fn default() -> Metrics {
+        Metrics {
+            shards: (0..thread_slots()).map(|_| Mutex::default()).collect(),
+        }
+    }
 }
 
 impl Metrics {
     pub fn record(&self, method: &str, route: &str, status: u16, elapsed: Duration) {
         // A client can send any token as a method. Each one would be a new
         // series, kept for the life of the process.
-        let method = if KNOWN_METHODS.contains(&method) {
-            method
-        } else {
-            "OTHER"
+        let method = KNOWN_METHODS
+            .iter()
+            .find(|known| **known == method)
+            .copied()
+            .unwrap_or("OTHER");
+        let mut shard = self.shards[thread_slot() % self.shards.len()]
+            .lock()
+            .unwrap();
+        let series = match shard.get_mut(route) {
+            Some(series) => series,
+            None => shard.entry(route.into()).or_default(),
         };
-        let mut m = self.requests.lock().unwrap();
-        let entry = m
-            .entry((method.to_string(), route.to_string(), status))
-            .or_insert((0, 0.0));
-        entry.0 += 1;
-        entry.1 += elapsed.as_secs_f64();
+        let seconds = elapsed.as_secs_f64();
+        match series
+            .iter_mut()
+            .find(|s| s.status == status && s.method == method)
+        {
+            Some(s) => {
+                s.count += 1;
+                s.seconds += seconds;
+            }
+            None => series.push(Series {
+                method,
+                status,
+                count: 1,
+                seconds,
+            }),
+        }
+    }
+
+    /// Every series' count and total seconds, by method, route and status.
+    fn totals(&self) -> std::collections::BTreeMap<(&'static str, String, u16), (u64, f64)> {
+        let mut totals = std::collections::BTreeMap::new();
+        for shard in &self.shards {
+            for (route, series) in shard.lock().unwrap().iter() {
+                for s in series {
+                    let total = totals
+                        .entry((s.method, route.to_string(), s.status))
+                        .or_insert((0, 0.0));
+                    total.0 += s.count;
+                    total.1 += s.seconds;
+                }
+            }
+        }
+        totals
     }
 
     pub fn render(&self, runtimes: &[(String, bool, usize, usize)], store: &Store) -> String {
         let mut out = String::new();
         out.push_str("# HELP unsworn_requests_total Requests handled.\n");
         out.push_str("# TYPE unsworn_requests_total counter\n");
-        let m = self.requests.lock().unwrap();
-        let mut rows: Vec<_> = m.iter().collect();
-        rows.sort_by(|a, b| a.0.cmp(b.0));
+        let rows = self.totals();
         for ((method, route, status), (count, _)) in &rows {
             out.push_str(&format!(
                 "unsworn_requests_total{{method=\"{method}\",route=\"{}\",status=\"{status}\"}} {count}\n",
@@ -258,8 +328,8 @@ mod tests {
         for method in ["GET", "PROPFIND", "AAAA", "AAAB"] {
             metrics.record(method, "(none)", 404, Duration::ZERO);
         }
-        let series = metrics.requests.lock().unwrap();
+        let series = metrics.totals();
         assert_eq!(series.len(), 2);
-        assert_eq!(series[&("OTHER".into(), "(none)".into(), 404)].0, 3);
+        assert_eq!(series[&("OTHER", "(none)".into(), 404)].0, 3);
     }
 }
