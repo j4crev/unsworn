@@ -365,7 +365,9 @@ async fn serve_route<H: Host>(
         Err(resp) => return resp,
     };
     if matches!(route.action, Action::Mcp) {
-        return mcp::serve(ctx, route, eff, prepared).await;
+        // On the heap, so that the other routes, which are most of them,
+        // don't each carry the room an MCP request needs.
+        return Box::pin(mcp::serve(ctx, route, eff, prepared)).await;
     }
     let deadline = ctx.deadline(eff.timeout);
     let befores = run_befores(

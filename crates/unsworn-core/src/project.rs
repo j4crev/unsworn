@@ -76,6 +76,80 @@ pub struct Proxy {
     /// Lowercase header name whose value pins a client to an upstream.
     pub sticky_header: Option<String>,
     pub preserve_host: bool,
+    /// How to reach each upstream. In step with `upstreams`.
+    #[serde(skip)]
+    targets: Vec<Target>,
+}
+
+/// Where a proxy's upstream is, worked out once from its URL.
+#[derive(Debug, Clone)]
+pub enum Target {
+    /// A URL that is only a scheme and a host, as most are.
+    Origin(Origin),
+    /// A URL with a path of its own (`http://host/base`), which goes in
+    /// front of each request's path.
+    Url,
+    /// A Unix socket's path (`unix:/run/app.sock`).
+    Unix(Arc<str>),
+}
+
+/// An upstream URL that is only a scheme and a host, ready to put in front
+/// of a request's path without parsing anything.
+#[derive(Debug, Clone)]
+pub struct Origin {
+    pub scheme: http::uri::Scheme,
+    pub authority: http::uri::Authority,
+    /// The authority, as the `Host` header's value.
+    pub host: http::HeaderValue,
+}
+
+/// What an upstream on a Unix socket starts with.
+pub const UNIX_UPSTREAM: &str = "unix:";
+
+impl Proxy {
+    pub fn new(
+        upstreams: Vec<String>,
+        strip_prefix: Option<String>,
+        sticky_header: Option<String>,
+        preserve_host: bool,
+    ) -> Proxy {
+        let targets = upstreams.iter().map(|u| target(u)).collect();
+        Proxy {
+            upstreams,
+            strip_prefix,
+            sticky_header,
+            preserve_host,
+            targets,
+        }
+    }
+
+    /// How to reach the upstream at `index`.
+    pub fn target(&self, index: usize) -> &Target {
+        self.targets.get(index).unwrap_or(&Target::Url)
+    }
+}
+
+fn target(upstream: &str) -> Target {
+    if let Some(path) = upstream.strip_prefix(UNIX_UPSTREAM) {
+        return Target::Unix(path.into());
+    }
+    origin(upstream).map_or(Target::Url, Target::Origin)
+}
+
+fn origin(upstream: &str) -> Option<Origin> {
+    let parts = upstream.parse::<http::Uri>().ok()?.into_parts();
+    let (scheme, authority) = (parts.scheme?, parts.authority?);
+    // Only when putting the parts together gives what writing the request's
+    // path after the URL would.
+    if format!("{scheme}://{authority}") != upstream {
+        return None;
+    }
+    let host = http::HeaderValue::from_str(authority.as_str()).ok()?;
+    Some(Origin {
+        scheme,
+        authority,
+        host,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2130,10 +2204,20 @@ impl<'h> Compiler<'h> {
                 self.diags.error(format!("{loc}.proxy"), "no upstreams");
             }
             for u in &upstreams {
-                if !(u.starts_with("http://") || u.starts_with("https://")) {
+                if let Some(path) = u.strip_prefix(UNIX_UPSTREAM) {
+                    if !path.starts_with('/') {
+                        self.diags.push(
+                            Diagnostic::error(
+                                format!("{loc}.proxy"),
+                                format!("\"{u}\" needs the socket's full path"),
+                            )
+                            .hint("write it from the root, such as unix:/run/app.sock"),
+                        );
+                    }
+                } else if !(u.starts_with("http://") || u.starts_with("https://")) {
                     self.diags.error(
                         format!("{loc}.proxy"),
-                        format!("\"{u}\" must start with http:// or https://"),
+                        format!("\"{u}\" must start with http://, https:// or unix:"),
                     );
                 }
             }
@@ -2150,12 +2234,12 @@ impl<'h> Compiler<'h> {
                     }
                 },
             };
-            Arc::new(Proxy {
+            Arc::new(Proxy::new(
                 upstreams,
                 strip_prefix,
                 sticky_header,
                 preserve_host,
-            })
+            ))
         }
     }
 

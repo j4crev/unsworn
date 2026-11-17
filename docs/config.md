@@ -418,6 +418,12 @@ encoded slash (`%2F`) stays encoded and never separates segments.
 | `proxy` | `proxy = "http://old-api:8080"` or `{ upstreams = [...], strip_prefix = "/legacy", sticky = "header:x-tenant-id" }` | No |
 | `handler` | `handler = "src/users.ts#getUser"` | Yes |
 
+An upstream on the same machine can listen on a Unix socket instead of a
+port: `proxy = "unix:/run/app.sock"`, with the socket's full path. Requests
+skip the TCP stack that way, which costs less for each one. The upstream
+gets `Host: localhost` unless the route sets `preserve_host`. Only the
+server target can reach one.
+
 A `proxy` route tells its upstream about the request it forwards: it adds
 this hop to `Forwarded` (RFC 7239), `X-Forwarded-For` and `Via`, and sets
 `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Real-IP` (the client's address)

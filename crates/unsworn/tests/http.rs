@@ -565,6 +565,118 @@ respond = {{ status = 200, text = "front" }}
     drop(app_server);
 }
 
+/// A stand-in app: answers each request with its request line and `Host`,
+/// and closes the connection after `per_connection` of them without saying
+/// it will, as an app that restarts or times connections out does.
+fn answer_requests<S>(stream: S, per_connection: usize)
+where
+    S: std::io::Read + std::io::Write,
+{
+    use std::io::{BufRead, BufReader};
+    let mut reader = BufReader::new(stream);
+    for _ in 0..per_connection {
+        let (mut first, mut host) = (String::new(), String::new());
+        if reader.read_line(&mut first).unwrap_or(0) == 0 {
+            return;
+        }
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("host:") {
+                host = value.trim().to_string();
+            }
+        }
+        let reply = format!("{}|{host}", first.trim());
+        let _ = write!(
+            reader.get_mut(),
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{reply}",
+            reply.len()
+        );
+    }
+}
+
+#[test]
+fn proxy_to_a_unix_socket() {
+    let front = Project::new(&[]);
+    let socket = front.path().join("app.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            std::thread::spawn(move || answer_requests(stream, usize::MAX));
+        }
+    });
+    front.write(
+        "unsworn.toml",
+        &format!(
+            r#"
+[[route]]
+path = "/{{*rest}}"
+proxy = "unix:{socket}"
+
+[[route]]
+path = "/api/{{*rest}}"
+proxy = {{ upstreams = ["unix:{socket}"], strip_prefix = "/api", preserve_host = true }}
+"#,
+            socket = socket.display()
+        ),
+    );
+    let s = front.serve();
+    // Twice, so the second goes over the connection the first left open.
+    for _ in 0..2 {
+        let r = s.get("/users?x=1");
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert_eq!(r.text(), "GET /users?x=1 HTTP/1.1|localhost");
+    }
+    let r = s.request("GET", "/api/users", &[("host", "example.com")], b"");
+    assert_eq!(r.text(), "GET /users HTTP/1.1|example.com");
+
+    // A socket nothing listens on gives a 502.
+    let dead = Project::new(&[(
+        "unsworn.toml",
+        "[[route]]\npath = \"/{*rest}\"\nproxy = \"unix:/nonexistent/app.sock\"\n",
+    )]);
+    assert_eq!(dead.serve().get("/x").status, 502);
+
+    // The path has to be a full one.
+    let relative = Project::new(&[(
+        "unsworn.toml",
+        "[[route]]\npath = \"/{*rest}\"\nproxy = \"unix:app.sock\"\n",
+    )]);
+    let out = relative.command(&["check"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("needs the socket's full path"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn proxy_survives_an_upstream_closing_idle_connections() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            std::thread::spawn(move || answer_requests(stream, 1));
+        }
+    });
+    let front = Project::new(&[(
+        "unsworn.toml",
+        &format!("[[route]]\npath = \"/{{*rest}}\"\nproxy = \"http://{addr}\"\n"),
+    )]);
+    let s = front.serve();
+    // Every request finds the connection the last one used closed under it.
+    for i in 0..20 {
+        let r = s.get(&format!("/n/{i}"));
+        assert_eq!(r.status, 200, "request {i}: {}", r.text());
+        assert_eq!(r.text(), format!("GET /n/{i} HTTP/1.1|{addr}"));
+        // Long enough for the close to have arrived.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn check_routes_and_openapi_commands() {
     let p = Project::new(&[(

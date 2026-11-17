@@ -10,8 +10,8 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use futures_util::StreamExt;
 use futures_util::future::BoxFuture;
+use futures_util::{FutureExt, StreamExt};
 use http::{HeaderValue, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Limited, StreamBody};
 use hyper::body::{Frame, Incoming};
@@ -25,9 +25,11 @@ use unsworn_core::pipeline::{
 use unsworn_core::policy::HandlerRef;
 
 use super::support::{Body, BoxError, empty, full, json_response};
-use super::{Generation, Shared, proxy, static_files};
+use super::{Generation, Shared, access, proxy, static_files};
 use crate::store::{Store, now_ms};
 use crate::workers::{self, CallBody, ReplyBody};
+
+static X_REQUEST_ID: http::HeaderName = http::HeaderName::from_static("x-request-id");
 
 /// The zero of [`Host::monotonic`].
 static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
@@ -54,13 +56,14 @@ async fn handle_inner(
     let start = Instant::now();
     let generation = shared.generation.load_full();
     let method = req.method().clone();
-    let path = req.uri().path().to_string();
+    // For the access log. A clone shares the request's bytes.
+    let uri = req.uri().clone();
+    let path = uri.path();
     let request_id = req
         .headers()
-        .get("x-request-id")
-        .and_then(|v| v.to_str().ok())
-        .filter(|v| v.len() <= 128)
-        .map(String::from)
+        .get(&X_REQUEST_ID)
+        .filter(|v| v.len() <= 128 && v.to_str().is_ok())
+        .cloned()
         .unwrap_or_else(|| shared.next_request_id());
     let client_ip = generation.client_ip.resolve(peer.ip(), req.headers());
     let trusted_peer = generation.client_ip.trusts(peer.ip());
@@ -68,7 +71,7 @@ async fn handle_inner(
     let (mut resp, route_label) = if path == "/_unsworn/health" {
         // Anyone can ask here, so outside dev mode the answer is only
         // whether the instance is healthy. The admin listener says why.
-        (health(&shared, &generation, shared.dev), path.clone())
+        (health(&shared, &generation, shared.dev), path.to_string())
     } else {
         let host = ServerHost {
             shared: shared.clone(),
@@ -82,24 +85,21 @@ async fn handle_inner(
         let handled = generation.router.handle(&host, req, client_ip).await;
         (into_http(handled.response), handled.route)
     };
-    if let Ok(v) = HeaderValue::from_str(&request_id) {
-        resp.headers_mut().insert("x-request-id", v);
-    }
+    resp.headers_mut().insert(&X_REQUEST_ID, request_id.clone());
     let status = resp.status().as_u16();
     let elapsed = start.elapsed();
     shared
         .metrics
         .record(method.as_str(), &route_label, status, elapsed);
-    tracing::info!(
-        target: "access",
-        method = %method,
-        path = %path,
+    access::log(&access::Entry {
+        method: method.as_str(),
+        path,
         status,
-        route = %route_label,
-        ms = (elapsed.as_secs_f64() * 1_000_000.0).round() / 1000.0,
-        ip = %client_ip,
-        id = %request_id,
-    );
+        route: &route_label,
+        ms: (elapsed.as_secs_f64() * 1_000_000.0).round() / 1000.0,
+        ip: client_ip,
+        id: request_id.to_str().unwrap_or_default(),
+    });
     resp
 }
 
@@ -166,7 +166,7 @@ struct ServerHost {
     /// Loaded once per request, so a reload that swaps the store doesn't
     /// split a request across two.
     store: Arc<Store>,
-    request_id: String,
+    request_id: HeaderValue,
     tls: bool,
     /// The connection came from one of `[server].trusted_proxies`.
     trusted_peer: bool,
@@ -259,7 +259,12 @@ impl Host for ServerHost {
             core::Body::Host(b) => CallBody::Stream(b),
         };
         let reply = pool
-            .call(request, body, instant(deadline), self.request_id.clone())
+            .call(
+                request,
+                body,
+                instant(deadline),
+                self.request_id.to_str().unwrap_or_default().to_string(),
+            )
             .await?;
         Ok(match reply {
             workers::Reply::Continue(context) => Reply::Continue(context),
@@ -278,7 +283,7 @@ impl Host for ServerHost {
 
     async fn proxy(&self, request: ProxyRequest<Body>) -> core::Response<Body> {
         let resp = proxy::forward(
-            self.shared.client.clone(),
+            self.shared.clone(),
             request.proxy,
             request.request.map(into_body),
             core::proxy::ForwardInfo {
@@ -331,12 +336,19 @@ impl Host for ServerHost {
             .unwrap_or(Err(FetchError::Timeout))
     }
 
-    async fn timeout<F>(&self, timeout: Duration, future: F) -> Option<F::Output>
+    /// Not an `async fn`: one would hold `future` twice over, once as its
+    /// argument and once inside the timeout it awaits, and `future` is most
+    /// of what a request keeps in memory.
+    fn timeout<F>(
+        &self,
+        timeout: Duration,
+        future: F,
+    ) -> impl Future<Output = Option<F::Output>> + MaybeSend
     where
         F: Future + MaybeSend,
         F::Output: MaybeSend,
     {
-        tokio::time::timeout(timeout, future).await.ok()
+        tokio::time::timeout(timeout, future).map(Result::ok)
     }
 
     /// A write to the memory store is immediate, so the next request sees

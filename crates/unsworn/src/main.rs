@@ -124,9 +124,10 @@ fn init_logging(format: &str, dev: bool) {
     let default = if dev { "info,access=info" } else { "info" };
     let filter = EnvFilter::try_from_env("UNSWORN_LOG").unwrap_or_else(|_| EnvFilter::new(default));
     use std::io::IsTerminal;
+    let terminal = std::io::stderr().is_terminal();
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_ansi(std::io::stderr().is_terminal())
+        .with_ansi(terminal)
         .with_writer(std::io::stderr);
     if format == "json" {
         builder.json().flatten_event(true).init();
@@ -135,6 +136,9 @@ fn init_logging(format: &str, dev: bool) {
     } else {
         builder.init();
     }
+    // A terminal gets each line as it happens, and in color. `json` output
+    // has no colors anywhere.
+    server::access::init(format, format == "json" || !(dev || terminal));
 }
 
 fn main() -> ExitCode {
@@ -208,6 +212,7 @@ fn main() -> ExitCode {
             Ok(())
         }
     };
+    server::access::flush();
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
