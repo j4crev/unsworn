@@ -1,0 +1,5477 @@
+{
+ "meta": {
+  "date": "2026-11-17 14:44 UTC",
+  "commit": "4069a10",
+  "dirty": true,
+  "unsworn": "unsworn 0.3.1",
+  "binary": "ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 4.4.0",
+  "cpu": "11th Gen Intel(R) Core(TM) i5-1145G7 @ 2.60GHz",
+  "logical_cpus": 8,
+  "physical_cores": 4,
+  "governor": "powersave",
+  "kernel": "7.2.15-1-omarchy",
+  "memory_gb": 15.3,
+  "pinning": {
+   "load": [
+    0,
+    4
+   ],
+   "server": [
+    1,
+    5,
+    2,
+    6
+   ],
+   "upstream": [
+    3,
+    7
+   ]
+  },
+  "settings": {
+   "duration_s": 8,
+   "warmup_s": 2,
+   "repeats": 3
+  },
+  "versions": {
+   "bun": "1.4.4",
+   "node": "v26.13.0",
+   "python": "Python 3.14.8",
+   "go": "go version go1.27.1 linux/amd64",
+   "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+   "wrk": "wrk f8eb608 [epoll] Copyright (C) 2012 Will Glozer",
+   "oha": "oha 1.17.0",
+   "caddy": "v2.11.9 h1:bhZtcRKQOq0fuLvEgCdPYvUxXyGn9kzjG4lh2332DTE=",
+   "nginx": "nginx version: nginx/1.30.6",
+   "redis": "Redis server v=7.4.12 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=97c9b7ac751c8f00"
+  }
+ },
+ "runs": [
+  {
+   "throughput": {
+    "rps": 187486.14958967807,
+    "mb_per_s": null,
+    "p50_ms": 0.311,
+    "p99_ms": 1.328,
+    "p999_ms": 2.245,
+    "errors": 0,
+    "cpu_us_per_req": 17.687973256999324,
+    "cores_used": 3.31625
+   },
+   "rss_load_kb": 18672,
+   "latency": {
+    "rps": 999.8699611622986,
+    "p50_ms": 0.085341,
+    "p99_ms": 0.26792,
+    "p999_ms": 0.351312,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Go net/http, for reference",
+   "server": "go",
+   "repeat": 0,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 196349.9709480277,
+    "mb_per_s": null,
+    "p50_ms": 0.294,
+    "p99_ms": 1.242,
+    "p999_ms": 1.837,
+    "errors": 0,
+    "cpu_us_per_req": 17.15049909985141,
+    "cores_used": 3.3674999999999997
+   },
+   "rss_load_kb": 18660,
+   "latency": {
+    "rps": 999.699304096929,
+    "p50_ms": 0.093124,
+    "p99_ms": 0.291824,
+    "p999_ms": 0.42390100000000003,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Direct to the app, no proxy",
+   "server": "go",
+   "repeat": 0,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 177036.23556704406,
+    "mb_per_s": null,
+    "p50_ms": 0.33,
+    "p99_ms": 1.383,
+    "p999_ms": 2.028,
+    "errors": 0,
+    "cpu_us_per_req": 18.901497703461768,
+    "cores_used": 3.3462499999999995
+   },
+   "rss_load_kb": 19196,
+   "latency": {
+    "rps": 999.6513659936109,
+    "p50_ms": 0.118492,
+    "p99_ms": 0.287839,
+    "p999_ms": 0.35462299999999997,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Go on its own",
+   "server": "go",
+   "repeat": 0,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 149641.39274686118,
+    "mb_per_s": 153.23278617278584,
+    "p50_ms": 0.386,
+    "p99_ms": 1.693,
+    "p999_ms": 2.329,
+    "errors": 0,
+    "cpu_us_per_req": 22.670866247141088,
+    "cores_used": 3.3924999999999983
+   },
+   "rss_load_kb": 19252,
+   "group": "bodies",
+   "name": "1 KB: Go on its own",
+   "server": "go",
+   "repeat": 0,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 18112.729623132345,
+    "mb_per_s": 1187.0358485816014,
+    "p50_ms": 3.849,
+    "p99_ms": 23.8,
+    "p999_ms": 35.519,
+    "errors": 0,
+    "cpu_us_per_req": 176.6023159709054,
+    "cores_used": 3.198749999999997
+   },
+   "rss_load_kb": 22328,
+   "group": "bodies",
+   "name": "64 KB: Go on its own",
+   "server": "go",
+   "repeat": 0,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 2204.9837126833118,
+    "mb_per_s": 2312.0930015106164,
+    "p50_ms": 6.578,
+    "p99_ms": 22.961,
+    "p999_ms": 31.065,
+    "errors": 0,
+    "cpu_us_per_req": 1323.1390251176078,
+    "cores_used": 2.9175000000000004
+   },
+   "rss_load_kb": 52048,
+   "group": "bodies",
+   "name": "1 MB: Go on its own",
+   "server": "go",
+   "repeat": 0,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 17879.142650629663,
+    "mb_per_s": 1137.3995388624567,
+    "p50_ms": 3.85,
+    "p99_ms": 25.187,
+    "p999_ms": 37.592,
+    "errors": 0,
+    "cpu_us_per_req": 183.5239006767722,
+    "cores_used": 3.28125
+   },
+   "rss_load_kb": 27632,
+   "group": "bodies",
+   "name": "64 KB JSON: Go on its own",
+   "server": "go",
+   "repeat": 0,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 165908.67553002367,
+    "mb_per_s": null,
+    "p50_ms": 0.378,
+    "p99_ms": 0.728,
+    "p999_ms": 28.698,
+    "errors": 0,
+    "cpu_us_per_req": 19.739775448977895,
+    "cores_used": 3.2750000000000004
+   },
+   "rss_load_kb": 134352,
+   "latency": {
+    "rps": 999.6330479423972,
+    "p50_ms": 0.153811,
+    "p99_ms": 0.401194,
+    "p999_ms": 0.456669,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "`respond` (static JSON)",
+   "server": "unsworn:declarative",
+   "repeat": 0,
+   "rss_idle_kb": 129108
+  },
+  {
+   "throughput": {
+    "rps": 214195.48766724445,
+    "mb_per_s": null,
+    "p50_ms": 0.291,
+    "p99_ms": 0.522,
+    "p999_ms": 0.648,
+    "errors": 0,
+    "cpu_us_per_req": 15.657426010813525,
+    "cores_used": 3.3537500000000007
+   },
+   "rss_load_kb": 132716,
+   "latency": {
+    "rps": 1000.3115820606367,
+    "p50_ms": 0.15848199999999998,
+    "p99_ms": 0.331187,
+    "p999_ms": 0.36559400000000003,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "`redirect`",
+   "server": "unsworn:declarative",
+   "repeat": 0,
+   "rss_idle_kb": 129108
+  },
+  {
+   "throughput": {
+    "rps": 217025.26082989268,
+    "mb_per_s": null,
+    "p50_ms": 0.282,
+    "p99_ms": 0.516,
+    "p999_ms": 0.635,
+    "errors": 0,
+    "cpu_us_per_req": 15.268959877428104,
+    "cores_used": 3.3137500000000006
+   },
+   "rss_load_kb": 132748,
+   "latency": {
+    "rps": 1000.0762783748075,
+    "p50_ms": 0.15168199999999998,
+    "p99_ms": 0.383737,
+    "p999_ms": 0.42855299999999996,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "No route (404)",
+   "server": "unsworn:declarative",
+   "repeat": 0,
+   "rss_idle_kb": 129108
+  },
+  {
+   "throughput": {
+    "rps": 191989.0941971193,
+    "mb_per_s": null,
+    "p50_ms": 0.325,
+    "p99_ms": 0.612,
+    "p999_ms": 0.767,
+    "errors": 0,
+    "cpu_us_per_req": 17.5921450857633,
+    "cores_used": 3.3774999999999995
+   },
+   "rss_load_kb": 131604,
+   "latency": {
+    "rps": 1000.1336960777003,
+    "p50_ms": 0.15524700000000002,
+    "p99_ms": 0.367993,
+    "p999_ms": 0.410774,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Rejected: missing JWT (401)",
+   "server": "unsworn:declarative",
+   "repeat": 0,
+   "rss_idle_kb": 129108
+  },
+  {
+   "throughput": {
+    "rps": 192047.93123811128,
+    "mb_per_s": null,
+    "p50_ms": 0.325,
+    "p99_ms": 0.604,
+    "p999_ms": 0.729,
+    "errors": 0,
+    "cpu_us_per_req": 17.599773026501882,
+    "cores_used": 3.379999999999999
+   },
+   "rss_load_kb": 131504,
+   "latency": {
+    "rps": 999.6795374085282,
+    "p50_ms": 0.156646,
+    "p99_ms": 0.334417,
+    "p999_ms": 0.37722199999999995,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Rejected: rate limited (429)",
+   "server": "unsworn:declarative",
+   "repeat": 0,
+   "rss_idle_kb": 129108
+  },
+  {
+   "throughput": {
+    "rps": 162320.6595751134,
+    "mb_per_s": null,
+    "p50_ms": 0.388,
+    "p99_ms": 0.73,
+    "p999_ms": 0.921,
+    "errors": 0,
+    "cpu_us_per_req": 21.000099487783395,
+    "cores_used": 3.4087500000000013
+   },
+   "rss_load_kb": 133344,
+   "latency": {
+    "rps": 999.7623252862968,
+    "p50_ms": 0.159331,
+    "p99_ms": 0.35242,
+    "p999_ms": 0.496943,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Cache hit",
+   "server": "unsworn:declarative",
+   "repeat": 0,
+   "rss_idle_kb": 129108
+  },
+  {
+   "throughput": {
+    "rps": 73624.7444439753,
+    "mb_per_s": null,
+    "p50_ms": 0.78,
+    "p99_ms": 5.047,
+    "p999_ms": 8.398,
+    "errors": 0,
+    "cpu_us_per_req": 48.43819869166046,
+    "cores_used": 3.56625
+   },
+   "rss_load_kb": 367824,
+   "latency": {
+    "rps": 1000.0989638043626,
+    "p50_ms": 0.210601,
+    "p99_ms": 0.557442,
+    "p999_ms": 0.803337,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Same handler, uncached (Bun, Tier 2)",
+   "server": "unsworn:declarative",
+   "repeat": 0,
+   "rss_idle_kb": 129108
+  },
+  {
+   "throughput": {
+    "rps": 71324.87412360609,
+    "mb_per_s": null,
+    "p50_ms": 0.847,
+    "p99_ms": 2.421,
+    "p999_ms": 3.114,
+    "errors": 0,
+    "cpu_us_per_req": 44.33937022474634,
+    "cores_used": 3.1625
+   },
+   "rss_load_kb": 35640,
+   "latency": {
+    "rps": 999.7035790778142,
+    "p50_ms": 0.137748,
+    "p99_ms": 0.427797,
+    "p999_ms": 0.471881,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Unsworn `proxy`",
+   "server": "unsworn:proxy",
+   "repeat": 0,
+   "rss_idle_kb": 22412
+  },
+  {
+   "throughput": {
+    "rps": 60491.93796369916,
+    "mb_per_s": null,
+    "p50_ms": 1.02,
+    "p99_ms": 2.307,
+    "p999_ms": 3.622,
+    "errors": 0,
+    "cpu_us_per_req": 56.26782864920892,
+    "cores_used": 3.4037500000000005
+   },
+   "rss_load_kb": 33512,
+   "latency": {
+    "rps": 999.8055901215898,
+    "p50_ms": 0.17436900000000002,
+    "p99_ms": 0.46014299999999997,
+    "p999_ms": 0.781622,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Unsworn `proxy` with JWT and a rate limit",
+   "server": "unsworn:proxy",
+   "repeat": 0,
+   "rss_idle_kb": 22412
+  },
+  {
+   "throughput": {
+    "rps": 56039.05707943516,
+    "mb_per_s": 57.3839944493416,
+    "p50_ms": 1.088,
+    "p99_ms": 3.206,
+    "p999_ms": 4.187,
+    "errors": 0,
+    "cpu_us_per_req": 52.75338583605227,
+    "cores_used": 2.956249999999999
+   },
+   "rss_load_kb": 34428,
+   "group": "bodies",
+   "name": "1 KB: Unsworn `proxy` \u2192 Go",
+   "server": "unsworn:proxy",
+   "repeat": 0,
+   "rss_idle_kb": 22412
+  },
+  {
+   "throughput": {
+    "rps": 9594.908657689328,
+    "mb_per_s": 628.8119337903278,
+    "p50_ms": 7.061,
+    "p99_ms": 39.231,
+    "p999_ms": 57.198,
+    "errors": 0,
+    "cpu_us_per_req": 132.23158711190322,
+    "cores_used": 1.2687500000000007
+   },
+   "rss_load_kb": 94552,
+   "group": "bodies",
+   "name": "64 KB: Unsworn `proxy` \u2192 Go",
+   "server": "unsworn:proxy",
+   "repeat": 0,
+   "rss_idle_kb": 22412
+  },
+  {
+   "throughput": {
+    "rps": 1211.957486664887,
+    "mb_per_s": 1270.8295335371206,
+    "p50_ms": 11.978,
+    "p99_ms": 43.641,
+    "p999_ms": 60.381,
+    "errors": 0,
+    "cpu_us_per_req": 1005.604580531785,
+    "cores_used": 1.21875
+   },
+   "rss_load_kb": 177904,
+   "group": "bodies",
+   "name": "1 MB: Unsworn `proxy` \u2192 Go",
+   "server": "unsworn:proxy",
+   "repeat": 0,
+   "rss_idle_kb": 22412
+  },
+  {
+   "throughput": {
+    "rps": 9968.919347706053,
+    "mb_per_s": 634.1827732236684,
+    "p50_ms": 5.518,
+    "p99_ms": 42.139,
+    "p999_ms": 64.94,
+    "errors": 0,
+    "cpu_us_per_req": 112.34918860665917,
+    "cores_used": 1.120000000000001
+   },
+   "rss_load_kb": 58728,
+   "group": "bodies",
+   "name": "64 KB JSON: Unsworn `proxy` \u2192 Go",
+   "server": "unsworn:proxy",
+   "repeat": 0,
+   "rss_idle_kb": 22412
+  },
+  {
+   "throughput": {
+    "rps": 61400.4538836431,
+    "mb_per_s": null,
+    "p50_ms": 0.993,
+    "p99_ms": 2.833,
+    "p999_ms": 3.74,
+    "errors": 0,
+    "cpu_us_per_req": 49.95891407925199,
+    "cores_used": 3.0675
+   },
+   "rss_load_kb": 34360,
+   "latency": {
+    "rps": 999.646280306287,
+    "p50_ms": 0.20211900000000002,
+    "p99_ms": 0.430998,
+    "p999_ms": 0.610662,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Unsworn `proxy`, access log off",
+   "server": "unsworn:proxy:no-access-log",
+   "repeat": 0,
+   "rss_idle_kb": 20592
+  },
+  {
+   "throughput": {
+    "rps": 89578.5230256898,
+    "mb_per_s": null,
+    "p50_ms": 0.685,
+    "p99_ms": 1.76,
+    "p999_ms": 2.62,
+    "errors": 0,
+    "cpu_us_per_req": 38.29042815336804,
+    "cores_used": 3.43
+   },
+   "rss_load_kb": 33436,
+   "latency": {
+    "rps": 1000.0816213828261,
+    "p50_ms": 0.12034500000000001,
+    "p99_ms": 0.336568,
+    "p999_ms": 0.44386000000000003,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Unsworn `proxy`, the app on a Unix socket",
+   "server": "unsworn:proxy-unix",
+   "repeat": 0,
+   "rss_idle_kb": 19868
+  },
+  {
+   "throughput": {
+    "rps": 30855.458693464603,
+    "mb_per_s": null,
+    "p50_ms": 1.879,
+    "p99_ms": 6.465,
+    "p999_ms": 8.142,
+    "errors": 0,
+    "cpu_us_per_req": 117.19792147397033,
+    "cores_used": 3.6161956249999996
+   },
+   "rss_load_kb": 25446,
+   "latency": {
+    "rps": 1000.1722232081439,
+    "p50_ms": 0.169652,
+    "p99_ms": 0.341449,
+    "p999_ms": 0.6110949999999999,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Caddy `reverse_proxy`",
+   "server": "caddy",
+   "repeat": 0,
+   "rss_idle_kb": 13793
+  },
+  {
+   "throughput": {
+    "rps": 86343.99705828277,
+    "mb_per_s": null,
+    "p50_ms": 0.706,
+    "p99_ms": 2.275,
+    "p999_ms": 5.695,
+    "errors": 0,
+    "cpu_us_per_req": 23.38451506521161,
+    "cores_used": 2.0191125000000003
+   },
+   "rss_load_kb": 13312,
+   "latency": {
+    "rps": 999.7383333623501,
+    "p50_ms": 0.194411,
+    "p99_ms": 0.41539000000000004,
+    "p999_ms": 0.450785,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "nginx `proxy_pass`, keepalive, access log off",
+   "server": "nginx",
+   "repeat": 0,
+   "rss_idle_kb": 10577
+  },
+  {
+   "throughput": {
+    "rps": 155809.2543673868,
+    "mb_per_s": null,
+    "p50_ms": 0.391,
+    "p99_ms": 0.762,
+    "p999_ms": 1.753,
+    "errors": 0,
+    "cpu_us_per_req": 4.80555537628402,
+    "cores_used": 0.74875
+   },
+   "rss_load_kb": 36804,
+   "latency": {
+    "rps": 999.8691159955072,
+    "p50_ms": 0.141943,
+    "p99_ms": 0.33533999999999997,
+    "p999_ms": 0.37360699999999997,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Bun on its own, 1 process",
+   "server": "bun:1",
+   "repeat": 0,
+   "rss_idle_kb": 19608
+  },
+  {
+   "throughput": {
+    "rps": 240483.61982215283,
+    "mb_per_s": null,
+    "p50_ms": 0.127,
+    "p99_ms": 0.513,
+    "p999_ms": 1.505,
+    "errors": 0,
+    "cpu_us_per_req": 10.957087230925278,
+    "cores_used": 2.635
+   },
+   "rss_load_kb": 147476,
+   "latency": {
+    "rps": 999.6829219230647,
+    "p50_ms": 0.145251,
+    "p99_ms": 0.32288100000000003,
+    "p999_ms": 0.359465,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Bun on its own, 4 processes (reusePort)",
+   "server": "bun:4",
+   "repeat": 0,
+   "rss_idle_kb": 72240
+  },
+  {
+   "throughput": {
+    "rps": 84351.99333240728,
+    "mb_per_s": null,
+    "p50_ms": 0.733,
+    "p99_ms": 1.0,
+    "p999_ms": 1.538,
+    "errors": 0,
+    "cpu_us_per_req": 10.106459448332648,
+    "cores_used": 0.8525
+   },
+   "rss_load_kb": 92748,
+   "latency": {
+    "rps": 1000.2450067835814,
+    "p50_ms": 0.155637,
+    "p99_ms": 0.361516,
+    "p999_ms": 0.396472,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Node on its own, 1 process",
+   "server": "node:1",
+   "repeat": 0,
+   "rss_idle_kb": 68384
+  },
+  {
+   "throughput": {
+    "rps": 155278.90560357325,
+    "mb_per_s": null,
+    "p50_ms": 0.378,
+    "p99_ms": 1.005,
+    "p999_ms": 6.582,
+    "errors": 0,
+    "cpu_us_per_req": 22.121485121549917,
+    "cores_used": 3.4349999999999996
+   },
+   "rss_load_kb": 423612,
+   "latency": {
+    "rps": 1000.1377018281069,
+    "p50_ms": 0.165323,
+    "p99_ms": 0.429409,
+    "p999_ms": 0.508371,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Node on its own, 4 processes (cluster)",
+   "server": "node:4",
+   "repeat": 0,
+   "rss_idle_kb": 337776
+  },
+  {
+   "throughput": {
+    "rps": 76977.07267658334,
+    "mb_per_s": null,
+    "p50_ms": 0.755,
+    "p99_ms": 2.839,
+    "p999_ms": 3.654,
+    "errors": 0,
+    "cpu_us_per_req": 39.784573425739296,
+    "cores_used": 3.0625
+   },
+   "rss_load_kb": 121432,
+   "latency": {
+    "rps": 999.6838430796963,
+    "p50_ms": 0.21777100000000002,
+    "p99_ms": 0.5675180000000001,
+    "p999_ms": 0.782765,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 TypeScript on Bun, Tier 2, 1 worker",
+   "server": "unsworn:handlers:bun-framed:1",
+   "repeat": 0,
+   "rss_idle_kb": 49036
+  },
+  {
+   "throughput": {
+    "rps": 71695.74774364995,
+    "mb_per_s": null,
+    "p50_ms": 0.795,
+    "p99_ms": 4.978,
+    "p999_ms": 8.74,
+    "errors": 0,
+    "cpu_us_per_req": 50.10757420154233,
+    "cores_used": 3.5925000000000002
+   },
+   "rss_load_kb": 368412,
+   "latency": {
+    "rps": 999.7321633921218,
+    "p50_ms": 0.21174099999999998,
+    "p99_ms": 0.455873,
+    "p999_ms": 0.7738550000000001,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 TypeScript on Bun, Tier 2, 4 workers",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 128740
+  },
+  {
+   "throughput": {
+    "rps": 63552.47692053917,
+    "mb_per_s": 65.07773636663211,
+    "p50_ms": 0.898,
+    "p99_ms": 5.332,
+    "p999_ms": 8.533,
+    "errors": 0,
+    "cpu_us_per_req": 56.15438096082509,
+    "cores_used": 3.5687500000000005
+   },
+   "rss_load_kb": 352876,
+   "group": "bodies",
+   "name": "1 KB: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 128740
+  },
+  {
+   "throughput": {
+    "rps": 15695.394170007039,
+    "mb_per_s": 1028.6133523255812,
+    "p50_ms": 3.871,
+    "p99_ms": 9.32,
+    "p999_ms": 13.536,
+    "errors": 0,
+    "cpu_us_per_req": 236.53435904746925,
+    "cores_used": 3.7125000000000004
+   },
+   "rss_load_kb": 551408,
+   "group": "bodies",
+   "name": "64 KB: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 128740
+  },
+  {
+   "throughput": {
+    "rps": 1046.3039175223623,
+    "mb_per_s": 1097.1291766199286,
+    "p50_ms": 15.064,
+    "p99_ms": 24.632,
+    "p999_ms": 28.694,
+    "errors": 0,
+    "cpu_us_per_req": 3566.124466814156,
+    "cores_used": 3.7312499999999975
+   },
+   "rss_load_kb": 647716,
+   "group": "bodies",
+   "name": "1 MB: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 128740
+  },
+  {
+   "throughput": {
+    "rps": 3357.540434110624,
+    "mb_per_s": 213.5932922563815,
+    "p50_ms": 18.76,
+    "p99_ms": 31.331,
+    "p999_ms": 37.732,
+    "errors": 0,
+    "cpu_us_per_req": 1167.5213082097603,
+    "cores_used": 3.9200000000000017
+   },
+   "rss_load_kb": 424524,
+   "group": "bodies",
+   "name": "64 KB JSON: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 128740
+  },
+  {
+   "throughput": {
+    "rps": 2201.0521591291404,
+    "mb_per_s": 140.0221341551594,
+    "p50_ms": 28.649,
+    "p99_ms": 51.978,
+    "p999_ms": 62.941,
+    "errors": 0,
+    "cpu_us_per_req": 1789.4850804255311,
+    "cores_used": 3.938749999999999
+   },
+   "rss_load_kb": 440688,
+   "group": "bodies",
+   "name": "64 KB JSON, sent back as JSON: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 128740
+  },
+  {
+   "throughput": {
+    "rps": 35910.60413174432,
+    "mb_per_s": null,
+    "p50_ms": 1.263,
+    "p99_ms": 10.484,
+    "p999_ms": 17.098,
+    "errors": 0,
+    "cpu_us_per_req": 62.51635287905003,
+    "cores_used": 2.245
+   },
+   "rss_load_kb": 340288,
+   "latency": {
+    "rps": 999.9444459060765,
+    "p50_ms": 0.210487,
+    "p99_ms": 0.514967,
+    "p999_ms": 1.225889,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 TypeScript on Bun, Tier 1, 4 workers",
+   "server": "unsworn:handlers:bun-jsonl:4",
+   "repeat": 0,
+   "rss_idle_kb": 131516
+  },
+  {
+   "throughput": {
+    "rps": 67590.99685506987,
+    "mb_per_s": 69.21318077959154,
+    "p50_ms": 0.84,
+    "p99_ms": 4.674,
+    "p999_ms": 7.453,
+    "errors": 0,
+    "cpu_us_per_req": 53.4094800782513,
+    "cores_used": 3.6100000000000003
+   },
+   "rss_load_kb": 347532,
+   "group": "bodies",
+   "name": "1 KB: Unsworn \u2192 Bun, Tier 1",
+   "server": "unsworn:handlers:bun-jsonl:4",
+   "repeat": 0,
+   "rss_idle_kb": 131516
+  },
+  {
+   "throughput": {
+    "rps": 12590.351710041232,
+    "mb_per_s": 825.1212896692622,
+    "p50_ms": 4.898,
+    "p99_ms": 9.63,
+    "p999_ms": 12.876,
+    "errors": 0,
+    "cpu_us_per_req": 287.52175343226725,
+    "cores_used": 3.619999999999999
+   },
+   "rss_load_kb": 528488,
+   "group": "bodies",
+   "name": "64 KB: Unsworn \u2192 Bun, Tier 1",
+   "server": "unsworn:handlers:bun-jsonl:4",
+   "repeat": 0,
+   "rss_idle_kb": 131516
+  },
+  {
+   "throughput": {
+    "rps": 929.7246428300555,
+    "mb_per_s": 974.8869470801683,
+    "p50_ms": 17.027,
+    "p99_ms": 24.546,
+    "p999_ms": 28.047,
+    "errors": 0,
+    "cpu_us_per_req": 3837.1576224339196,
+    "cores_used": 3.567500000000001
+   },
+   "rss_load_kb": 573024,
+   "group": "bodies",
+   "name": "1 MB: Unsworn \u2192 Bun, Tier 1",
+   "server": "unsworn:handlers:bun-jsonl:4",
+   "repeat": 0,
+   "rss_idle_kb": 131516
+  },
+  {
+   "throughput": {
+    "rps": 60891.90912294204,
+    "mb_per_s": null,
+    "p50_ms": 0.972,
+    "p99_ms": 2.979,
+    "p999_ms": 7.225,
+    "errors": 0,
+    "cpu_us_per_req": 58.7105914643274,
+    "cores_used": 3.575
+   },
+   "rss_load_kb": 634344,
+   "latency": {
+    "rps": 999.675896176232,
+    "p50_ms": 0.224001,
+    "p99_ms": 0.5280769999999999,
+    "p999_ms": 0.7976460000000001,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 TypeScript on Node, Tier 2, 4 workers",
+   "server": "unsworn:handlers:node-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 377364
+  },
+  {
+   "throughput": {
+    "rps": 32759.93897635165,
+    "mb_per_s": null,
+    "p50_ms": 1.84,
+    "p99_ms": 4.403,
+    "p999_ms": 5.908,
+    "errors": 0,
+    "cpu_us_per_req": 114.04935774444144,
+    "cores_used": 3.73625
+   },
+   "rss_load_kb": 140200,
+   "latency": {
+    "rps": 999.6850458456987,
+    "p50_ms": 0.219031,
+    "p99_ms": 0.506617,
+    "p999_ms": 0.657004,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Python, Tier 2, 4 workers",
+   "server": "unsworn:handlers:python-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 110440
+  },
+  {
+   "throughput": {
+    "rps": 33596.445322192005,
+    "mb_per_s": null,
+    "p50_ms": 1.796,
+    "p99_ms": 4.194,
+    "p999_ms": 5.503,
+    "errors": 0,
+    "cpu_us_per_req": 110.72599985876388,
+    "cores_used": 3.72
+   },
+   "rss_load_kb": 141420,
+   "latency": {
+    "rps": 1000.2875120497139,
+    "p50_ms": 0.224263,
+    "p99_ms": 0.5969690000000001,
+    "p999_ms": 0.894823,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Python, Tier 1, 4 workers",
+   "server": "unsworn:handlers:python-jsonl:4",
+   "repeat": 0,
+   "rss_idle_kb": 110444
+  },
+  {
+   "throughput": {
+    "rps": 43407.13233465821,
+    "mb_per_s": null,
+    "p50_ms": 1.464,
+    "p99_ms": 7.569,
+    "p999_ms": 11.032,
+    "errors": 0,
+    "cpu_us_per_req": 75.73640144329718,
+    "cores_used": 3.2874999999999996
+   },
+   "rss_load_kb": 99444,
+   "latency": {
+    "rps": 1000.3441657606426,
+    "p50_ms": 0.231935,
+    "p99_ms": 0.531118,
+    "p999_ms": 0.725629,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Python, no SDK, Tier 1, 4 workers",
+   "server": "unsworn:handlers:raw-python:4",
+   "repeat": 0,
+   "rss_idle_kb": 68884
+  },
+  {
+   "throughput": {
+    "rps": 47134.91475352002,
+    "mb_per_s": null,
+    "p50_ms": 1.268,
+    "p99_ms": 4.148,
+    "p999_ms": 6.88,
+    "errors": 0,
+    "cpu_us_per_req": 77.70248485972887,
+    "cores_used": 3.6625
+   },
+   "rss_load_kb": 118600,
+   "latency": {
+    "rps": 1000.4395498962401,
+    "p50_ms": 0.140994,
+    "p99_ms": 0.329873,
+    "p999_ms": 0.6193010000000001,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Go, Tier 2, 4 workers",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 62552
+  },
+  {
+   "throughput": {
+    "rps": 45295.69319982494,
+    "mb_per_s": 46.38278983662074,
+    "p50_ms": 1.309,
+    "p99_ms": 4.307,
+    "p999_ms": 7.218,
+    "errors": 0,
+    "cpu_us_per_req": 81.10594496905058,
+    "cores_used": 3.67375
+   },
+   "rss_load_kb": 114256,
+   "group": "bodies",
+   "name": "1 KB: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 62552
+  },
+  {
+   "throughput": {
+    "rps": 12091.508532578351,
+    "mb_per_s": 792.4291031910548,
+    "p50_ms": 5.012,
+    "p99_ms": 12.29,
+    "p999_ms": 15.587,
+    "errors": 0,
+    "cpu_us_per_req": 306.2066234353052,
+    "cores_used": 3.702499999999999
+   },
+   "rss_load_kb": 149592,
+   "group": "bodies",
+   "name": "64 KB: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 62552
+  },
+  {
+   "throughput": {
+    "rps": 1043.5184612381233,
+    "mb_per_s": 1094.2084140112265,
+    "p50_ms": 14.61,
+    "p99_ms": 29.071,
+    "p999_ms": 34.288,
+    "errors": 0,
+    "cpu_us_per_req": 3631.943411430599,
+    "cores_used": 3.789999999999999
+   },
+   "rss_load_kb": 271188,
+   "group": "bodies",
+   "name": "1 MB: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 62552
+  },
+  {
+   "throughput": {
+    "rps": 2096.8434540952458,
+    "mb_per_s": 133.39279317572314,
+    "p50_ms": 29.979,
+    "p99_ms": 47.054,
+    "p999_ms": 54.977,
+    "errors": 0,
+    "cpu_us_per_req": 1873.0535139995234,
+    "cores_used": 3.9274999999999984
+   },
+   "rss_load_kb": 164880,
+   "group": "bodies",
+   "name": "64 KB JSON: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 62552
+  },
+  {
+   "throughput": {
+    "rps": 1276.7152223123157,
+    "mb_per_s": 81.21951558262028,
+    "p50_ms": 48.876,
+    "p99_ms": 80.004,
+    "p999_ms": 93.602,
+    "errors": 0,
+    "cpu_us_per_req": 3079.1909826844053,
+    "cores_used": 3.9312499999999986
+   },
+   "rss_load_kb": 166744,
+   "group": "bodies",
+   "name": "64 KB JSON, sent back as JSON: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 62552
+  },
+  {
+   "throughput": {
+    "rps": 44609.87426291201,
+    "mb_per_s": null,
+    "p50_ms": 1.334,
+    "p99_ms": 3.996,
+    "p999_ms": 6.23,
+    "errors": 0,
+    "cpu_us_per_req": 82.49294715137762,
+    "cores_used": 3.6800000000000006
+   },
+   "rss_load_kb": 114084,
+   "latency": {
+    "rps": 999.6726189024439,
+    "p50_ms": 0.128805,
+    "p99_ms": 0.29414,
+    "p999_ms": 0.401516,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Go, Tier 1, 4 workers",
+   "server": "unsworn:handlers:go-jsonl:4",
+   "repeat": 0,
+   "rss_idle_kb": 63760
+  },
+  {
+   "throughput": {
+    "rps": 53936.01756583347,
+    "mb_per_s": 55.23048198741348,
+    "p50_ms": 1.102,
+    "p99_ms": 3.442,
+    "p999_ms": 5.306,
+    "errors": 0,
+    "cpu_us_per_req": 66.88480467800096,
+    "cores_used": 3.6075
+   },
+   "rss_load_kb": 111252,
+   "group": "bodies",
+   "name": "1 KB: Unsworn \u2192 Go, Tier 1",
+   "server": "unsworn:handlers:go-jsonl:4",
+   "repeat": 0,
+   "rss_idle_kb": 63760
+  },
+  {
+   "throughput": {
+    "rps": 11902.74968037381,
+    "mb_per_s": 780.058603052978,
+    "p50_ms": 5.126,
+    "p99_ms": 11.234,
+    "p999_ms": 14.382,
+    "errors": 0,
+    "cpu_us_per_req": 314.00307495020945,
+    "cores_used": 3.737499999999999
+   },
+   "rss_load_kb": 196260,
+   "group": "bodies",
+   "name": "64 KB: Unsworn \u2192 Go, Tier 1",
+   "server": "unsworn:handlers:go-jsonl:4",
+   "repeat": 0,
+   "rss_idle_kb": 63760
+  },
+  {
+   "throughput": {
+    "rps": 994.0143078303412,
+    "mb_per_s": 1042.2995468475078,
+    "p50_ms": 15.599,
+    "p99_ms": 26.201,
+    "p999_ms": 30.806,
+    "errors": 0,
+    "cpu_us_per_req": 3781.3842018072296,
+    "cores_used": 3.758750000000001
+   },
+   "rss_load_kb": 266848,
+   "group": "bodies",
+   "name": "1 MB: Unsworn \u2192 Go, Tier 1",
+   "server": "unsworn:handlers:go-jsonl:4",
+   "repeat": 0,
+   "rss_idle_kb": 63760
+  },
+  {
+   "throughput": {
+    "rps": 72301.9866646978,
+    "mb_per_s": null,
+    "p50_ms": 0.821,
+    "p99_ms": 2.245,
+    "p999_ms": 2.983,
+    "errors": 0,
+    "cpu_us_per_req": 49.6182769726248,
+    "cores_used": 3.5875000000000004
+   },
+   "rss_load_kb": 65744,
+   "latency": {
+    "rps": 1000.0179272055185,
+    "p50_ms": 0.205994,
+    "p99_ms": 0.466867,
+    "p999_ms": 0.614326,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Rust, Tier 2, 4 workers",
+   "server": "unsworn:handlers:rust-framed:4",
+   "repeat": 0,
+   "rss_idle_kb": 38376
+  },
+  {
+   "throughput": {
+    "rps": 91154.4682846347,
+    "mb_per_s": null,
+    "p50_ms": 0.651,
+    "p99_ms": 1.864,
+    "p999_ms": 2.543,
+    "errors": 0,
+    "cpu_us_per_req": 39.136863690107766,
+    "cores_used": 3.5675
+   },
+   "rss_load_kb": 62928,
+   "latency": {
+    "rps": 999.9027348364323,
+    "p50_ms": 0.209042,
+    "p99_ms": 0.51164,
+    "p999_ms": 0.718083,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Rust, Tier 1, 4 workers",
+   "server": "unsworn:handlers:rust-jsonl:4",
+   "repeat": 0,
+   "rss_idle_kb": 38028
+  },
+  {
+   "throughput": {
+    "rps": 61183.34893808665,
+    "mb_per_s": null,
+    "p50_ms": 0.977,
+    "p99_ms": 2.606,
+    "p999_ms": 3.596,
+    "errors": 0,
+    "cpu_us_per_req": 60.37181789015539,
+    "cores_used": 3.6937499999999996
+   },
+   "rss_load_kb": 70196,
+   "latency": {
+    "rps": 999.9618609722013,
+    "p50_ms": 0.13543,
+    "p99_ms": 0.354504,
+    "p999_ms": 0.441268,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Rust, 4 threads in each worker, Tier 2, 4 workers",
+   "server": "unsworn:handlers:rust-framed-4t:4",
+   "repeat": 0,
+   "rss_idle_kb": 39552
+  },
+  {
+   "throughput": {
+    "rps": 3282.1715748298566,
+    "mb_per_s": null,
+    "p50_ms": 18.947,
+    "p99_ms": 34.959,
+    "p999_ms": 74.481,
+    "errors": 0,
+    "cpu_us_per_req": 1206.8991244631527,
+    "cores_used": 3.9612500000000006
+   },
+   "rss_load_kb": 218776,
+   "latency": {
+    "rps": 20.996807482665076,
+    "p50_ms": 1.218317,
+    "p99_ms": 1.4938760000000002,
+    "p999_ms": 1.503223,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 TypeScript on Bun",
+   "server": "unsworn:work:bun",
+   "repeat": 0,
+   "rss_idle_kb": 148560
+  },
+  {
+   "throughput": {
+    "rps": 2388.7983303619985,
+    "mb_per_s": null,
+    "p50_ms": 26.606,
+    "p99_ms": 44.7,
+    "p999_ms": 54.078,
+    "errors": 0,
+    "cpu_us_per_req": 1667.6794978319926,
+    "cores_used": 3.98375
+   },
+   "rss_load_kb": 484132,
+   "latency": {
+    "rps": 20.61974891545941,
+    "p50_ms": 1.5875970000000001,
+    "p99_ms": 1.896881,
+    "p999_ms": 2.028406,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 TypeScript on Node",
+   "server": "unsworn:work:node",
+   "repeat": 0,
+   "rss_idle_kb": 392244
+  },
+  {
+   "throughput": {
+    "rps": 74.89761496034922,
+    "mb_per_s": null,
+    "p50_ms": 846.209,
+    "p99_ms": 860.754,
+    "p999_ms": 874.88,
+    "errors": 0,
+    "cpu_us_per_req": 53322.79274999999,
+    "cores_used": 3.9937500000000004
+   },
+   "rss_load_kb": 124268,
+   "latency": {
+    "rps": 20.11850863996145,
+    "p50_ms": 22.414127999999998,
+    "p99_ms": 23.373246,
+    "p999_ms": 24.204831,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 Python",
+   "server": "unsworn:work:python",
+   "repeat": 0,
+   "rss_idle_kb": 112716
+  },
+  {
+   "throughput": {
+    "rps": 4388.008101668368,
+    "mb_per_s": null,
+    "p50_ms": 14.06,
+    "p99_ms": 43.555,
+    "p999_ms": 60.114,
+    "errors": 0,
+    "cpu_us_per_req": 903.5990609252668,
+    "cores_used": 3.9650000000000003
+   },
+   "rss_load_kb": 120976,
+   "latency": {
+    "rps": 20.744930685757904,
+    "p50_ms": 1.074758,
+    "p99_ms": 1.3825580000000002,
+    "p999_ms": 1.499433,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 Go",
+   "server": "unsworn:work:go",
+   "repeat": 0,
+   "rss_idle_kb": 68236
+  },
+  {
+   "throughput": {
+    "rps": 4805.206270731123,
+    "mb_per_s": null,
+    "p50_ms": 13.31,
+    "p99_ms": 22.568,
+    "p999_ms": 25.406,
+    "errors": 0,
+    "cpu_us_per_req": 826.1872178477689,
+    "cores_used": 3.97
+   },
+   "rss_load_kb": 70680,
+   "latency": {
+    "rps": 20.2468369986304,
+    "p50_ms": 1.1052659999999999,
+    "p99_ms": 1.317784,
+    "p999_ms": 1.347809,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 Rust",
+   "server": "unsworn:work:rust",
+   "repeat": 0,
+   "rss_idle_kb": 42712
+  },
+  {
+   "throughput": {
+    "rps": 209926.44385373016,
+    "mb_per_s": null,
+    "p50_ms": 0.298,
+    "p99_ms": 0.526,
+    "p999_ms": 0.659,
+    "errors": 0,
+    "cpu_us_per_req": 16.041333041140653,
+    "cores_used": 3.3675
+   },
+   "rss_load_kb": 29728,
+   "latency": {
+    "rps": 999.7593829511286,
+    "p50_ms": 0.1558,
+    "p99_ms": 0.40129,
+    "p999_ms": 0.47071999999999997,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "No policy",
+   "server": "unsworn:policies",
+   "repeat": 0,
+   "rss_idle_kb": 24748
+  },
+  {
+   "throughput": {
+    "rps": 146625.6679878582,
+    "mb_per_s": null,
+    "p50_ms": 0.431,
+    "p99_ms": 0.822,
+    "p999_ms": 11.972,
+    "errors": 0,
+    "cpu_us_per_req": 23.41847813634064,
+    "cores_used": 3.433749999999999
+   },
+   "rss_load_kb": 28452,
+   "latency": {
+    "rps": 999.9502183263573,
+    "p50_ms": 0.165539,
+    "p99_ms": 0.372854,
+    "p999_ms": 0.43210200000000004,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "JWT (HS256)",
+   "server": "unsworn:policies",
+   "repeat": 0,
+   "rss_idle_kb": 24748
+  },
+  {
+   "throughput": {
+    "rps": 179395.5851650702,
+    "mb_per_s": null,
+    "p50_ms": 0.347,
+    "p99_ms": 0.673,
+    "p999_ms": 0.863,
+    "errors": 0,
+    "cpu_us_per_req": 18.980400196955244,
+    "cores_used": 3.4049999999999994
+   },
+   "rss_load_kb": 29656,
+   "latency": {
+    "rps": 1000.0849711080175,
+    "p50_ms": 0.160278,
+    "p99_ms": 0.344533,
+    "p999_ms": 0.449732,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "API key",
+   "server": "unsworn:policies",
+   "repeat": 0,
+   "rss_idle_kb": 24748
+  },
+  {
+   "throughput": {
+    "rps": 188040.89940114194,
+    "mb_per_s": null,
+    "p50_ms": 0.334,
+    "p99_ms": 0.621,
+    "p999_ms": 0.764,
+    "errors": 0,
+    "cpu_us_per_req": 17.815273223372262,
+    "cores_used": 3.3500000000000014
+   },
+   "rss_load_kb": 29536,
+   "latency": {
+    "rps": 999.9989293849733,
+    "p50_ms": 0.15809499999999999,
+    "p99_ms": 0.367685,
+    "p999_ms": 0.415451,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "Rate limit, memory store",
+   "server": "unsworn:policies",
+   "repeat": 0,
+   "rss_idle_kb": 24748
+  },
+  {
+   "throughput": {
+    "rps": 186142.02315054022,
+    "mb_per_s": null,
+    "p50_ms": 0.336,
+    "p99_ms": 0.623,
+    "p999_ms": 0.75,
+    "errors": 0,
+    "cpu_us_per_req": 18.245476988575117,
+    "cores_used": 3.3962499999999984
+   },
+   "rss_load_kb": 29916,
+   "latency": {
+    "rps": 999.8470905015009,
+    "p50_ms": 0.154887,
+    "p99_ms": 0.372603,
+    "p999_ms": 0.418149,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "CORS (request with Origin)",
+   "server": "unsworn:policies",
+   "repeat": 0,
+   "rss_idle_kb": 24748
+  },
+  {
+   "throughput": {
+    "rps": 179068.61210344013,
+    "mb_per_s": null,
+    "p50_ms": 0.35,
+    "p99_ms": 0.651,
+    "p999_ms": 0.784,
+    "errors": 0,
+    "cpu_us_per_req": 19.042980006067125,
+    "cores_used": 3.41
+   },
+   "rss_load_kb": 29356,
+   "latency": {
+    "rps": 999.8862482865062,
+    "p50_ms": 0.162504,
+    "p99_ms": 0.35273299999999996,
+    "p999_ms": 0.380863,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "Path and query validation",
+   "server": "unsworn:policies",
+   "repeat": 0,
+   "rss_idle_kb": 24748
+  },
+  {
+   "throughput": {
+    "rps": 114253.10428595525,
+    "mb_per_s": null,
+    "p50_ms": 0.555,
+    "p99_ms": 1.045,
+    "p999_ms": 1.267,
+    "errors": 0,
+    "cpu_us_per_req": 30.754087794461228,
+    "cores_used": 3.5137500000000017
+   },
+   "rss_load_kb": 30040,
+   "latency": {
+    "rps": 1000.3729667634892,
+    "p50_ms": 0.17104699999999998,
+    "p99_ms": 0.379948,
+    "p999_ms": 0.436962,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "All of JWT, rate limit, CORS, path and query",
+   "server": "unsworn:policies",
+   "repeat": 0,
+   "rss_idle_kb": 24748
+  },
+  {
+   "throughput": {
+    "rps": 56092.34948990962,
+    "mb_per_s": 54.858317801131605,
+    "p50_ms": 1.089,
+    "p99_ms": 3.225,
+    "p999_ms": 4.617,
+    "errors": 0,
+    "cpu_us_per_req": 51.63360112988316,
+    "cores_used": 2.8962499999999984
+   },
+   "rss_load_kb": 36688,
+   "latency": {
+    "rps": 1000.1789110487955,
+    "p50_ms": 0.143902,
+    "p99_ms": 0.41238,
+    "p999_ms": 0.506785,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "`proxy`, 1 KB JSON body",
+   "server": "unsworn:policies",
+   "repeat": 0,
+   "rss_idle_kb": 24748
+  },
+  {
+   "throughput": {
+    "rps": 52890.9682377094,
+    "mb_per_s": 51.72736693647979,
+    "p50_ms": 1.159,
+    "p99_ms": 2.649,
+    "p999_ms": 3.568,
+    "errors": 0,
+    "cpu_us_per_req": 65.27579499931501,
+    "cores_used": 3.4525000000000006
+   },
+   "rss_load_kb": 34164,
+   "latency": {
+    "rps": 1000.4979505171311,
+    "p50_ms": 0.17058399999999999,
+    "p99_ms": 0.437743,
+    "p999_ms": 0.6889160000000001,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "`proxy`, same body checked against a JSON Schema",
+   "server": "unsworn:policies",
+   "repeat": 0,
+   "rss_idle_kb": 24748
+  },
+  {
+   "throughput": {
+    "rps": 85117.90730906752,
+    "mb_per_s": null,
+    "p50_ms": 0.719,
+    "p99_ms": 1.24,
+    "p999_ms": 1.579,
+    "errors": 0,
+    "cpu_us_per_req": 27.021341016392483,
+    "cores_used": 2.3
+   },
+   "rss_load_kb": 30292,
+   "latency": {
+    "rps": 999.6874993623852,
+    "p50_ms": 0.30224,
+    "p99_ms": 0.559928,
+    "p999_ms": 0.757887,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "Rate limit, Redis store",
+   "server": "unsworn:redis",
+   "repeat": 0,
+   "rss_idle_kb": 20516
+  },
+  {
+   "throughput": {
+    "rps": 72195.82146298644,
+    "mb_per_s": null,
+    "p50_ms": 0.796,
+    "p99_ms": 4.978,
+    "p999_ms": 8.536,
+    "errors": 0,
+    "cpu_us_per_req": 49.39690314110984,
+    "cores_used": 3.5662499999999997
+   },
+   "rss_load_kb": 368260,
+   "latency": {
+    "rps": 999.6690219467868,
+    "p50_ms": 0.20575500000000002,
+    "p99_ms": 0.522578,
+    "p999_ms": 0.709727,
+    "errors": 0
+   },
+   "group": "mcp",
+   "name": "`GET /text` (the route)",
+   "server": "unsworn:mcp",
+   "repeat": 0,
+   "rss_idle_kb": 132980
+  },
+  {
+   "throughput": {
+    "rps": 50334.06264775487,
+    "mb_per_s": 14.445875979905647,
+    "p50_ms": 1.163,
+    "p99_ms": 4.733,
+    "p999_ms": 8.475,
+    "errors": 0,
+    "cpu_us_per_req": 73.21085972710308,
+    "cores_used": 3.6850000000000005
+   },
+   "rss_load_kb": 302588,
+   "latency": {
+    "rps": 999.6935226357555,
+    "p50_ms": 0.23143,
+    "p99_ms": 0.445635,
+    "p999_ms": 0.764733,
+    "errors": 0
+   },
+   "group": "mcp",
+   "name": "`tools/call text` (the same handler)",
+   "server": "unsworn:mcp",
+   "repeat": 0,
+   "rss_idle_kb": 132980
+  },
+  {
+   "throughput": {
+    "rps": 41878.274739872686,
+    "mb_per_s": 13.107899993580151,
+    "p50_ms": 1.407,
+    "p99_ms": 5.141,
+    "p999_ms": 8.581,
+    "errors": 0,
+    "cpu_us_per_req": 90.0825075395995,
+    "cores_used": 3.772500000000001
+   },
+   "rss_load_kb": 312576,
+   "latency": {
+    "rps": 1000.1240441278516,
+    "p50_ms": 0.247842,
+    "p99_ms": 0.452274,
+    "p999_ms": 0.7585069999999999,
+    "errors": 0
+   },
+   "group": "mcp",
+   "name": "`tools/call echo`, arguments checked against its schema",
+   "server": "unsworn:mcp",
+   "repeat": 0,
+   "rss_idle_kb": 132980
+  },
+  {
+   "throughput": {
+    "rps": 105344.01056414234,
+    "mb_per_s": 26.757378683292153,
+    "p50_ms": 0.582,
+    "p99_ms": 1.265,
+    "p999_ms": 1.547,
+    "errors": 0,
+    "cpu_us_per_req": 34.23308055852127,
+    "cores_used": 3.606250000000001
+   },
+   "rss_load_kb": 209040,
+   "latency": {
+    "rps": 999.7903763678324,
+    "p50_ms": 0.17498899999999998,
+    "p99_ms": 0.38487,
+    "p999_ms": 0.446875,
+    "errors": 0
+   },
+   "group": "mcp",
+   "name": "`tools/list`",
+   "server": "unsworn:mcp",
+   "repeat": 0,
+   "rss_idle_kb": 132980
+  },
+  {
+   "throughput": {
+    "rps": 194910.02356225415,
+    "mb_per_s": null,
+    "p50_ms": 0.321,
+    "p99_ms": 0.612,
+    "p999_ms": 0.935,
+    "errors": 0,
+    "cpu_us_per_req": 17.10404595449244,
+    "cores_used": 3.33375
+   },
+   "rss_load_kb": 29220,
+   "latency": {
+    "rps": 999.8371325168895,
+    "p50_ms": 0.158137,
+    "p99_ms": 0.335727,
+    "p999_ms": 0.45799300000000004,
+    "errors": 0
+   },
+   "group": "routes",
+   "name": "10 routes",
+   "server": "unsworn:routes:10",
+   "repeat": 0,
+   "rss_idle_kb": 21944
+  },
+  {
+   "throughput": {
+    "rps": 196813.7021742599,
+    "mb_per_s": null,
+    "p50_ms": 0.319,
+    "p99_ms": 0.585,
+    "p999_ms": 0.728,
+    "errors": 0,
+    "cpu_us_per_req": 16.964011972316097,
+    "cores_used": 3.33875
+   },
+   "rss_load_kb": 29724,
+   "latency": {
+    "rps": 999.7049394429725,
+    "p50_ms": 0.15578999999999998,
+    "p99_ms": 0.331875,
+    "p999_ms": 0.37723599999999996,
+    "errors": 0
+   },
+   "group": "routes",
+   "name": "1,000 routes",
+   "server": "unsworn:routes:1000",
+   "repeat": 0,
+   "rss_idle_kb": 40436
+  },
+  {
+   "throughput": {
+    "rps": 198708.29536074147,
+    "mb_per_s": null,
+    "p50_ms": 0.316,
+    "p99_ms": 0.575,
+    "p999_ms": 0.707,
+    "errors": 0,
+    "cpu_us_per_req": 16.770814695733122,
+    "cores_used": 3.3325000000000005
+   },
+   "rss_load_kb": 65492,
+   "latency": {
+    "rps": 1000.0417027764195,
+    "p50_ms": 0.15765500000000002,
+    "p99_ms": 0.31277900000000003,
+    "p999_ms": 0.363727,
+    "errors": 0
+   },
+   "group": "routes",
+   "name": "10,000 routes",
+   "server": "unsworn:routes:10000",
+   "repeat": 0,
+   "rss_idle_kb": 144932
+  },
+  {
+   "throughput": {
+    "rps": 182037.9169702384,
+    "mb_per_s": null,
+    "p50_ms": 0.322,
+    "p99_ms": 1.35,
+    "p999_ms": 2.049,
+    "errors": 0,
+    "cpu_us_per_req": 18.258558740503513,
+    "cores_used": 3.3237499999999995
+   },
+   "rss_load_kb": 16676,
+   "latency": {
+    "rps": 999.9349869769679,
+    "p50_ms": 0.071502,
+    "p99_ms": 0.25052800000000003,
+    "p999_ms": 0.36972,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Go net/http, for reference",
+   "server": "go",
+   "repeat": 1,
+   "rss_idle_kb": 9092
+  },
+  {
+   "throughput": {
+    "rps": 183525.7614303129,
+    "mb_per_s": null,
+    "p50_ms": 0.314,
+    "p99_ms": 1.35,
+    "p999_ms": 2.048,
+    "errors": 0,
+    "cpu_us_per_req": 18.314867481295313,
+    "cores_used": 3.361249999999999
+   },
+   "rss_load_kb": 17192,
+   "latency": {
+    "rps": 1000.1904396090836,
+    "p50_ms": 0.084901,
+    "p99_ms": 0.27011199999999996,
+    "p999_ms": 0.345437,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Direct to the app, no proxy",
+   "server": "go",
+   "repeat": 1,
+   "rss_idle_kb": 9092
+  },
+  {
+   "throughput": {
+    "rps": 172767.02203100894,
+    "mb_per_s": null,
+    "p50_ms": 0.336,
+    "p99_ms": 1.4,
+    "p999_ms": 2.003,
+    "errors": 0,
+    "cpu_us_per_req": 19.614565095598934,
+    "cores_used": 3.38875
+   },
+   "rss_load_kb": 16772,
+   "latency": {
+    "rps": 999.7787223496356,
+    "p50_ms": 0.092228,
+    "p99_ms": 0.278647,
+    "p999_ms": 0.358273,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Go on its own",
+   "server": "go",
+   "repeat": 1,
+   "rss_idle_kb": 9092
+  },
+  {
+   "throughput": {
+    "rps": 143434.81524772648,
+    "mb_per_s": 146.8772508136719,
+    "p50_ms": 0.404,
+    "p99_ms": 1.836,
+    "p999_ms": 2.603,
+    "errors": 0,
+    "cpu_us_per_req": 23.346842216907866,
+    "cores_used": 3.348750000000001
+   },
+   "rss_load_kb": 16720,
+   "group": "bodies",
+   "name": "1 KB: Go on its own",
+   "server": "go",
+   "repeat": 1,
+   "rss_idle_kb": 9092
+  },
+  {
+   "throughput": {
+    "rps": 18207.01781030045,
+    "mb_per_s": 1193.2151192158503,
+    "p50_ms": 3.811,
+    "p99_ms": 23.162,
+    "p999_ms": 34.612,
+    "errors": 0,
+    "cpu_us_per_req": 177.67874089571265,
+    "cores_used": 3.2349999999999994
+   },
+   "rss_load_kb": 20268,
+   "group": "bodies",
+   "name": "64 KB: Go on its own",
+   "server": "go",
+   "repeat": 1,
+   "rss_idle_kb": 9092
+  },
+  {
+   "throughput": {
+    "rps": 2218.5619352656026,
+    "mb_per_s": 2326.3307998330647,
+    "p50_ms": 6.499,
+    "p99_ms": 23.176,
+    "p999_ms": 32.198,
+    "errors": 0,
+    "cpu_us_per_req": 1304.8993377114869,
+    "cores_used": 2.8949999999999996
+   },
+   "rss_load_kb": 47904,
+   "group": "bodies",
+   "name": "1 MB: Go on its own",
+   "server": "go",
+   "repeat": 1,
+   "rss_idle_kb": 9092
+  },
+  {
+   "throughput": {
+    "rps": 17625.224382500983,
+    "mb_per_s": 1121.2462743171825,
+    "p50_ms": 3.919,
+    "p99_ms": 25.135,
+    "p999_ms": 37.23,
+    "errors": 0,
+    "cpu_us_per_req": 182.55086744849967,
+    "cores_used": 3.217500000000001
+   },
+   "rss_load_kb": 25364,
+   "group": "bodies",
+   "name": "64 KB JSON: Go on its own",
+   "server": "go",
+   "repeat": 1,
+   "rss_idle_kb": 9092
+  },
+  {
+   "throughput": {
+    "rps": 167903.6292837769,
+    "mb_per_s": null,
+    "p50_ms": 0.373,
+    "p99_ms": 0.688,
+    "p999_ms": 1.604,
+    "errors": 0,
+    "cpu_us_per_req": 19.512681256357787,
+    "cores_used": 3.27625
+   },
+   "rss_load_kb": 136404,
+   "latency": {
+    "rps": 999.6897806014808,
+    "p50_ms": 0.154473,
+    "p99_ms": 0.354146,
+    "p999_ms": 0.420053,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "`respond` (static JSON)",
+   "server": "unsworn:declarative",
+   "repeat": 1,
+   "rss_idle_kb": 128988
+  },
+  {
+   "throughput": {
+    "rps": 215593.9228260464,
+    "mb_per_s": null,
+    "p50_ms": 0.29,
+    "p99_ms": 0.521,
+    "p999_ms": 0.662,
+    "errors": 0,
+    "cpu_us_per_req": 15.341341521340944,
+    "cores_used": 3.3075
+   },
+   "rss_load_kb": 134640,
+   "latency": {
+    "rps": 999.9240835137505,
+    "p50_ms": 0.155687,
+    "p99_ms": 0.35821600000000003,
+    "p999_ms": 0.399125,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "`redirect`",
+   "server": "unsworn:declarative",
+   "repeat": 1,
+   "rss_idle_kb": 128988
+  },
+  {
+   "throughput": {
+    "rps": 214811.7914704204,
+    "mb_per_s": null,
+    "p50_ms": 0.286,
+    "p99_ms": 0.545,
+    "p999_ms": 0.662,
+    "errors": 0,
+    "cpu_us_per_req": 15.298275655657001,
+    "cores_used": 3.286250000000001
+   },
+   "rss_load_kb": 134768,
+   "latency": {
+    "rps": 999.7840410226507,
+    "p50_ms": 0.150184,
+    "p99_ms": 0.35519399999999995,
+    "p999_ms": 0.385512,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "No route (404)",
+   "server": "unsworn:declarative",
+   "repeat": 1,
+   "rss_idle_kb": 128988
+  },
+  {
+   "throughput": {
+    "rps": 189499.98478696006,
+    "mb_per_s": null,
+    "p50_ms": 0.33,
+    "p99_ms": 0.615,
+    "p999_ms": 0.774,
+    "errors": 0,
+    "cpu_us_per_req": 17.57256077747794,
+    "cores_used": 3.33
+   },
+   "rss_load_kb": 134536,
+   "latency": {
+    "rps": 999.9229578169702,
+    "p50_ms": 0.15598,
+    "p99_ms": 0.362175,
+    "p999_ms": 0.46141,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Rejected: missing JWT (401)",
+   "server": "unsworn:declarative",
+   "repeat": 1,
+   "rss_idle_kb": 128988
+  },
+  {
+   "throughput": {
+    "rps": 191874.6314709261,
+    "mb_per_s": null,
+    "p50_ms": 0.325,
+    "p99_ms": 0.626,
+    "p999_ms": 0.78,
+    "errors": 0,
+    "cpu_us_per_req": 17.602639672101617,
+    "cores_used": 3.3775000000000013
+   },
+   "rss_load_kb": 134556,
+   "latency": {
+    "rps": 1000.3634095047482,
+    "p50_ms": 0.15145,
+    "p99_ms": 0.349561,
+    "p999_ms": 0.39704999999999996,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Rejected: rate limited (429)",
+   "server": "unsworn:declarative",
+   "repeat": 1,
+   "rss_idle_kb": 128988
+  },
+  {
+   "throughput": {
+    "rps": 86825.12593657138,
+    "mb_per_s": null,
+    "p50_ms": 0.569,
+    "p99_ms": 7.033,
+    "p999_ms": 13.921,
+    "errors": 0,
+    "cpu_us_per_req": 23.94180230177374,
+    "cores_used": 2.0787499999999994
+   },
+   "rss_load_kb": 135596,
+   "latency": {
+    "rps": 999.6636894648674,
+    "p50_ms": 0.160123,
+    "p99_ms": 0.34530500000000003,
+    "p999_ms": 0.40058299999999997,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Cache hit",
+   "server": "unsworn:declarative",
+   "repeat": 1,
+   "rss_idle_kb": 128988
+  },
+  {
+   "throughput": {
+    "rps": 73246.90806580687,
+    "mb_per_s": null,
+    "p50_ms": 0.781,
+    "p99_ms": 5.129,
+    "p999_ms": 8.616,
+    "errors": 0,
+    "cpu_us_per_req": 49.11470115254442,
+    "cores_used": 3.5975
+   },
+   "rss_load_kb": 371388,
+   "latency": {
+    "rps": 999.9947074395849,
+    "p50_ms": 0.212636,
+    "p99_ms": 0.441272,
+    "p999_ms": 0.78547,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Same handler, uncached (Bun, Tier 2)",
+   "server": "unsworn:declarative",
+   "repeat": 1,
+   "rss_idle_kb": 128988
+  },
+  {
+   "throughput": {
+    "rps": 70687.55284911458,
+    "mb_per_s": null,
+    "p50_ms": 0.861,
+    "p99_ms": 2.465,
+    "p999_ms": 3.303,
+    "errors": 0,
+    "cpu_us_per_req": 44.27936565693695,
+    "cores_used": 3.13
+   },
+   "rss_load_kb": 33088,
+   "latency": {
+    "rps": 999.7027480924326,
+    "p50_ms": 0.217495,
+    "p99_ms": 0.441707,
+    "p999_ms": 0.515546,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Unsworn `proxy`",
+   "server": "unsworn:proxy",
+   "repeat": 1,
+   "rss_idle_kb": 20540
+  },
+  {
+   "throughput": {
+    "rps": 60476.732632146945,
+    "mb_per_s": null,
+    "p50_ms": 1.018,
+    "p99_ms": 2.366,
+    "p999_ms": 3.231,
+    "errors": 0,
+    "cpu_us_per_req": 56.4059903954983,
+    "cores_used": 3.411249999999999
+   },
+   "rss_load_kb": 32496,
+   "latency": {
+    "rps": 1000.1961948012308,
+    "p50_ms": 0.23882,
+    "p99_ms": 0.445246,
+    "p999_ms": 0.547841,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Unsworn `proxy` with JWT and a rate limit",
+   "server": "unsworn:proxy",
+   "repeat": 1,
+   "rss_idle_kb": 20540
+  },
+  {
+   "throughput": {
+    "rps": 55918.646458239215,
+    "mb_per_s": 57.260693973236954,
+    "p50_ms": 1.085,
+    "p99_ms": 3.247,
+    "p999_ms": 4.268,
+    "errors": 0,
+    "cpu_us_per_req": 52.934042354021685,
+    "cores_used": 2.959999999999999
+   },
+   "rss_load_kb": 35504,
+   "group": "bodies",
+   "name": "1 KB: Unsworn `proxy` \u2192 Go",
+   "server": "unsworn:proxy",
+   "repeat": 1,
+   "rss_idle_kb": 20540
+  },
+  {
+   "throughput": {
+    "rps": 9374.356384163264,
+    "mb_per_s": 614.3578199925237,
+    "p50_ms": 7.236,
+    "p99_ms": 40.735,
+    "p999_ms": 60.996,
+    "errors": 0,
+    "cpu_us_per_req": 129.0755280057556,
+    "cores_used": 1.209999999999999
+   },
+   "rss_load_kb": 94980,
+   "group": "bodies",
+   "name": "64 KB: Unsworn `proxy` \u2192 Go",
+   "server": "unsworn:proxy",
+   "repeat": 1,
+   "rss_idle_kb": 20540
+  },
+  {
+   "throughput": {
+    "rps": 1212.4914030802815,
+    "mb_per_s": 1271.3893854763094,
+    "p50_ms": 12.089,
+    "p99_ms": 43.449,
+    "p999_ms": 63.82,
+    "errors": 0,
+    "cpu_us_per_req": 996.914284859442,
+    "cores_used": 1.2087500000000002
+   },
+   "rss_load_kb": 159324,
+   "group": "bodies",
+   "name": "1 MB: Unsworn `proxy` \u2192 Go",
+   "server": "unsworn:proxy",
+   "repeat": 1,
+   "rss_idle_kb": 20540
+  },
+  {
+   "throughput": {
+    "rps": 9632.903510805863,
+    "mb_per_s": 612.8067897434258,
+    "p50_ms": 5.836,
+    "p99_ms": 41.937,
+    "p999_ms": 63.236,
+    "errors": 0,
+    "cpu_us_per_req": 110.81809329892216,
+    "cores_used": 1.067499999999999
+   },
+   "rss_load_kb": 68744,
+   "group": "bodies",
+   "name": "64 KB JSON: Unsworn `proxy` \u2192 Go",
+   "server": "unsworn:proxy",
+   "repeat": 1,
+   "rss_idle_kb": 20540
+  },
+  {
+   "throughput": {
+    "rps": 60552.59533243507,
+    "mb_per_s": null,
+    "p50_ms": 1.012,
+    "p99_ms": 2.88,
+    "p999_ms": 3.729,
+    "errors": 0,
+    "cpu_us_per_req": 50.36943475759269,
+    "cores_used": 3.05
+   },
+   "rss_load_kb": 32700,
+   "latency": {
+    "rps": 1000.4804617132368,
+    "p50_ms": 0.194709,
+    "p99_ms": 0.440015,
+    "p999_ms": 0.6471870000000001,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Unsworn `proxy`, access log off",
+   "server": "unsworn:proxy:no-access-log",
+   "repeat": 1,
+   "rss_idle_kb": 22228
+  },
+  {
+   "throughput": {
+    "rps": 87658.91720460425,
+    "mb_per_s": null,
+    "p50_ms": 0.695,
+    "p99_ms": 2.01,
+    "p999_ms": 3.798,
+    "errors": 0,
+    "cpu_us_per_req": 39.00059582096266,
+    "cores_used": 3.41875
+   },
+   "rss_load_kb": 33696,
+   "latency": {
+    "rps": 1000.3319522346802,
+    "p50_ms": 0.136072,
+    "p99_ms": 0.365163,
+    "p999_ms": 0.436153,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Unsworn `proxy`, the app on a Unix socket",
+   "server": "unsworn:proxy-unix",
+   "repeat": 1,
+   "rss_idle_kb": 21760
+  },
+  {
+   "throughput": {
+    "rps": 30718.442137307844,
+    "mb_per_s": null,
+    "p50_ms": 1.882,
+    "p99_ms": 6.62,
+    "p999_ms": 8.461,
+    "errors": 0,
+    "cpu_us_per_req": 117.24036114533342,
+    "cores_used": 3.6014412499999997
+   },
+   "rss_load_kb": 33331,
+   "latency": {
+    "rps": 1000.254441332695,
+    "p50_ms": 0.165711,
+    "p99_ms": 0.32608000000000004,
+    "p999_ms": 0.610141,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Caddy `reverse_proxy`",
+   "server": "caddy",
+   "repeat": 1,
+   "rss_idle_kb": 14243
+  },
+  {
+   "throughput": {
+    "rps": 86501.05091619522,
+    "mb_per_s": null,
+    "p50_ms": 0.701,
+    "p99_ms": 2.141,
+    "p999_ms": 2.883,
+    "errors": 0,
+    "cpu_us_per_req": 23.05757102225654,
+    "cores_used": 1.9945041250000002
+   },
+   "rss_load_kb": 13301,
+   "latency": {
+    "rps": 999.6552637771586,
+    "p50_ms": 0.197774,
+    "p99_ms": 0.412092,
+    "p999_ms": 0.452115,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "nginx `proxy_pass`, keepalive, access log off",
+   "server": "nginx",
+   "repeat": 1,
+   "rss_idle_kb": 11048
+  },
+  {
+   "throughput": {
+    "rps": 162642.09595859834,
+    "mb_per_s": null,
+    "p50_ms": 0.379,
+    "p99_ms": 0.689,
+    "p999_ms": 0.943,
+    "errors": 0,
+    "cpu_us_per_req": 4.595981105594467,
+    "cores_used": 0.7475
+   },
+   "rss_load_kb": 36836,
+   "latency": {
+    "rps": 999.8228017797741,
+    "p50_ms": 0.142335,
+    "p99_ms": 0.29645499999999997,
+    "p999_ms": 0.331557,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Bun on its own, 1 process",
+   "server": "bun:1",
+   "repeat": 1,
+   "rss_idle_kb": 19520
+  },
+  {
+   "throughput": {
+    "rps": 240775.59662479936,
+    "mb_per_s": null,
+    "p50_ms": 0.128,
+    "p99_ms": 0.646,
+    "p999_ms": 1.886,
+    "errors": 0,
+    "cpu_us_per_req": 10.741329421478511,
+    "cores_used": 2.5862499999999997
+   },
+   "rss_load_kb": 147716,
+   "latency": {
+    "rps": 1000.078060822493,
+    "p50_ms": 0.14519700000000002,
+    "p99_ms": 0.32749100000000003,
+    "p999_ms": 0.348802,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Bun on its own, 4 processes (reusePort)",
+   "server": "bun:4",
+   "repeat": 1,
+   "rss_idle_kb": 72128
+  },
+  {
+   "throughput": {
+    "rps": 83130.44607720082,
+    "mb_per_s": null,
+    "p50_ms": 0.738,
+    "p99_ms": 1.05,
+    "p999_ms": 1.605,
+    "errors": 0,
+    "cpu_us_per_req": 10.224894008275015,
+    "cores_used": 0.8499999999999999
+   },
+   "rss_load_kb": 92484,
+   "latency": {
+    "rps": 1000.0019858807092,
+    "p50_ms": 0.156784,
+    "p99_ms": 0.35939,
+    "p999_ms": 0.39087,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Node on its own, 1 process",
+   "server": "node:1",
+   "repeat": 1,
+   "rss_idle_kb": 68344
+  },
+  {
+   "throughput": {
+    "rps": 152425.47636473435,
+    "mb_per_s": null,
+    "p50_ms": 0.399,
+    "p99_ms": 1.354,
+    "p999_ms": 13.028,
+    "errors": 0,
+    "cpu_us_per_req": 22.469997022049125,
+    "cores_used": 3.425
+   },
+   "rss_load_kb": 421440,
+   "latency": {
+    "rps": 1000.5726306159875,
+    "p50_ms": 0.163976,
+    "p99_ms": 0.398752,
+    "p999_ms": 0.598274,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Node on its own, 4 processes (cluster)",
+   "server": "node:4",
+   "repeat": 1,
+   "rss_idle_kb": 338184
+  },
+  {
+   "throughput": {
+    "rps": 77593.3054994675,
+    "mb_per_s": null,
+    "p50_ms": 0.747,
+    "p99_ms": 2.815,
+    "p999_ms": 3.592,
+    "errors": 0,
+    "cpu_us_per_req": 39.45250147928043,
+    "cores_used": 3.06125
+   },
+   "rss_load_kb": 120776,
+   "latency": {
+    "rps": 999.7877987581394,
+    "p50_ms": 0.20518899999999998,
+    "p99_ms": 0.5592820000000001,
+    "p999_ms": 0.76076,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 TypeScript on Bun, Tier 2, 1 worker",
+   "server": "unsworn:handlers:bun-framed:1",
+   "repeat": 1,
+   "rss_idle_kb": 49160
+  },
+  {
+   "throughput": {
+    "rps": 73001.13571588807,
+    "mb_per_s": null,
+    "p50_ms": 0.783,
+    "p99_ms": 4.957,
+    "p999_ms": 9.275,
+    "errors": 0,
+    "cpu_us_per_req": 49.38279335858885,
+    "cores_used": 3.6050000000000004
+   },
+   "rss_load_kb": 368288,
+   "latency": {
+    "rps": 999.8677196626323,
+    "p50_ms": 0.208559,
+    "p99_ms": 0.583794,
+    "p999_ms": 0.815461,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 TypeScript on Bun, Tier 2, 4 workers",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 128428
+  },
+  {
+   "throughput": {
+    "rps": 63545.93293313374,
+    "mb_per_s": 65.07103532352895,
+    "p50_ms": 0.891,
+    "p99_ms": 5.458,
+    "p999_ms": 8.005,
+    "errors": 0,
+    "cpu_us_per_req": 57.065021042585435,
+    "cores_used": 3.6262499999999998
+   },
+   "rss_load_kb": 364076,
+   "group": "bodies",
+   "name": "1 KB: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 128428
+  },
+  {
+   "throughput": {
+    "rps": 15456.55768071223,
+    "mb_per_s": 1012.9609641631567,
+    "p50_ms": 3.945,
+    "p99_ms": 9.249,
+    "p999_ms": 12.332,
+    "errors": 0,
+    "cpu_us_per_req": 237.84403202450957,
+    "cores_used": 3.6762499999999996
+   },
+   "rss_load_kb": 562060,
+   "group": "bodies",
+   "name": "64 KB: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 128428
+  },
+  {
+   "throughput": {
+    "rps": 1041.5018819507911,
+    "mb_per_s": 1092.0938773684327,
+    "p50_ms": 15.117,
+    "p99_ms": 24.871,
+    "p999_ms": 29.001,
+    "errors": 0,
+    "cpu_us_per_req": 3547.761232153568,
+    "cores_used": 3.6949999999999985
+   },
+   "rss_load_kb": 690476,
+   "group": "bodies",
+   "name": "1 MB: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 128428
+  },
+  {
+   "throughput": {
+    "rps": 3352.008291107213,
+    "mb_per_s": 213.24135944707646,
+    "p50_ms": 18.835,
+    "p99_ms": 30.565,
+    "p999_ms": 35.543,
+    "errors": 0,
+    "cpu_us_per_req": 1171.685646010946,
+    "cores_used": 3.927500000000002
+   },
+   "rss_load_kb": 444632,
+   "group": "bodies",
+   "name": "64 KB JSON: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 128428
+  },
+  {
+   "throughput": {
+    "rps": 2197.5721928753305,
+    "mb_per_s": 139.80075262195703,
+    "p50_ms": 28.683,
+    "p99_ms": 48.738,
+    "p999_ms": 56.759,
+    "errors": 0,
+    "cpu_us_per_req": 1790.6123916008419,
+    "cores_used": 3.9350000000000023
+   },
+   "rss_load_kb": 453380,
+   "group": "bodies",
+   "name": "64 KB JSON, sent back as JSON: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 128428
+  },
+  {
+   "throughput": {
+    "rps": 66395.22661418354,
+    "mb_per_s": null,
+    "p50_ms": 0.87,
+    "p99_ms": 5.026,
+    "p999_ms": 9.398,
+    "errors": 0,
+    "cpu_us_per_req": 53.80657890904513,
+    "cores_used": 3.5725000000000002
+   },
+   "rss_load_kb": 337500,
+   "latency": {
+    "rps": 999.9098366301664,
+    "p50_ms": 0.2293,
+    "p99_ms": 0.5936300000000001,
+    "p999_ms": 0.776628,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 TypeScript on Bun, Tier 1, 4 workers",
+   "server": "unsworn:handlers:bun-jsonl:4",
+   "repeat": 1,
+   "rss_idle_kb": 131792
+  },
+  {
+   "throughput": {
+    "rps": 69273.66259259506,
+    "mb_per_s": 70.93623049481735,
+    "p50_ms": 0.821,
+    "p99_ms": 4.465,
+    "p999_ms": 6.781,
+    "errors": 0,
+    "cpu_us_per_req": 52.0941128986264,
+    "cores_used": 3.6087499999999997
+   },
+   "rss_load_kb": 353656,
+   "group": "bodies",
+   "name": "1 KB: Unsworn \u2192 Bun, Tier 1",
+   "server": "unsworn:handlers:bun-jsonl:4",
+   "repeat": 1,
+   "rss_idle_kb": 131792
+  },
+  {
+   "throughput": {
+    "rps": 12504.10193681344,
+    "mb_per_s": 819.4688245310056,
+    "p50_ms": 4.955,
+    "p99_ms": 9.643,
+    "p999_ms": 11.97,
+    "errors": 0,
+    "cpu_us_per_req": 289.9048662845274,
+    "cores_used": 3.625
+   },
+   "rss_load_kb": 525956,
+   "group": "bodies",
+   "name": "64 KB: Unsworn \u2192 Bun, Tier 1",
+   "server": "unsworn:handlers:bun-jsonl:4",
+   "repeat": 1,
+   "rss_idle_kb": 131792
+  },
+  {
+   "throughput": {
+    "rps": 928.804713905662,
+    "mb_per_s": 973.9223316883434,
+    "p50_ms": 17.124,
+    "p99_ms": 24.32,
+    "p999_ms": 26.482,
+    "errors": 0,
+    "cpu_us_per_req": 3851.7246375252194,
+    "cores_used": 3.5775000000000006
+   },
+   "rss_load_kb": 572572,
+   "group": "bodies",
+   "name": "1 MB: Unsworn \u2192 Bun, Tier 1",
+   "server": "unsworn:handlers:bun-jsonl:4",
+   "repeat": 1,
+   "rss_idle_kb": 131792
+  },
+  {
+   "throughput": {
+    "rps": 61653.24828300018,
+    "mb_per_s": null,
+    "p50_ms": 0.963,
+    "p99_ms": 2.873,
+    "p999_ms": 5.5,
+    "errors": 0,
+    "cpu_us_per_req": 58.289710600551025,
+    "cores_used": 3.59375
+   },
+   "rss_load_kb": 627440,
+   "latency": {
+    "rps": 999.6857145083865,
+    "p50_ms": 0.221811,
+    "p99_ms": 0.413547,
+    "p999_ms": 0.6539119999999999,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 TypeScript on Node, Tier 2, 4 workers",
+   "server": "unsworn:handlers:node-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 378092
+  },
+  {
+   "throughput": {
+    "rps": 32782.77166088823,
+    "mb_per_s": null,
+    "p50_ms": 1.833,
+    "p99_ms": 4.325,
+    "p999_ms": 5.878,
+    "errors": 0,
+    "cpu_us_per_req": 113.85553480986147,
+    "cores_used": 3.7325
+   },
+   "rss_load_kb": 140756,
+   "latency": {
+    "rps": 1000.4074454294223,
+    "p50_ms": 0.202046,
+    "p99_ms": 0.422648,
+    "p999_ms": 0.5524,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Python, Tier 2, 4 workers",
+   "server": "unsworn:handlers:python-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 110260
+  },
+  {
+   "throughput": {
+    "rps": 33186.22993686838,
+    "mb_per_s": null,
+    "p50_ms": 1.811,
+    "p99_ms": 4.271,
+    "p999_ms": 5.672,
+    "errors": 0,
+    "cpu_us_per_req": 113.33767068917412,
+    "cores_used": 3.7612500000000004
+   },
+   "rss_load_kb": 140728,
+   "latency": {
+    "rps": 1000.8391104841088,
+    "p50_ms": 0.263999,
+    "p99_ms": 0.595175,
+    "p999_ms": 0.955294,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Python, Tier 1, 4 workers",
+   "server": "unsworn:handlers:python-jsonl:4",
+   "repeat": 1,
+   "rss_idle_kb": 110432
+  },
+  {
+   "throughput": {
+    "rps": 43056.079731464306,
+    "mb_per_s": null,
+    "p50_ms": 1.476,
+    "p99_ms": 7.588,
+    "p999_ms": 11.231,
+    "errors": 0,
+    "cpu_us_per_req": 76.4700367644926,
+    "cores_used": 3.2925000000000004
+   },
+   "rss_load_kb": 98196,
+   "latency": {
+    "rps": 1000.3571694982691,
+    "p50_ms": 0.214559,
+    "p99_ms": 0.438195,
+    "p999_ms": 0.659683,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Python, no SDK, Tier 1, 4 workers",
+   "server": "unsworn:handlers:raw-python:4",
+   "repeat": 1,
+   "rss_idle_kb": 68952
+  },
+  {
+   "throughput": {
+    "rps": 47519.2415772583,
+    "mb_per_s": null,
+    "p50_ms": 1.256,
+    "p99_ms": 4.096,
+    "p999_ms": 6.691,
+    "errors": 0,
+    "cpu_us_per_req": 77.07404155525906,
+    "cores_used": 3.6625
+   },
+   "rss_load_kb": 126028,
+   "latency": {
+    "rps": 999.7001739331329,
+    "p50_ms": 0.181759,
+    "p99_ms": 0.37395,
+    "p999_ms": 0.517312,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Go, Tier 2, 4 workers",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 64500
+  },
+  {
+   "throughput": {
+    "rps": 46464.90560521652,
+    "mb_per_s": 47.58006333974171,
+    "p50_ms": 1.273,
+    "p99_ms": 4.277,
+    "p999_ms": 7.227,
+    "errors": 0,
+    "cpu_us_per_req": 79.01124412459447,
+    "cores_used": 3.6712500000000006
+   },
+   "rss_load_kb": 119024,
+   "group": "bodies",
+   "name": "1 KB: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 64500
+  },
+  {
+   "throughput": {
+    "rps": 12088.815738125817,
+    "mb_per_s": 792.2526282138135,
+    "p50_ms": 5.015,
+    "p99_ms": 12.365,
+    "p999_ms": 16.091,
+    "errors": 0,
+    "cpu_us_per_req": 305.7578244279739,
+    "cores_used": 3.696250000000001
+   },
+   "rss_load_kb": 151560,
+   "group": "bodies",
+   "name": "64 KB: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 64500
+  },
+  {
+   "throughput": {
+    "rps": 1052.069865044661,
+    "mb_per_s": 1103.1752108090704,
+    "p50_ms": 14.517,
+    "p99_ms": 28.019,
+    "p999_ms": 34.723,
+    "errors": 0,
+    "cpu_us_per_req": 3591.729147987324,
+    "cores_used": 3.7787499999999987
+   },
+   "rss_load_kb": 273524,
+   "group": "bodies",
+   "name": "1 MB: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 64500
+  },
+  {
+   "throughput": {
+    "rps": 2092.0554304218426,
+    "mb_per_s": 133.08819826171595,
+    "p50_ms": 30.008,
+    "p99_ms": 47.18,
+    "p999_ms": 54.796,
+    "errors": 0,
+    "cpu_us_per_req": 1880.3278071875932,
+    "cores_used": 3.93375
+   },
+   "rss_load_kb": 168636,
+   "group": "bodies",
+   "name": "64 KB JSON: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 64500
+  },
+  {
+   "throughput": {
+    "rps": 1284.99783752793,
+    "mb_per_s": 81.74642243217679,
+    "p50_ms": 48.996,
+    "p99_ms": 77.263,
+    "p999_ms": 86.432,
+    "errors": 0,
+    "cpu_us_per_req": 3063.2347269724037,
+    "cores_used": 3.9362499999999976
+   },
+   "rss_load_kb": 170616,
+   "group": "bodies",
+   "name": "64 KB JSON, sent back as JSON: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 64500
+  },
+  {
+   "throughput": {
+    "rps": 45192.91221212228,
+    "mb_per_s": null,
+    "p50_ms": 1.324,
+    "p99_ms": 3.932,
+    "p999_ms": 6.164,
+    "errors": 0,
+    "cpu_us_per_req": 80.48828504183669,
+    "cores_used": 3.6375
+   },
+   "rss_load_kb": 117800,
+   "latency": {
+    "rps": 1000.0880346176947,
+    "p50_ms": 0.12900699999999998,
+    "p99_ms": 0.327906,
+    "p999_ms": 0.422498,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Go, Tier 1, 4 workers",
+   "server": "unsworn:handlers:go-jsonl:4",
+   "repeat": 1,
+   "rss_idle_kb": 63548
+  },
+  {
+   "throughput": {
+    "rps": 54333.32193262481,
+    "mb_per_s": 55.6373216590078,
+    "p50_ms": 1.09,
+    "p99_ms": 3.431,
+    "p999_ms": 5.525,
+    "errors": 0,
+    "cpu_us_per_req": 66.39571945321923,
+    "cores_used": 3.6075
+   },
+   "rss_load_kb": 115392,
+   "group": "bodies",
+   "name": "1 KB: Unsworn \u2192 Go, Tier 1",
+   "server": "unsworn:handlers:go-jsonl:4",
+   "repeat": 1,
+   "rss_idle_kb": 63548
+  },
+  {
+   "throughput": {
+    "rps": 11823.151450539108,
+    "mb_per_s": 774.842053462531,
+    "p50_ms": 5.155,
+    "p99_ms": 11.253,
+    "p999_ms": 14.649,
+    "errors": 0,
+    "cpu_us_per_req": 313.3682263565235,
+    "cores_used": 3.7049999999999983
+   },
+   "rss_load_kb": 210488,
+   "group": "bodies",
+   "name": "64 KB: Unsworn \u2192 Go, Tier 1",
+   "server": "unsworn:handlers:go-jsonl:4",
+   "repeat": 1,
+   "rss_idle_kb": 63548
+  },
+  {
+   "throughput": {
+    "rps": 1015.2443451025789,
+    "mb_per_s": 1064.5608544102818,
+    "p50_ms": 15.377,
+    "p99_ms": 24.528,
+    "p999_ms": 28.013,
+    "errors": 0,
+    "cpu_us_per_req": 3702.3106980420775,
+    "cores_used": 3.758750000000001
+   },
+   "rss_load_kb": 272140,
+   "group": "bodies",
+   "name": "1 MB: Unsworn \u2192 Go, Tier 1",
+   "server": "unsworn:handlers:go-jsonl:4",
+   "repeat": 1,
+   "rss_idle_kb": 63548
+  },
+  {
+   "throughput": {
+    "rps": 71931.237933462,
+    "mb_per_s": null,
+    "p50_ms": 0.83,
+    "p99_ms": 2.235,
+    "p999_ms": 2.937,
+    "errors": 0,
+    "cpu_us_per_req": 49.439577326468516,
+    "cores_used": 3.5562500000000004
+   },
+   "rss_load_kb": 65616,
+   "latency": {
+    "rps": 1000.3392372317783,
+    "p50_ms": 0.210428,
+    "p99_ms": 0.512891,
+    "p999_ms": 0.667345,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Rust, Tier 2, 4 workers",
+   "server": "unsworn:handlers:rust-framed:4",
+   "repeat": 1,
+   "rss_idle_kb": 38528
+  },
+  {
+   "throughput": {
+    "rps": 91528.77479467989,
+    "mb_per_s": null,
+    "p50_ms": 0.652,
+    "p99_ms": 1.848,
+    "p999_ms": 2.518,
+    "errors": 0,
+    "cpu_us_per_req": 38.444194275443614,
+    "cores_used": 3.5187500000000003
+   },
+   "rss_load_kb": 65048,
+   "latency": {
+    "rps": 1000.3936078330655,
+    "p50_ms": 0.20818599999999998,
+    "p99_ms": 0.501011,
+    "p999_ms": 0.692297,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Rust, Tier 1, 4 workers",
+   "server": "unsworn:handlers:rust-jsonl:4",
+   "repeat": 1,
+   "rss_idle_kb": 38080
+  },
+  {
+   "throughput": {
+    "rps": 60965.409622244704,
+    "mb_per_s": null,
+    "p50_ms": 0.98,
+    "p99_ms": 2.586,
+    "p999_ms": 3.537,
+    "errors": 0,
+    "cpu_us_per_req": 60.60813866248166,
+    "cores_used": 3.6950000000000003
+   },
+   "rss_load_kb": 66084,
+   "latency": {
+    "rps": 999.6895984418015,
+    "p50_ms": 0.150995,
+    "p99_ms": 0.36255,
+    "p999_ms": 0.487807,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Rust, 4 threads in each worker, Tier 2, 4 workers",
+   "server": "unsworn:handlers:rust-framed-4t:4",
+   "repeat": 1,
+   "rss_idle_kb": 39244
+  },
+  {
+   "throughput": {
+    "rps": 3361.5130792668688,
+    "mb_per_s": null,
+    "p50_ms": 18.452,
+    "p99_ms": 32.438,
+    "p999_ms": 39.092,
+    "errors": 0,
+    "cpu_us_per_req": 1181.0157825909278,
+    "cores_used": 3.97
+   },
+   "rss_load_kb": 226272,
+   "latency": {
+    "rps": 20.121274928251257,
+    "p50_ms": 1.2185970000000002,
+    "p99_ms": 1.504069,
+    "p999_ms": 1.508823,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 TypeScript on Bun",
+   "server": "unsworn:work:bun",
+   "repeat": 1,
+   "rss_idle_kb": 150052
+  },
+  {
+   "throughput": {
+    "rps": 2396.3961039366422,
+    "mb_per_s": null,
+    "p50_ms": 26.499,
+    "p99_ms": 44.638,
+    "p999_ms": 57.529,
+    "errors": 0,
+    "cpu_us_per_req": 1663.435353384046,
+    "cores_used": 3.9862499999999996
+   },
+   "rss_load_kb": 480508,
+   "latency": {
+    "rps": 20.120326603953927,
+    "p50_ms": 1.533536,
+    "p99_ms": 1.900744,
+    "p999_ms": 1.957289,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 TypeScript on Node",
+   "server": "unsworn:work:node",
+   "repeat": 1,
+   "rss_idle_kb": 391556
+  },
+  {
+   "throughput": {
+    "rps": 74.75055900689327,
+    "mb_per_s": null,
+    "p50_ms": 849.819,
+    "p99_ms": 868.679,
+    "p999_ms": 886.866,
+    "errors": 0,
+    "cpu_us_per_req": 53427.69409432387,
+    "cores_used": 3.9937499999999995
+   },
+   "rss_load_kb": 124560,
+   "latency": {
+    "rps": 20.11862252994388,
+    "p50_ms": 22.188570000000002,
+    "p99_ms": 24.624917999999997,
+    "p999_ms": 25.769716000000003,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 Python",
+   "server": "unsworn:work:python",
+   "repeat": 1,
+   "rss_idle_kb": 113176
+  },
+  {
+   "throughput": {
+    "rps": 4348.144597367002,
+    "mb_per_s": null,
+    "p50_ms": 14.171,
+    "p99_ms": 45.574,
+    "p999_ms": 62.358,
+    "errors": 0,
+    "cpu_us_per_req": 912.7456346330473,
+    "cores_used": 3.9687499999999996
+   },
+   "rss_load_kb": 118644,
+   "latency": {
+    "rps": 20.120991337652907,
+    "p50_ms": 1.091717,
+    "p99_ms": 1.35995,
+    "p999_ms": 1.427432,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 Go",
+   "server": "unsworn:work:go",
+   "repeat": 1,
+   "rss_idle_kb": 66160
+  },
+  {
+   "throughput": {
+    "rps": 4808.477585995899,
+    "mb_per_s": null,
+    "p50_ms": 13.298,
+    "p99_ms": 22.339,
+    "p999_ms": 25.481,
+    "errors": 0,
+    "cpu_us_per_req": 824.5853139770425,
+    "cores_used": 3.9649999999999994
+   },
+   "rss_load_kb": 70884,
+   "latency": {
+    "rps": 20.118893015649288,
+    "p50_ms": 0.98978,
+    "p99_ms": 1.3348870000000002,
+    "p999_ms": 1.366453,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 Rust",
+   "server": "unsworn:work:rust",
+   "repeat": 1,
+   "rss_idle_kb": 42604
+  },
+  {
+   "throughput": {
+    "rps": 205933.68237347296,
+    "mb_per_s": null,
+    "p50_ms": 0.304,
+    "p99_ms": 0.542,
+    "p999_ms": 0.674,
+    "errors": 0,
+    "cpu_us_per_req": 16.400911016949152,
+    "cores_used": 3.3775
+   },
+   "rss_load_kb": 29764,
+   "latency": {
+    "rps": 999.7916776115358,
+    "p50_ms": 0.154486,
+    "p99_ms": 0.374824,
+    "p999_ms": 0.445183,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "No policy",
+   "server": "unsworn:policies",
+   "repeat": 1,
+   "rss_idle_kb": 24828
+  },
+  {
+   "throughput": {
+    "rps": 144782.9975485306,
+    "mb_per_s": null,
+    "p50_ms": 0.436,
+    "p99_ms": 0.803,
+    "p999_ms": 0.979,
+    "errors": 0,
+    "cpu_us_per_req": 24.053238701821197,
+    "cores_used": 3.4825
+   },
+   "rss_load_kb": 29660,
+   "latency": {
+    "rps": 1000.0900037260352,
+    "p50_ms": 0.16375499999999998,
+    "p99_ms": 0.36876200000000003,
+    "p999_ms": 0.487912,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "JWT (HS256)",
+   "server": "unsworn:policies",
+   "repeat": 1,
+   "rss_idle_kb": 24828
+  },
+  {
+   "throughput": {
+    "rps": 173343.27275215118,
+    "mb_per_s": null,
+    "p50_ms": 0.363,
+    "p99_ms": 0.675,
+    "p999_ms": 0.836,
+    "errors": 0,
+    "cpu_us_per_req": 19.43398175490023,
+    "cores_used": 3.3687500000000004
+   },
+   "rss_load_kb": 28916,
+   "latency": {
+    "rps": 999.7047472824236,
+    "p50_ms": 0.16034400000000001,
+    "p99_ms": 0.33875099999999997,
+    "p999_ms": 0.439373,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "API key",
+   "server": "unsworn:policies",
+   "repeat": 1,
+   "rss_idle_kb": 24828
+  },
+  {
+   "throughput": {
+    "rps": 185415.0938154926,
+    "mb_per_s": null,
+    "p50_ms": 0.337,
+    "p99_ms": 0.631,
+    "p999_ms": 0.776,
+    "errors": 0,
+    "cpu_us_per_req": 18.32375094220144,
+    "cores_used": 3.397500000000001
+   },
+   "rss_load_kb": 28728,
+   "latency": {
+    "rps": 1000.5965036184369,
+    "p50_ms": 0.159918,
+    "p99_ms": 0.344119,
+    "p999_ms": 0.49441399999999996,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "Rate limit, memory store",
+   "server": "unsworn:policies",
+   "repeat": 1,
+   "rss_idle_kb": 24828
+  },
+  {
+   "throughput": {
+    "rps": 183565.34815680093,
+    "mb_per_s": null,
+    "p50_ms": 0.341,
+    "p99_ms": 0.635,
+    "p999_ms": 0.761,
+    "errors": 0,
+    "cpu_us_per_req": 18.487966460320532,
+    "cores_used": 3.393749999999997
+   },
+   "rss_load_kb": 28664,
+   "latency": {
+    "rps": 999.8231310257007,
+    "p50_ms": 0.158969,
+    "p99_ms": 0.316961,
+    "p999_ms": 0.360281,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "CORS (request with Origin)",
+   "server": "unsworn:policies",
+   "repeat": 1,
+   "rss_idle_kb": 24828
+  },
+  {
+   "throughput": {
+    "rps": 176461.77901813685,
+    "mb_per_s": null,
+    "p50_ms": 0.355,
+    "p99_ms": 0.669,
+    "p999_ms": 0.808,
+    "errors": 0,
+    "cpu_us_per_req": 19.345549041807704,
+    "cores_used": 3.4137500000000003
+   },
+   "rss_load_kb": 29080,
+   "latency": {
+    "rps": 999.8976229055896,
+    "p50_ms": 0.16167399999999998,
+    "p99_ms": 0.346412,
+    "p999_ms": 0.37912599999999996,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "Path and query validation",
+   "server": "unsworn:policies",
+   "repeat": 1,
+   "rss_idle_kb": 24828
+  },
+  {
+   "throughput": {
+    "rps": 115329.07318415072,
+    "mb_per_s": null,
+    "p50_ms": 0.548,
+    "p99_ms": 1.09,
+    "p999_ms": 2.124,
+    "errors": 0,
+    "cpu_us_per_req": 30.304587590150714,
+    "cores_used": 3.4949999999999974
+   },
+   "rss_load_kb": 29704,
+   "latency": {
+    "rps": 999.8539980725814,
+    "p50_ms": 0.17208800000000002,
+    "p99_ms": 0.45799,
+    "p999_ms": 0.544708,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "All of JWT, rate limit, CORS, path and query",
+   "server": "unsworn:policies",
+   "repeat": 1,
+   "rss_idle_kb": 24828
+  },
+  {
+   "throughput": {
+    "rps": 55118.70129527004,
+    "mb_per_s": 53.906089866774096,
+    "p50_ms": 1.109,
+    "p99_ms": 3.306,
+    "p999_ms": 4.761,
+    "errors": 0,
+    "cpu_us_per_req": 52.046763305110346,
+    "cores_used": 2.8687499999999986
+   },
+   "rss_load_kb": 36200,
+   "latency": {
+    "rps": 999.9518301135014,
+    "p50_ms": 0.26133100000000004,
+    "p99_ms": 1.805213,
+    "p999_ms": 2.937554,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "`proxy`, 1 KB JSON body",
+   "server": "unsworn:policies",
+   "repeat": 1,
+   "rss_idle_kb": 24828
+  },
+  {
+   "throughput": {
+    "rps": 44801.5055893548,
+    "mb_per_s": 43.815872466388996,
+    "p50_ms": 1.365,
+    "p99_ms": 3.158,
+    "p999_ms": 4.281,
+    "errors": 0,
+    "cpu_us_per_req": 77.45275419548622,
+    "cores_used": 3.469999999999999
+   },
+   "rss_load_kb": 33608,
+   "latency": {
+    "rps": 999.6956562237789,
+    "p50_ms": 0.166394,
+    "p99_ms": 0.400385,
+    "p999_ms": 0.56585,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "`proxy`, same body checked against a JSON Schema",
+   "server": "unsworn:policies",
+   "repeat": 1,
+   "rss_idle_kb": 24828
+  },
+  {
+   "throughput": {
+    "rps": 85345.49025613329,
+    "mb_per_s": null,
+    "p50_ms": 0.717,
+    "p99_ms": 1.193,
+    "p999_ms": 1.452,
+    "errors": 0,
+    "cpu_us_per_req": 26.714944083833995,
+    "cores_used": 2.28
+   },
+   "rss_load_kb": 30136,
+   "latency": {
+    "rps": 999.6999302988813,
+    "p50_ms": 0.260757,
+    "p99_ms": 0.485526,
+    "p999_ms": 0.7339370000000001,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "Rate limit, Redis store",
+   "server": "unsworn:redis",
+   "repeat": 1,
+   "rss_idle_kb": 20424
+  },
+  {
+   "throughput": {
+    "rps": 72271.1356832783,
+    "mb_per_s": null,
+    "p50_ms": 0.79,
+    "p99_ms": 4.894,
+    "p999_ms": 9.421,
+    "errors": 0,
+    "cpu_us_per_req": 50.002673485538295,
+    "cores_used": 3.6137500000000005
+   },
+   "rss_load_kb": 369992,
+   "latency": {
+    "rps": 1000.0901187180021,
+    "p50_ms": 0.200432,
+    "p99_ms": 0.484179,
+    "p999_ms": 1.0093050000000001,
+    "errors": 0
+   },
+   "group": "mcp",
+   "name": "`GET /text` (the route)",
+   "server": "unsworn:mcp",
+   "repeat": 1,
+   "rss_idle_kb": 133004
+  },
+  {
+   "throughput": {
+    "rps": 49730.18766059634,
+    "mb_per_s": 14.27256385859115,
+    "p50_ms": 1.171,
+    "p99_ms": 4.742,
+    "p999_ms": 8.133,
+    "errors": 0,
+    "cpu_us_per_req": 75.18069357623587,
+    "cores_used": 3.7387499999999996
+   },
+   "rss_load_kb": 321488,
+   "latency": {
+    "rps": 999.8044720594248,
+    "p50_ms": 0.23158299999999998,
+    "p99_ms": 0.431496,
+    "p999_ms": 0.7645799999999999,
+    "errors": 0
+   },
+   "group": "mcp",
+   "name": "`tools/call text` (the same handler)",
+   "server": "unsworn:mcp",
+   "repeat": 1,
+   "rss_idle_kb": 133004
+  },
+  {
+   "throughput": {
+    "rps": 41771.486447802585,
+    "mb_per_s": 13.07447525816221,
+    "p50_ms": 1.416,
+    "p99_ms": 4.927,
+    "p999_ms": 8.055,
+    "errors": 0,
+    "cpu_us_per_req": 89.41506078954687,
+    "cores_used": 3.735000000000001
+   },
+   "rss_load_kb": 315396,
+   "latency": {
+    "rps": 1000.2371836949707,
+    "p50_ms": 0.241466,
+    "p99_ms": 0.529541,
+    "p999_ms": 0.8309570000000001,
+    "errors": 0
+   },
+   "group": "mcp",
+   "name": "`tools/call echo`, arguments checked against its schema",
+   "server": "unsworn:mcp",
+   "repeat": 1,
+   "rss_idle_kb": 133004
+  },
+  {
+   "throughput": {
+    "rps": 102626.55521359413,
+    "mb_per_s": 26.067145024252905,
+    "p50_ms": 0.598,
+    "p99_ms": 1.293,
+    "p999_ms": 1.603,
+    "errors": 0,
+    "cpu_us_per_req": 34.71323764678113,
+    "cores_used": 3.5624999999999982
+   },
+   "rss_load_kb": 212364,
+   "latency": {
+    "rps": 1000.1429560826521,
+    "p50_ms": 0.174622,
+    "p99_ms": 0.33781399999999995,
+    "p999_ms": 0.408383,
+    "errors": 0
+   },
+   "group": "mcp",
+   "name": "`tools/list`",
+   "server": "unsworn:mcp",
+   "repeat": 1,
+   "rss_idle_kb": 133004
+  },
+  {
+   "throughput": {
+    "rps": 192753.3367794379,
+    "mb_per_s": null,
+    "p50_ms": 0.324,
+    "p99_ms": 0.737,
+    "p999_ms": 10.503,
+    "errors": 0,
+    "cpu_us_per_req": 17.094386302481364,
+    "cores_used": 3.2950000000000004
+   },
+   "rss_load_kb": 27288,
+   "latency": {
+    "rps": 1000.2291928397003,
+    "p50_ms": 0.15485600000000002,
+    "p99_ms": 0.344152,
+    "p999_ms": 0.903162,
+    "errors": 0
+   },
+   "group": "routes",
+   "name": "10 routes",
+   "server": "unsworn:routes:10",
+   "repeat": 1,
+   "rss_idle_kb": 21912
+  },
+  {
+   "throughput": {
+    "rps": 196655.75301423852,
+    "mb_per_s": null,
+    "p50_ms": 0.317,
+    "p99_ms": 0.592,
+    "p999_ms": 0.719,
+    "errors": 0,
+    "cpu_us_per_req": 17.161969320855,
+    "cores_used": 3.375
+   },
+   "rss_load_kb": 29436,
+   "latency": {
+    "rps": 999.88133866661,
+    "p50_ms": 0.15408,
+    "p99_ms": 0.368273,
+    "p999_ms": 0.392641,
+    "errors": 0
+   },
+   "group": "routes",
+   "name": "1,000 routes",
+   "server": "unsworn:routes:1000",
+   "repeat": 1,
+   "rss_idle_kb": 40360
+  },
+  {
+   "throughput": {
+    "rps": 194279.0139723792,
+    "mb_per_s": null,
+    "p50_ms": 0.321,
+    "p99_ms": 0.597,
+    "p999_ms": 0.73,
+    "errors": 0,
+    "cpu_us_per_req": 17.365488587870065,
+    "cores_used": 3.37375
+   },
+   "rss_load_kb": 65284,
+   "latency": {
+    "rps": 999.8972720214384,
+    "p50_ms": 0.15864,
+    "p99_ms": 0.33682500000000004,
+    "p999_ms": 0.37226400000000004,
+    "errors": 0
+   },
+   "group": "routes",
+   "name": "10,000 routes",
+   "server": "unsworn:routes:10000",
+   "repeat": 1,
+   "rss_idle_kb": 122296
+  },
+  {
+   "throughput": {
+    "rps": 183155.7641378835,
+    "mb_per_s": null,
+    "p50_ms": 0.319,
+    "p99_ms": 1.326,
+    "p999_ms": 1.937,
+    "errors": 0,
+    "cpu_us_per_req": 18.160771601465566,
+    "cores_used": 3.32625
+   },
+   "rss_load_kb": 16648,
+   "latency": {
+    "rps": 1000.0627168799236,
+    "p50_ms": 0.077901,
+    "p99_ms": 0.27402,
+    "p999_ms": 0.408386,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Go net/http, for reference",
+   "server": "go",
+   "repeat": 2,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 186614.76379811956,
+    "mb_per_s": null,
+    "p50_ms": 0.308,
+    "p99_ms": 1.34,
+    "p999_ms": 2.07,
+    "errors": 0,
+    "cpu_us_per_req": 18.01840289355436,
+    "cores_used": 3.3625000000000007
+   },
+   "rss_load_kb": 16280,
+   "latency": {
+    "rps": 1000.3357294930553,
+    "p50_ms": 0.09641699999999999,
+    "p99_ms": 0.300249,
+    "p999_ms": 0.399588,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Direct to the app, no proxy",
+   "server": "go",
+   "repeat": 2,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 178284.65711108412,
+    "mb_per_s": null,
+    "p50_ms": 0.327,
+    "p99_ms": 1.371,
+    "p999_ms": 1.951,
+    "errors": 0,
+    "cpu_us_per_req": 18.811209300587056,
+    "cores_used": 3.35375
+   },
+   "rss_load_kb": 16200,
+   "latency": {
+    "rps": 1000.1011656945971,
+    "p50_ms": 0.071212,
+    "p99_ms": 0.24812499999999998,
+    "p999_ms": 0.374266,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Go on its own",
+   "server": "go",
+   "repeat": 2,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 142750.68198191133,
+    "mb_per_s": 146.1766983494772,
+    "p50_ms": 0.405,
+    "p99_ms": 1.798,
+    "p999_ms": 2.481,
+    "errors": 0,
+    "cpu_us_per_req": 23.76521045573624,
+    "cores_used": 3.3924999999999983
+   },
+   "rss_load_kb": 16468,
+   "group": "bodies",
+   "name": "1 KB: Go on its own",
+   "server": "go",
+   "repeat": 2,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 18235.09403699069,
+    "mb_per_s": 1195.0551228082218,
+    "p50_ms": 3.828,
+    "p99_ms": 23.246,
+    "p999_ms": 34.217,
+    "errors": 0,
+    "cpu_us_per_req": 174.9374033130263,
+    "cores_used": 3.1900000000000013
+   },
+   "rss_load_kb": 19672,
+   "group": "bodies",
+   "name": "64 KB: Go on its own",
+   "server": "go",
+   "repeat": 2,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 2213.490737119084,
+    "mb_per_s": 2321.0132631653805,
+    "p50_ms": 6.665,
+    "p99_ms": 22.657,
+    "p999_ms": 31.06,
+    "errors": 0,
+    "cpu_us_per_req": 1313.5361044176718,
+    "cores_used": 2.9075000000000024
+   },
+   "rss_load_kb": 46540,
+   "group": "bodies",
+   "name": "1 MB: Go on its own",
+   "server": "go",
+   "repeat": 2,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 17925.263418520462,
+    "mb_per_s": 1140.3335576325976,
+    "p50_ms": 3.865,
+    "p99_ms": 25.043,
+    "p999_ms": 37.786,
+    "errors": 0,
+    "cpu_us_per_req": 179.21633423143055,
+    "cores_used": 3.2124999999999986
+   },
+   "rss_load_kb": 21456,
+   "group": "bodies",
+   "name": "64 KB JSON: Go on its own",
+   "server": "go",
+   "repeat": 2,
+   "rss_idle_kb": 11160
+  },
+  {
+   "throughput": {
+    "rps": 171567.28475686838,
+    "mb_per_s": null,
+    "p50_ms": 0.366,
+    "p99_ms": 0.648,
+    "p999_ms": 0.799,
+    "errors": 0,
+    "cpu_us_per_req": 19.234436242763298,
+    "cores_used": 3.3
+   },
+   "rss_load_kb": 136348,
+   "latency": {
+    "rps": 999.9693132776617,
+    "p50_ms": 0.154559,
+    "p99_ms": 0.366894,
+    "p999_ms": 0.412052,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "`respond` (static JSON)",
+   "server": "unsworn:declarative",
+   "repeat": 2,
+   "rss_idle_kb": 129320
+  },
+  {
+   "throughput": {
+    "rps": 210910.18720186825,
+    "mb_per_s": null,
+    "p50_ms": 0.295,
+    "p99_ms": 0.543,
+    "p999_ms": 0.803,
+    "errors": 0,
+    "cpu_us_per_req": 15.842051274659353,
+    "cores_used": 3.3412499999999996
+   },
+   "rss_load_kb": 134916,
+   "latency": {
+    "rps": 999.7667270130562,
+    "p50_ms": 0.15172,
+    "p99_ms": 0.388289,
+    "p999_ms": 0.436332,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "`redirect`",
+   "server": "unsworn:declarative",
+   "repeat": 2,
+   "rss_idle_kb": 129320
+  },
+  {
+   "throughput": {
+    "rps": 216054.94251022558,
+    "mb_per_s": null,
+    "p50_ms": 0.285,
+    "p99_ms": 0.534,
+    "p999_ms": 0.668,
+    "errors": 0,
+    "cpu_us_per_req": 15.21025143798535,
+    "cores_used": 3.286250000000001
+   },
+   "rss_load_kb": 135024,
+   "latency": {
+    "rps": 1000.2127878655693,
+    "p50_ms": 0.152564,
+    "p99_ms": 0.35833000000000004,
+    "p999_ms": 0.391125,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "No route (404)",
+   "server": "unsworn:declarative",
+   "repeat": 2,
+   "rss_idle_kb": 129320
+  },
+  {
+   "throughput": {
+    "rps": 196782.9449612122,
+    "mb_per_s": null,
+    "p50_ms": 0.316,
+    "p99_ms": 0.596,
+    "p999_ms": 0.796,
+    "errors": 0,
+    "cpu_us_per_req": 17.100059157379082,
+    "cores_used": 3.365
+   },
+   "rss_load_kb": 134760,
+   "latency": {
+    "rps": 1000.2057443087681,
+    "p50_ms": 0.16018400000000002,
+    "p99_ms": 0.34149,
+    "p999_ms": 0.372593,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Rejected: missing JWT (401)",
+   "server": "unsworn:declarative",
+   "repeat": 2,
+   "rss_idle_kb": 129320
+  },
+  {
+   "throughput": {
+    "rps": 187417.61972308863,
+    "mb_per_s": null,
+    "p50_ms": 0.335,
+    "p99_ms": 0.623,
+    "p999_ms": 0.756,
+    "errors": 0,
+    "cpu_us_per_req": 17.834502460006576,
+    "cores_used": 3.342500000000001
+   },
+   "rss_load_kb": 134824,
+   "latency": {
+    "rps": 1000.1451340325877,
+    "p50_ms": 0.15513,
+    "p99_ms": 0.307786,
+    "p999_ms": 0.378921,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Rejected: rate limited (429)",
+   "server": "unsworn:declarative",
+   "repeat": 2,
+   "rss_idle_kb": 129320
+  },
+  {
+   "throughput": {
+    "rps": 160898.3747430655,
+    "mb_per_s": null,
+    "p50_ms": 0.389,
+    "p99_ms": 0.754,
+    "p999_ms": 0.924,
+    "errors": 0,
+    "cpu_us_per_req": 21.465412596710216,
+    "cores_used": 3.4537499999999994
+   },
+   "rss_load_kb": 135904,
+   "latency": {
+    "rps": 999.6961912151887,
+    "p50_ms": 0.158198,
+    "p99_ms": 0.3968,
+    "p999_ms": 0.575713,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Cache hit",
+   "server": "unsworn:declarative",
+   "repeat": 2,
+   "rss_idle_kb": 129320
+  },
+  {
+   "throughput": {
+    "rps": 73325.49140449539,
+    "mb_per_s": null,
+    "p50_ms": 0.781,
+    "p99_ms": 4.755,
+    "p999_ms": 7.319,
+    "errors": 0,
+    "cpu_us_per_req": 49.045017375492435,
+    "cores_used": 3.5962499999999977
+   },
+   "rss_load_kb": 371976,
+   "latency": {
+    "rps": 1000.237406842196,
+    "p50_ms": 0.20814100000000002,
+    "p99_ms": 0.492101,
+    "p999_ms": 0.713601,
+    "errors": 0
+   },
+   "group": "declarative",
+   "name": "Same handler, uncached (Bun, Tier 2)",
+   "server": "unsworn:declarative",
+   "repeat": 2,
+   "rss_idle_kb": 129320
+  },
+  {
+   "throughput": {
+    "rps": 70087.32705242277,
+    "mb_per_s": null,
+    "p50_ms": 0.861,
+    "p99_ms": 2.481,
+    "p999_ms": 3.252,
+    "errors": 0,
+    "cpu_us_per_req": 44.94393112814696,
+    "cores_used": 3.15
+   },
+   "rss_load_kb": 33304,
+   "latency": {
+    "rps": 999.8640940884753,
+    "p50_ms": 0.164964,
+    "p99_ms": 0.42803399999999997,
+    "p999_ms": 0.557452,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Unsworn `proxy`",
+   "server": "unsworn:proxy",
+   "repeat": 2,
+   "rss_idle_kb": 22456
+  },
+  {
+   "throughput": {
+    "rps": 60303.6959797994,
+    "mb_per_s": null,
+    "p50_ms": 1.019,
+    "p99_ms": 2.407,
+    "p999_ms": 3.171,
+    "errors": 0,
+    "cpu_us_per_req": 56.46420082013897,
+    "cores_used": 3.4050000000000002
+   },
+   "rss_load_kb": 32436,
+   "latency": {
+    "rps": 999.9412816980414,
+    "p50_ms": 0.16547499999999998,
+    "p99_ms": 0.42879399999999995,
+    "p999_ms": 0.49462400000000006,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Unsworn `proxy` with JWT and a rate limit",
+   "server": "unsworn:proxy",
+   "repeat": 2,
+   "rss_idle_kb": 22456
+  },
+  {
+   "throughput": {
+    "rps": 55762.205698441125,
+    "mb_per_s": 57.100498635203714,
+    "p50_ms": 1.092,
+    "p99_ms": 3.257,
+    "p999_ms": 4.217,
+    "errors": 0,
+    "cpu_us_per_req": 53.14979855760715,
+    "cores_used": 2.963749999999999
+   },
+   "rss_load_kb": 33864,
+   "group": "bodies",
+   "name": "1 KB: Unsworn `proxy` \u2192 Go",
+   "server": "unsworn:proxy",
+   "repeat": 2,
+   "rss_idle_kb": 22456
+  },
+  {
+   "throughput": {
+    "rps": 9028.64682985419,
+    "mb_per_s": 591.7013986413242,
+    "p50_ms": 7.447,
+    "p99_ms": 44.422,
+    "p999_ms": 67.167,
+    "errors": 0,
+    "cpu_us_per_req": 128.61838788069562,
+    "cores_used": 1.161249999999999
+   },
+   "rss_load_kb": 92172,
+   "group": "bodies",
+   "name": "64 KB: Unsworn `proxy` \u2192 Go",
+   "server": "unsworn:proxy",
+   "repeat": 2,
+   "rss_idle_kb": 22456
+  },
+  {
+   "throughput": {
+    "rps": 1220.0228942567812,
+    "mb_per_s": 1279.2867263681987,
+    "p50_ms": 12.023,
+    "p99_ms": 41.419,
+    "p999_ms": 59.75,
+    "errors": 0,
+    "cpu_us_per_req": 1002.0303764420144,
+    "cores_used": 1.2224999999999984
+   },
+   "rss_load_kb": 164744,
+   "group": "bodies",
+   "name": "1 MB: Unsworn `proxy` \u2192 Go",
+   "server": "unsworn:proxy",
+   "repeat": 2,
+   "rss_idle_kb": 22456
+  },
+  {
+   "throughput": {
+    "rps": 9669.253786527948,
+    "mb_per_s": 615.119248883762,
+    "p50_ms": 5.66,
+    "p99_ms": 43.202,
+    "p999_ms": 64.83,
+    "errors": 0,
+    "cpu_us_per_req": 110.6600388843675,
+    "cores_used": 1.0700000000000003
+   },
+   "rss_load_kb": 59596,
+   "group": "bodies",
+   "name": "64 KB JSON: Unsworn `proxy` \u2192 Go",
+   "server": "unsworn:proxy",
+   "repeat": 2,
+   "rss_idle_kb": 22456
+  },
+  {
+   "throughput": {
+    "rps": 60857.17326862304,
+    "mb_per_s": null,
+    "p50_ms": 1.002,
+    "p99_ms": 2.863,
+    "p999_ms": 3.735,
+    "errors": 0,
+    "cpu_us_per_req": 50.343284701651086,
+    "cores_used": 3.0637499999999998
+   },
+   "rss_load_kb": 33072,
+   "latency": {
+    "rps": 999.7021008968362,
+    "p50_ms": 0.196524,
+    "p99_ms": 0.426888,
+    "p999_ms": 0.545079,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Unsworn `proxy`, access log off",
+   "server": "unsworn:proxy:no-access-log",
+   "repeat": 2,
+   "rss_idle_kb": 22512
+  },
+  {
+   "throughput": {
+    "rps": 88815.68963650215,
+    "mb_per_s": null,
+    "p50_ms": 0.69,
+    "p99_ms": 1.819,
+    "p999_ms": 2.958,
+    "errors": 0,
+    "cpu_us_per_req": 38.61930267093611,
+    "cores_used": 3.43
+   },
+   "rss_load_kb": 31412,
+   "latency": {
+    "rps": 999.9374165419343,
+    "p50_ms": 0.13362700000000002,
+    "p99_ms": 0.36698600000000003,
+    "p999_ms": 0.476779,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Unsworn `proxy`, the app on a Unix socket",
+   "server": "unsworn:proxy-unix",
+   "repeat": 2,
+   "rss_idle_kb": 21704
+  },
+  {
+   "throughput": {
+    "rps": 30999.78393061086,
+    "mb_per_s": null,
+    "p50_ms": 1.855,
+    "p99_ms": 6.454,
+    "p999_ms": 8.152,
+    "errors": 0,
+    "cpu_us_per_req": 117.86003922408642,
+    "cores_used": 3.6536357500000003
+   },
+   "rss_load_kb": 35287,
+   "latency": {
+    "rps": 999.9605709835301,
+    "p50_ms": 0.172248,
+    "p99_ms": 0.41308700000000004,
+    "p999_ms": 1.704615,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "Caddy `reverse_proxy`",
+   "server": "caddy",
+   "repeat": 2,
+   "rss_idle_kb": 14858
+  },
+  {
+   "throughput": {
+    "rps": 88969.37933405077,
+    "mb_per_s": null,
+    "p50_ms": 0.683,
+    "p99_ms": 1.999,
+    "p999_ms": 2.559,
+    "errors": 0,
+    "cpu_us_per_req": 22.898163280996382,
+    "cores_used": 2.037235375
+   },
+   "rss_load_kb": 13281,
+   "latency": {
+    "rps": 999.6876030605243,
+    "p50_ms": 0.20869000000000001,
+    "p99_ms": 0.42341,
+    "p999_ms": 0.553616,
+    "errors": 0
+   },
+   "group": "proxy",
+   "name": "nginx `proxy_pass`, keepalive, access log off",
+   "server": "nginx",
+   "repeat": 2,
+   "rss_idle_kb": 10240
+  },
+  {
+   "throughput": {
+    "rps": 161192.6890495261,
+    "mb_per_s": null,
+    "p50_ms": 0.381,
+    "p99_ms": 0.751,
+    "p999_ms": 0.895,
+    "errors": 0,
+    "cpu_us_per_req": 4.637307091330503,
+    "cores_used": 0.7475
+   },
+   "rss_load_kb": 36920,
+   "latency": {
+    "rps": 999.6634642133282,
+    "p50_ms": 0.142153,
+    "p99_ms": 0.307532,
+    "p999_ms": 0.377878,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Bun on its own, 1 process",
+   "server": "bun:1",
+   "repeat": 2,
+   "rss_idle_kb": 19584
+  },
+  {
+   "throughput": {
+    "rps": 242953.82880027915,
+    "mb_per_s": null,
+    "p50_ms": 0.126,
+    "p99_ms": 0.538,
+    "p999_ms": 1.592,
+    "errors": 0,
+    "cpu_us_per_req": 10.645026722859484,
+    "cores_used": 2.5862499999999997
+   },
+   "rss_load_kb": 146876,
+   "latency": {
+    "rps": 1000.0951157561303,
+    "p50_ms": 0.146169,
+    "p99_ms": 0.346794,
+    "p999_ms": 2.1304499999999997,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Bun on its own, 4 processes (reusePort)",
+   "server": "bun:4",
+   "repeat": 2,
+   "rss_idle_kb": 71160
+  },
+  {
+   "throughput": {
+    "rps": 83476.05466869143,
+    "mb_per_s": null,
+    "p50_ms": 0.734,
+    "p99_ms": 1.032,
+    "p999_ms": 2.74,
+    "errors": 0,
+    "cpu_us_per_req": 10.332304316767017,
+    "cores_used": 0.8625
+   },
+   "rss_load_kb": 92640,
+   "latency": {
+    "rps": 1000.3664888375752,
+    "p50_ms": 0.158486,
+    "p99_ms": 0.32916100000000004,
+    "p999_ms": 0.396814,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Node on its own, 1 process",
+   "server": "node:1",
+   "repeat": 2,
+   "rss_idle_kb": 68320
+  },
+  {
+   "throughput": {
+    "rps": 152966.4238564759,
+    "mb_per_s": null,
+    "p50_ms": 0.415,
+    "p99_ms": 1.102,
+    "p999_ms": 13.25,
+    "errors": 0,
+    "cpu_us_per_req": 22.44773665639062,
+    "cores_used": 3.4337499999999994
+   },
+   "rss_load_kb": 423288,
+   "latency": {
+    "rps": 1000.1253863307818,
+    "p50_ms": 0.16447599999999998,
+    "p99_ms": 0.354845,
+    "p999_ms": 0.493718,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Node on its own, 4 processes (cluster)",
+   "server": "node:4",
+   "repeat": 2,
+   "rss_idle_kb": 338520
+  },
+  {
+   "throughput": {
+    "rps": 77293.0876074417,
+    "mb_per_s": null,
+    "p50_ms": 0.75,
+    "p99_ms": 2.78,
+    "p999_ms": 3.511,
+    "errors": 0,
+    "cpu_us_per_req": 40.1070793774518,
+    "cores_used": 3.1
+   },
+   "rss_load_kb": 123664,
+   "latency": {
+    "rps": 999.6642276702872,
+    "p50_ms": 0.213578,
+    "p99_ms": 0.488194,
+    "p999_ms": 0.907176,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 TypeScript on Bun, Tier 2, 1 worker",
+   "server": "unsworn:handlers:bun-framed:1",
+   "repeat": 2,
+   "rss_idle_kb": 49188
+  },
+  {
+   "throughput": {
+    "rps": 71956.48760195903,
+    "mb_per_s": null,
+    "p50_ms": 0.793,
+    "p99_ms": 4.98,
+    "p999_ms": 8.744,
+    "errors": 0,
+    "cpu_us_per_req": 50.082350043749045,
+    "cores_used": 3.6037500000000002
+   },
+   "rss_load_kb": 367908,
+   "latency": {
+    "rps": 1000.2211168563651,
+    "p50_ms": 0.20180299999999998,
+    "p99_ms": 0.49881800000000004,
+    "p999_ms": 1.215243,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 TypeScript on Bun, Tier 2, 4 workers",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 128372
+  },
+  {
+   "throughput": {
+    "rps": 63801.82226721647,
+    "mb_per_s": 65.33306600162966,
+    "p50_ms": 0.887,
+    "p99_ms": 5.341,
+    "p999_ms": 8.345,
+    "errors": 0,
+    "cpu_us_per_req": 56.914518597783974,
+    "cores_used": 3.6312499999999996
+   },
+   "rss_load_kb": 350824,
+   "group": "bodies",
+   "name": "1 KB: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 128372
+  },
+  {
+   "throughput": {
+    "rps": 15731.497146226828,
+    "mb_per_s": 1030.9793969751213,
+    "p50_ms": 3.867,
+    "p99_ms": 9.213,
+    "p999_ms": 12.296,
+    "errors": 0,
+    "cpu_us_per_req": 236.62719227539225,
+    "cores_used": 3.7225
+   },
+   "rss_load_kb": 563200,
+   "group": "bodies",
+   "name": "64 KB: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 128372
+  },
+  {
+   "throughput": {
+    "rps": 1043.5721676441904,
+    "mb_per_s": 1094.2647292596746,
+    "p50_ms": 15.153,
+    "p99_ms": 25.048,
+    "p999_ms": 30.843,
+    "errors": 0,
+    "cpu_us_per_req": 3541.920831737102,
+    "cores_used": 3.696250000000001
+   },
+   "rss_load_kb": 664880,
+   "group": "bodies",
+   "name": "1 MB: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 128372
+  },
+  {
+   "throughput": {
+    "rps": 3358.0827270561686,
+    "mb_per_s": 213.62779076440523,
+    "p50_ms": 18.727,
+    "p99_ms": 31.397,
+    "p999_ms": 38.46,
+    "errors": 0,
+    "cpu_us_per_req": 1167.3327665266997,
+    "cores_used": 3.9200000000000017
+   },
+   "rss_load_kb": 419756,
+   "group": "bodies",
+   "name": "64 KB JSON: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 128372
+  },
+  {
+   "throughput": {
+    "rps": 2207.310436419374,
+    "mb_per_s": 140.42026072325493,
+    "p50_ms": 28.55,
+    "p99_ms": 49.82,
+    "p999_ms": 59.053,
+    "errors": 0,
+    "cpu_us_per_req": 1780.4473422302644,
+    "cores_used": 3.9299999999999997
+   },
+   "rss_load_kb": 441788,
+   "group": "bodies",
+   "name": "64 KB JSON, sent back as JSON: Unsworn \u2192 Bun, Tier 2",
+   "server": "unsworn:handlers:bun-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 128372
+  },
+  {
+   "throughput": {
+    "rps": 66548.77526663573,
+    "mb_per_s": null,
+    "p50_ms": 0.868,
+    "p99_ms": 5.066,
+    "p999_ms": 9.205,
+    "errors": 0,
+    "cpu_us_per_req": 53.719996884635805,
+    "cores_used": 3.5749999999999997
+   },
+   "rss_load_kb": 336964,
+   "latency": {
+    "rps": 999.9110266669584,
+    "p50_ms": 0.224832,
+    "p99_ms": 0.5805199999999999,
+    "p999_ms": 0.854945,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 TypeScript on Bun, Tier 1, 4 workers",
+   "server": "unsworn:handlers:bun-jsonl:4",
+   "repeat": 2,
+   "rss_idle_kb": 131688
+  },
+  {
+   "throughput": {
+    "rps": 70112.36354580824,
+    "mb_per_s": 71.79506027090764,
+    "p50_ms": 0.811,
+    "p99_ms": 4.516,
+    "p999_ms": 7.032,
+    "errors": 0,
+    "cpu_us_per_req": 51.56009321577246,
+    "cores_used": 3.615
+   },
+   "rss_load_kb": 355108,
+   "group": "bodies",
+   "name": "1 KB: Unsworn \u2192 Bun, Tier 1",
+   "server": "unsworn:handlers:bun-jsonl:4",
+   "repeat": 2,
+   "rss_idle_kb": 131688
+  },
+  {
+   "throughput": {
+    "rps": 12531.45850723569,
+    "mb_per_s": 821.2616647301982,
+    "p50_ms": 4.933,
+    "p99_ms": 9.585,
+    "p999_ms": 12.78,
+    "errors": 0,
+    "cpu_us_per_req": 289.2719947887086,
+    "cores_used": 3.625
+   },
+   "rss_load_kb": 515428,
+   "group": "bodies",
+   "name": "64 KB: Unsworn \u2192 Bun, Tier 1",
+   "server": "unsworn:handlers:bun-jsonl:4",
+   "repeat": 2,
+   "rss_idle_kb": 131688
+  },
+  {
+   "throughput": {
+    "rps": 928.8094645474551,
+    "mb_per_s": 973.9273130973123,
+    "p50_ms": 17.064,
+    "p99_ms": 24.305,
+    "p999_ms": 26.613,
+    "errors": 0,
+    "cpu_us_per_req": 3896.1166290043866,
+    "cores_used": 3.6187500000000004
+   },
+   "rss_load_kb": 560164,
+   "group": "bodies",
+   "name": "1 MB: Unsworn \u2192 Bun, Tier 1",
+   "server": "unsworn:handlers:bun-jsonl:4",
+   "repeat": 2,
+   "rss_idle_kb": 131688
+  },
+  {
+   "throughput": {
+    "rps": 60902.37095818525,
+    "mb_per_s": null,
+    "p50_ms": 0.973,
+    "p99_ms": 2.874,
+    "p999_ms": 5.037,
+    "errors": 0,
+    "cpu_us_per_req": 59.02890057380983,
+    "cores_used": 3.595
+   },
+   "rss_load_kb": 641276,
+   "latency": {
+    "rps": 999.7907531320826,
+    "p50_ms": 0.22614299999999998,
+    "p99_ms": 0.585559,
+    "p999_ms": 0.752467,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 TypeScript on Node, Tier 2, 4 workers",
+   "server": "unsworn:handlers:node-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 378188
+  },
+  {
+   "throughput": {
+    "rps": 32389.354264882073,
+    "mb_per_s": null,
+    "p50_ms": 1.841,
+    "p99_ms": 4.75,
+    "p999_ms": 16.745,
+    "errors": 0,
+    "cpu_us_per_req": 116.08752583489301,
+    "cores_used": 3.7600000000000002
+   },
+   "rss_load_kb": 138524,
+   "latency": {
+    "rps": 1000.0588606250791,
+    "p50_ms": 0.22063000000000002,
+    "p99_ms": 0.543075,
+    "p999_ms": 0.705909,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Python, Tier 2, 4 workers",
+   "server": "unsworn:handlers:python-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 110276
+  },
+  {
+   "throughput": {
+    "rps": 33532.16747534767,
+    "mb_per_s": null,
+    "p50_ms": 1.807,
+    "p99_ms": 4.142,
+    "p999_ms": 5.332,
+    "errors": 0,
+    "cpu_us_per_req": 110.90097300551679,
+    "cores_used": 3.71875
+   },
+   "rss_load_kb": 143772,
+   "latency": {
+    "rps": 999.6935102667935,
+    "p50_ms": 0.21971,
+    "p99_ms": 0.557814,
+    "p999_ms": 0.801385,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Python, Tier 1, 4 workers",
+   "server": "unsworn:handlers:python-jsonl:4",
+   "repeat": 2,
+   "rss_idle_kb": 110364
+  },
+  {
+   "throughput": {
+    "rps": 42905.496170538936,
+    "mb_per_s": null,
+    "p50_ms": 1.475,
+    "p99_ms": 7.616,
+    "p999_ms": 11.214,
+    "errors": 0,
+    "cpu_us_per_req": 77.67070183162832,
+    "cores_used": 3.3325000000000005
+   },
+   "rss_load_kb": 96156,
+   "latency": {
+    "rps": 999.7074963334284,
+    "p50_ms": 0.230169,
+    "p99_ms": 0.465023,
+    "p999_ms": 0.764346,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Python, no SDK, Tier 1, 4 workers",
+   "server": "unsworn:handlers:raw-python:4",
+   "repeat": 2,
+   "rss_idle_kb": 68660
+  },
+  {
+   "throughput": {
+    "rps": 47293.17285529834,
+    "mb_per_s": null,
+    "p50_ms": 1.265,
+    "p99_ms": 4.084,
+    "p999_ms": 6.443,
+    "errors": 0,
+    "cpu_us_per_req": 77.4424674615521,
+    "cores_used": 3.6625000000000005
+   },
+   "rss_load_kb": 125212,
+   "latency": {
+    "rps": 1000.052148932816,
+    "p50_ms": 0.158723,
+    "p99_ms": 0.36341500000000004,
+    "p999_ms": 0.455538,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Go, Tier 2, 4 workers",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 62600
+  },
+  {
+   "throughput": {
+    "rps": 46045.59100447081,
+    "mb_per_s": 47.15068518857811,
+    "p50_ms": 1.29,
+    "p99_ms": 4.199,
+    "p999_ms": 6.893,
+    "errors": 0,
+    "cpu_us_per_req": 79.97508381730721,
+    "cores_used": 3.6825
+   },
+   "rss_load_kb": 117348,
+   "group": "bodies",
+   "name": "1 KB: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 62600
+  },
+  {
+   "throughput": {
+    "rps": 12014.078418710093,
+    "mb_per_s": 787.3546432485846,
+    "p50_ms": 5.046,
+    "p99_ms": 12.39,
+    "p999_ms": 15.735,
+    "errors": 0,
+    "cpu_us_per_req": 309.0124660929754,
+    "cores_used": 3.7125000000000004
+   },
+   "rss_load_kb": 149748,
+   "group": "bodies",
+   "name": "64 KB: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 62600
+  },
+  {
+   "throughput": {
+    "rps": 918.9504676203629,
+    "mb_per_s": 963.5894055354897,
+    "p50_ms": 15.429,
+    "p99_ms": 113.297,
+    "p999_ms": 171.484,
+    "errors": 0,
+    "cpu_us_per_req": 3607.376150081566,
+    "cores_used": 3.3149999999999995
+   },
+   "rss_load_kb": 263276,
+   "group": "bodies",
+   "name": "1 MB: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 62600
+  },
+  {
+   "throughput": {
+    "rps": 1505.2490977674631,
+    "mb_per_s": 95.75792660357493,
+    "p50_ms": 36.355,
+    "p99_ms": 301.737,
+    "p999_ms": 451.495,
+    "errors": 0,
+    "cpu_us_per_req": 2070.2553515042277,
+    "cores_used": 3.116250000000001
+   },
+   "rss_load_kb": 178224,
+   "group": "bodies",
+   "name": "64 KB JSON: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 62600
+  },
+  {
+   "throughput": {
+    "rps": 1285.9513774832074,
+    "mb_per_s": 81.80708282997172,
+    "p50_ms": 48.917,
+    "p99_ms": 76.461,
+    "p999_ms": 86.637,
+    "errors": 0,
+    "cpu_us_per_req": 3062.907407672522,
+    "cores_used": 3.938749999999999
+   },
+   "rss_load_kb": 156568,
+   "group": "bodies",
+   "name": "64 KB JSON, sent back as JSON: Unsworn \u2192 Go, Tier 2",
+   "server": "unsworn:handlers:go-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 62600
+  },
+  {
+   "throughput": {
+    "rps": 45006.36751816616,
+    "mb_per_s": null,
+    "p50_ms": 1.326,
+    "p99_ms": 3.898,
+    "p999_ms": 5.754,
+    "errors": 0,
+    "cpu_us_per_req": 80.87744469781455,
+    "cores_used": 3.6400000000000006
+   },
+   "rss_load_kb": 118176,
+   "latency": {
+    "rps": 999.6796984504318,
+    "p50_ms": 0.129019,
+    "p99_ms": 0.31749900000000003,
+    "p999_ms": 0.403786,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Go, Tier 1, 4 workers",
+   "server": "unsworn:handlers:go-jsonl:4",
+   "repeat": 2,
+   "rss_idle_kb": 63828
+  },
+  {
+   "throughput": {
+    "rps": 54504.88045177205,
+    "mb_per_s": 55.81299758261458,
+    "p50_ms": 1.08,
+    "p99_ms": 3.405,
+    "p999_ms": 5.635,
+    "errors": 0,
+    "cpu_us_per_req": 66.89767906612211,
+    "cores_used": 3.6462499999999993
+   },
+   "rss_load_kb": 116896,
+   "group": "bodies",
+   "name": "1 KB: Unsworn \u2192 Go, Tier 1",
+   "server": "unsworn:handlers:go-jsonl:4",
+   "repeat": 2,
+   "rss_idle_kb": 63828
+  },
+  {
+   "throughput": {
+    "rps": 11987.152468875627,
+    "mb_per_s": 785.5900242002331,
+    "p50_ms": 5.073,
+    "p99_ms": 10.894,
+    "p999_ms": 13.744,
+    "errors": 0,
+    "cpu_us_per_req": 312.83492970801785,
+    "cores_used": 3.75
+   },
+   "rss_load_kb": 197912,
+   "group": "bodies",
+   "name": "64 KB: Unsworn \u2192 Go, Tier 1",
+   "server": "unsworn:handlers:go-jsonl:4",
+   "repeat": 2,
+   "rss_idle_kb": 63828
+  },
+  {
+   "throughput": {
+    "rps": 999.9948775874585,
+    "mb_per_s": 1048.570628761147,
+    "p50_ms": 15.637,
+    "p99_ms": 25.13,
+    "p999_ms": 30.943,
+    "errors": 0,
+    "cpu_us_per_req": 3727.5190938905544,
+    "cores_used": 3.727499999999999
+   },
+   "rss_load_kb": 269260,
+   "group": "bodies",
+   "name": "1 MB: Unsworn \u2192 Go, Tier 1",
+   "server": "unsworn:handlers:go-jsonl:4",
+   "repeat": 2,
+   "rss_idle_kb": 63828
+  },
+  {
+   "throughput": {
+    "rps": 71150.16147988662,
+    "mb_per_s": null,
+    "p50_ms": 0.834,
+    "p99_ms": 2.266,
+    "p999_ms": 2.943,
+    "errors": 0,
+    "cpu_us_per_req": 50.49180388741016,
+    "cores_used": 3.5925
+   },
+   "rss_load_kb": 64488,
+   "latency": {
+    "rps": 999.6880304719979,
+    "p50_ms": 0.19403199999999998,
+    "p99_ms": 0.45642000000000005,
+    "p999_ms": 0.655474,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Rust, Tier 2, 4 workers",
+   "server": "unsworn:handlers:rust-framed:4",
+   "repeat": 2,
+   "rss_idle_kb": 38364
+  },
+  {
+   "throughput": {
+    "rps": 92152.15366487001,
+    "mb_per_s": null,
+    "p50_ms": 0.644,
+    "p99_ms": 1.825,
+    "p999_ms": 2.5,
+    "errors": 0,
+    "cpu_us_per_req": 38.59106769151619,
+    "cores_used": 3.5562500000000004
+   },
+   "rss_load_kb": 66488,
+   "latency": {
+    "rps": 999.672012849021,
+    "p50_ms": 0.213735,
+    "p99_ms": 0.5647949999999999,
+    "p999_ms": 0.706761,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Rust, Tier 1, 4 workers",
+   "server": "unsworn:handlers:rust-jsonl:4",
+   "repeat": 2,
+   "rss_idle_kb": 37856
+  },
+  {
+   "throughput": {
+    "rps": 60385.76457148388,
+    "mb_per_s": null,
+    "p50_ms": 0.99,
+    "p99_ms": 2.615,
+    "p999_ms": 3.592,
+    "errors": 0,
+    "cpu_us_per_req": 61.23131877585068,
+    "cores_used": 3.6975000000000002
+   },
+   "rss_load_kb": 69084,
+   "latency": {
+    "rps": 999.8072430631375,
+    "p50_ms": 0.136997,
+    "p99_ms": 0.347192,
+    "p999_ms": 0.514299,
+    "errors": 0
+   },
+   "group": "handlers",
+   "name": "Unsworn \u2192 Rust, 4 threads in each worker, Tier 2, 4 workers",
+   "server": "unsworn:handlers:rust-framed-4t:4",
+   "repeat": 2,
+   "rss_idle_kb": 39512
+  },
+  {
+   "throughput": {
+    "rps": 3338.521455198253,
+    "mb_per_s": null,
+    "p50_ms": 18.542,
+    "p99_ms": 33.421,
+    "p999_ms": 41.092,
+    "errors": 0,
+    "cpu_us_per_req": 1191.021250981859,
+    "cores_used": 3.9762500000000003
+   },
+   "rss_load_kb": 219792,
+   "latency": {
+    "rps": 20.120605345408105,
+    "p50_ms": 1.2490940000000001,
+    "p99_ms": 1.614833,
+    "p999_ms": 1.653402,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 TypeScript on Bun",
+   "server": "unsworn:work:bun",
+   "repeat": 2,
+   "rss_idle_kb": 149876
+  },
+  {
+   "throughput": {
+    "rps": 2390.655160780979,
+    "mb_per_s": null,
+    "p50_ms": 26.53,
+    "p99_ms": 44.041,
+    "p999_ms": 52.615,
+    "errors": 0,
+    "cpu_us_per_req": 1666.9070744181195,
+    "cores_used": 3.9850000000000003
+   },
+   "rss_load_kb": 480988,
+   "latency": {
+    "rps": 20.119668277846536,
+    "p50_ms": 1.620072,
+    "p99_ms": 1.95028,
+    "p999_ms": 2.156457,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 TypeScript on Node",
+   "server": "unsworn:work:node",
+   "repeat": 2,
+   "rss_idle_kb": 392668
+  },
+  {
+   "throughput": {
+    "rps": 74.54025304546171,
+    "mb_per_s": null,
+    "p50_ms": 846.524,
+    "p99_ms": 866.033,
+    "p999_ms": 874.105,
+    "errors": 0,
+    "cpu_us_per_req": 53662.280936454845,
+    "cores_used": 4.0
+   },
+   "rss_load_kb": 124348,
+   "latency": {
+    "rps": 19.996286799520906,
+    "p50_ms": 22.116214,
+    "p99_ms": 22.987843,
+    "p999_ms": 23.320296,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 Python",
+   "server": "unsworn:work:python",
+   "repeat": 2,
+   "rss_idle_kb": 114876
+  },
+  {
+   "throughput": {
+    "rps": 4381.03290723766,
+    "mb_per_s": null,
+    "p50_ms": 13.954,
+    "p99_ms": 48.116,
+    "p999_ms": 67.894,
+    "errors": 0,
+    "cpu_us_per_req": 906.4643165403573,
+    "cores_used": 3.97125
+   },
+   "rss_load_kb": 124680,
+   "latency": {
+    "rps": 20.118777091236073,
+    "p50_ms": 1.130778,
+    "p99_ms": 1.426013,
+    "p999_ms": 1.433335,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 Go",
+   "server": "unsworn:work:go",
+   "repeat": 2,
+   "rss_idle_kb": 67864
+  },
+  {
+   "throughput": {
+    "rps": 4800.035331254212,
+    "mb_per_s": null,
+    "p50_ms": 13.341,
+    "p99_ms": 22.293,
+    "p999_ms": 25.412,
+    "errors": 0,
+    "cpu_us_per_req": 827.3376602339181,
+    "cores_used": 3.97125
+   },
+   "rss_load_kb": 67556,
+   "latency": {
+    "rps": 21.24707268987192,
+    "p50_ms": 1.000073,
+    "p99_ms": 1.376276,
+    "p999_ms": 1.3818979999999998,
+    "errors": 0
+   },
+   "group": "work",
+   "name": "Unsworn \u2192 Rust",
+   "server": "unsworn:work:rust",
+   "repeat": 2,
+   "rss_idle_kb": 42580
+  },
+  {
+   "throughput": {
+    "rps": 204487.63736263738,
+    "mb_per_s": null,
+    "p50_ms": 0.308,
+    "p99_ms": 0.548,
+    "p999_ms": 0.76,
+    "errors": 0,
+    "cpu_us_per_req": 16.272377356969642,
+    "cores_used": 3.3275
+   },
+   "rss_load_kb": 31444,
+   "latency": {
+    "rps": 1000.04132387705,
+    "p50_ms": 0.1577,
+    "p99_ms": 0.337449,
+    "p999_ms": 0.37277099999999996,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "No policy",
+   "server": "unsworn:policies",
+   "repeat": 2,
+   "rss_idle_kb": 24472
+  },
+  {
+   "throughput": {
+    "rps": 149821.22582228755,
+    "mb_per_s": null,
+    "p50_ms": 0.423,
+    "p99_ms": 0.776,
+    "p999_ms": 1.057,
+    "errors": 0,
+    "cpu_us_per_req": 22.935668702083337,
+    "cores_used": 3.4362500000000002
+   },
+   "rss_load_kb": 29328,
+   "latency": {
+    "rps": 999.9456337520002,
+    "p50_ms": 0.16227,
+    "p99_ms": 0.367418,
+    "p999_ms": 0.419468,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "JWT (HS256)",
+   "server": "unsworn:policies",
+   "repeat": 2,
+   "rss_idle_kb": 24472
+  },
+  {
+   "throughput": {
+    "rps": 178239.4718830463,
+    "mb_per_s": null,
+    "p50_ms": 0.351,
+    "p99_ms": 0.66,
+    "p999_ms": 0.792,
+    "errors": 0,
+    "cpu_us_per_req": 19.124551728007177,
+    "cores_used": 3.4087499999999995
+   },
+   "rss_load_kb": 29412,
+   "latency": {
+    "rps": 999.9311862356601,
+    "p50_ms": 0.158792,
+    "p99_ms": 0.40315700000000004,
+    "p999_ms": 0.49744199999999994,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "API key",
+   "server": "unsworn:policies",
+   "repeat": 2,
+   "rss_idle_kb": 24472
+  },
+  {
+   "throughput": {
+    "rps": 183959.80827678874,
+    "mb_per_s": null,
+    "p50_ms": 0.341,
+    "p99_ms": 0.641,
+    "p999_ms": 0.863,
+    "errors": 0,
+    "cpu_us_per_req": 18.210499518240095,
+    "cores_used": 3.3500000000000014
+   },
+   "rss_load_kb": 28228,
+   "latency": {
+    "rps": 1000.079226096322,
+    "p50_ms": 0.158812,
+    "p99_ms": 0.33611300000000005,
+    "p999_ms": 0.383504,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "Rate limit, memory store",
+   "server": "unsworn:policies",
+   "repeat": 2,
+   "rss_idle_kb": 24472
+  },
+  {
+   "throughput": {
+    "rps": 182224.67444953904,
+    "mb_per_s": null,
+    "p50_ms": 0.342,
+    "p99_ms": 0.66,
+    "p999_ms": 0.809,
+    "errors": 0,
+    "cpu_us_per_req": 18.58968885653327,
+    "cores_used": 3.3874999999999993
+   },
+   "rss_load_kb": 28320,
+   "latency": {
+    "rps": 999.9549065454474,
+    "p50_ms": 0.16004300000000002,
+    "p99_ms": 0.405581,
+    "p999_ms": 0.447318,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "CORS (request with Origin)",
+   "server": "unsworn:policies",
+   "repeat": 2,
+   "rss_idle_kb": 24472
+  },
+  {
+   "throughput": {
+    "rps": 176268.1522863007,
+    "mb_per_s": null,
+    "p50_ms": 0.356,
+    "p99_ms": 0.659,
+    "p999_ms": 0.81,
+    "errors": 0,
+    "cpu_us_per_req": 19.302976492733322,
+    "cores_used": 3.4025
+   },
+   "rss_load_kb": 28428,
+   "latency": {
+    "rps": 999.6975178264373,
+    "p50_ms": 0.15986,
+    "p99_ms": 0.413884,
+    "p999_ms": 0.476654,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "Path and query validation",
+   "server": "unsworn:policies",
+   "repeat": 2,
+   "rss_idle_kb": 24472
+  },
+  {
+   "throughput": {
+    "rps": 116467.1318352981,
+    "mb_per_s": null,
+    "p50_ms": 0.542,
+    "p99_ms": 1.054,
+    "p999_ms": 1.293,
+    "errors": 0,
+    "cpu_us_per_req": 30.115792711029652,
+    "cores_used": 3.5075000000000003
+   },
+   "rss_load_kb": 28320,
+   "latency": {
+    "rps": 999.9622240242535,
+    "p50_ms": 0.170803,
+    "p99_ms": 0.447899,
+    "p999_ms": 0.531516,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "All of JWT, rate limit, CORS, path and query",
+   "server": "unsworn:policies",
+   "repeat": 2,
+   "rss_idle_kb": 24472
+  },
+  {
+   "throughput": {
+    "rps": 54802.31366476306,
+    "mb_per_s": 53.59666276413827,
+    "p50_ms": 1.112,
+    "p99_ms": 3.491,
+    "p999_ms": 6.902,
+    "errors": 0,
+    "cpu_us_per_req": 51.77701104660597,
+    "cores_used": 2.837500000000002
+   },
+   "rss_load_kb": 38004,
+   "latency": {
+    "rps": 999.809877883509,
+    "p50_ms": 0.173907,
+    "p99_ms": 0.428414,
+    "p999_ms": 0.485763,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "`proxy`, 1 KB JSON body",
+   "server": "unsworn:policies",
+   "repeat": 2,
+   "rss_idle_kb": 24472
+  },
+  {
+   "throughput": {
+    "rps": 52538.37946589621,
+    "mb_per_s": 51.38253511764649,
+    "p50_ms": 1.157,
+    "p99_ms": 2.736,
+    "p999_ms": 3.671,
+    "errors": 0,
+    "cpu_us_per_req": 66.2372923447123,
+    "cores_used": 3.479999999999997
+   },
+   "rss_load_kb": 35080,
+   "latency": {
+    "rps": 1000.0668545067169,
+    "p50_ms": 0.178453,
+    "p99_ms": 0.45166100000000003,
+    "p999_ms": 0.527218,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "`proxy`, same body checked against a JSON Schema",
+   "server": "unsworn:policies",
+   "repeat": 2,
+   "rss_idle_kb": 24472
+  },
+  {
+   "throughput": {
+    "rps": 84355.50837365545,
+    "mb_per_s": null,
+    "p50_ms": 0.722,
+    "p99_ms": 1.269,
+    "p999_ms": 1.631,
+    "errors": 0,
+    "cpu_us_per_req": 27.058102594671023,
+    "cores_used": 2.2824999999999998
+   },
+   "rss_load_kb": 30420,
+   "latency": {
+    "rps": 999.8804647903746,
+    "p50_ms": 0.25171299999999996,
+    "p99_ms": 0.523957,
+    "p999_ms": 0.776719,
+    "errors": 0
+   },
+   "group": "policies",
+   "name": "Rate limit, Redis store",
+   "server": "unsworn:redis",
+   "repeat": 2,
+   "rss_idle_kb": 22304
+  },
+  {
+   "throughput": {
+    "rps": 72334.920880073,
+    "mb_per_s": null,
+    "p50_ms": 0.79,
+    "p99_ms": 4.854,
+    "p999_ms": 7.708,
+    "errors": 0,
+    "cpu_us_per_req": 49.94130021914741,
+    "cores_used": 3.6125000000000003
+   },
+   "rss_load_kb": 372144,
+   "latency": {
+    "rps": 999.6352935793658,
+    "p50_ms": 0.212568,
+    "p99_ms": 0.57186,
+    "p999_ms": 0.80277,
+    "errors": 0
+   },
+   "group": "mcp",
+   "name": "`GET /text` (the route)",
+   "server": "unsworn:mcp",
+   "repeat": 2,
+   "rss_idle_kb": 130536
+  },
+  {
+   "throughput": {
+    "rps": 50357.77516083247,
+    "mb_per_s": 14.452681471158918,
+    "p50_ms": 1.156,
+    "p99_ms": 4.812,
+    "p999_ms": 8.545,
+    "errors": 0,
+    "cpu_us_per_req": 74.1196367011679,
+    "cores_used": 3.7325
+   },
+   "rss_load_kb": 326924,
+   "latency": {
+    "rps": 999.6338849331896,
+    "p50_ms": 0.226049,
+    "p99_ms": 0.426512,
+    "p999_ms": 0.688333,
+    "errors": 0
+   },
+   "group": "mcp",
+   "name": "`tools/call text` (the same handler)",
+   "server": "unsworn:mcp",
+   "repeat": 2,
+   "rss_idle_kb": 130536
+  },
+  {
+   "throughput": {
+    "rps": 42136.33870761037,
+    "mb_per_s": 13.188674015482047,
+    "p50_ms": 1.398,
+    "p99_ms": 5.07,
+    "p999_ms": 8.341,
+    "errors": 0,
+    "cpu_us_per_req": 89.67912533220426,
+    "cores_used": 3.7787500000000005
+   },
+   "rss_load_kb": 309472,
+   "latency": {
+    "rps": 999.9965285709809,
+    "p50_ms": 0.250885,
+    "p99_ms": 0.483651,
+    "p999_ms": 0.811662,
+    "errors": 0
+   },
+   "group": "mcp",
+   "name": "`tools/call echo`, arguments checked against its schema",
+   "server": "unsworn:mcp",
+   "repeat": 2,
+   "rss_idle_kb": 130536
+  },
+  {
+   "throughput": {
+    "rps": 106802.40847589128,
+    "mb_per_s": 27.127811752876386,
+    "p50_ms": 0.575,
+    "p99_ms": 1.259,
+    "p999_ms": 1.535,
+    "errors": 0,
+    "cpu_us_per_req": 33.83584744547908,
+    "cores_used": 3.6137499999999996
+   },
+   "rss_load_kb": 211120,
+   "latency": {
+    "rps": 999.8560103622983,
+    "p50_ms": 0.173189,
+    "p99_ms": 0.377516,
+    "p999_ms": 0.519154,
+    "errors": 0
+   },
+   "group": "mcp",
+   "name": "`tools/list`",
+   "server": "unsworn:mcp",
+   "repeat": 2,
+   "rss_idle_kb": 130536
+  },
+  {
+   "throughput": {
+    "rps": 198374.2023546818,
+    "mb_per_s": null,
+    "p50_ms": 0.314,
+    "p99_ms": 0.6,
+    "p999_ms": 0.741,
+    "errors": 0,
+    "cpu_us_per_req": 16.994397255205573,
+    "cores_used": 3.37125
+   },
+   "rss_load_kb": 25488,
+   "latency": {
+    "rps": 1000.1958897960104,
+    "p50_ms": 0.153644,
+    "p99_ms": 0.372729,
+    "p999_ms": 0.41308,
+    "errors": 0
+   },
+   "group": "routes",
+   "name": "10 routes",
+   "server": "unsworn:routes:10",
+   "repeat": 2,
+   "rss_idle_kb": 21924
+  },
+  {
+   "throughput": {
+    "rps": 195754.36377596005,
+    "mb_per_s": null,
+    "p50_ms": 0.321,
+    "p99_ms": 0.591,
+    "p999_ms": 0.72,
+    "errors": 0,
+    "cpu_us_per_req": 17.055813906765234,
+    "cores_used": 3.33875
+   },
+   "rss_load_kb": 28892,
+   "latency": {
+    "rps": 999.6640777522847,
+    "p50_ms": 0.15504700000000002,
+    "p99_ms": 0.370052,
+    "p999_ms": 0.41126999999999997,
+    "errors": 0
+   },
+   "group": "routes",
+   "name": "1,000 routes",
+   "server": "unsworn:routes:1000",
+   "repeat": 2,
+   "rss_idle_kb": 38332
+  },
+  {
+   "throughput": {
+    "rps": 194912.39592695382,
+    "mb_per_s": null,
+    "p50_ms": 0.321,
+    "p99_ms": 0.587,
+    "p999_ms": 0.716,
+    "errors": 0,
+    "cpu_us_per_req": 17.3218844493877,
+    "cores_used": 3.3762499999999998
+   },
+   "rss_load_kb": 65444,
+   "latency": {
+    "rps": 999.6985343393792,
+    "p50_ms": 0.154907,
+    "p99_ms": 0.372397,
+    "p999_ms": 0.432235,
+    "errors": 0
+   },
+   "group": "routes",
+   "name": "10,000 routes",
+   "server": "unsworn:routes:10000",
+   "repeat": 2,
+   "rss_idle_kb": 144796
+  }
+ ],
+ "sizes": {
+  "binary_bytes": 19079872,
+  "wasm_bytes": 4618327,
+  "wasm_gzip_bytes": 1432957
+ },
+ "startup": {
+  "binary": {
+   "10": {
+    "ready_ms": 3.224572050385177,
+    "rss_kb": 21840
+   },
+   "1000": {
+    "ready_ms": 9.844030952081084,
+    "rss_kb": 38292
+   },
+   "10000": {
+    "ready_ms": 65.12920907698572,
+    "rss_kb": 144684
+   }
+  },
+  "first_request": {
+   "bun-framed": {
+    "lazy": 4.666118475142866,
+    "first": 67.22261250251904,
+    "second": 0.48172048991546035,
+    "eager": 70.11488900752738
+   },
+   "node-framed": {
+    "lazy": 4.8556679976172745,
+    "first": 278.49906001938507,
+    "second": 0.6068034563213587,
+    "eager": 270.4672985128127
+   },
+   "python-framed": {
+    "lazy": 2.5492130080237985,
+    "first": 200.25168097345158,
+    "second": 0.4751349915750325,
+    "eager": 207.31571153737605
+   },
+   "go-framed": {
+    "lazy": 4.65309398714453,
+    "first": 11.016864562407136,
+    "second": 0.3600924974307418,
+    "eager": 13.560075487475842
+   },
+   "rust-framed": {
+    "lazy": 2.5352714583277702,
+    "first": 7.513150048907846,
+    "second": 0.36283046938478947,
+    "eager": 11.264764005318284
+   }
+  },
+  "wasm": {
+   "1": {
+    "routes": 1,
+    "node_start_ms": 15.26654,
+    "import_ms": 48.030833,
+    "first_request_ms": 72.01327400000001,
+    "total_ms": 134.663324,
+    "warm_us_per_request": 154.653602
+   },
+   "100": {
+    "routes": 100,
+    "node_start_ms": 15.491466,
+    "import_ms": 47.6986,
+    "first_request_ms": 91.67514,
+    "total_ms": 152.981945,
+    "warm_us_per_request": 153.280491,
+    "first_use_ms_per_route": 5.222907799999999
+   },
+   "1000": {
+    "routes": 1000,
+    "node_start_ms": 15.254452,
+    "import_ms": 47.763785999999996,
+    "first_request_ms": 151.64056399999998,
+    "total_ms": 214.067789,
+    "warm_us_per_request": 154.52270799999997,
+    "first_use_ms_per_route": 5.063053000000002
+   }
+  }
+ }
+}

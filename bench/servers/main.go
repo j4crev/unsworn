@@ -2,6 +2,8 @@
 //
 //	go build -o ../../target/bench/upstream . && ../../target/bench/upstream 127.0.0.1:9001
 //
+// With a second argument, it also listens on that Unix socket.
+//
 // GET /text answers like the conformance `text` handler (201, "hello",
 // x-conformance: yes), so it compares directly with a handler behind
 // Unsworn. Any other GET answers 200 "hello". POST echoes the body.
@@ -10,6 +12,7 @@ package main
 import (
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 )
@@ -37,5 +40,13 @@ func main() {
 		}
 		io.WriteString(w, "hello")
 	})
+	if len(os.Args) > 2 {
+		os.Remove(os.Args[2])
+		socket, err := net.Listen("unix", os.Args[2])
+		if err != nil {
+			log.Fatal(err)
+		}
+		go func() { log.Fatal(http.Serve(socket, nil)) }()
+	}
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
