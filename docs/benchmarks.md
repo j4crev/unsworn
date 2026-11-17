@@ -298,6 +298,54 @@ language keeps up with.
   Python gains the least from the second hyperthread: two busy workers
   and four both managed 74 searches a second.
 
+### Pools that size themselves
+
+The tables above set `workers` to a number. Left unset, a runtime starts
+one worker and adds more when they help (see
+[`workers`](config.md#how-many-workers)). This compares the two, for the
+handler that does nothing and the one that searches. It's a separate
+comparison from the rest of this page: a build of the branch that added
+it (glibc, not the released musl binary), three rounds with the variants
+taken in turn, 5 seconds of warmup and 6 of measurement, on the same
+machine and cores.
+
+| Scenario | `workers` | Req/s | CPU µs/req | Peak memory | Workers it ended with |
+|---|---|--:|--:|--:|--:|
+| "hello", TypeScript on Bun | 4 | 67,220 | 52.9 | 355 MB | 4 |
+| | unset | 71,842 | 42.6 | 117 MB | 1 |
+| "hello", TypeScript on Node | 4 | 65,948 | 54.1 | 627 MB | 4 |
+| | unset | 70,910 | 42.6 | 233 MB | 1 |
+| "hello", Python | 4 | 29,252 | 128.7 | 137 MB | 4 |
+| | unset | 28,586 | 108.3 | 87 MB | 2 |
+| "hello", Go | 4 | 42,800 | 85.1 | 109 MB | 4 |
+| | unset | 53,575 | 62.8 | 51 MB | 1 |
+| Search, TypeScript on Bun | 4 | 2,890 | 1,376 | 214 MB | 4 |
+| | unset | 2,667 | 801 | 147 MB | 2 |
+| Search, Python | 4 | 64 | 62,983 | 122 MB | 4 |
+| | unset | 69 | 29,406 | 83 MB | 2 |
+| Search, Rust | 4 | 4,134 | 961 | 62 MB | 4 |
+| | unset | 3,694 | 581 | 55 MB | 2 (3 in one round) |
+
+- **For a handler that does little, one worker is enough,** and cheaper:
+  16 to 26% less CPU a call than four, and a third to two thirds of the
+  memory. Each runtime ended where a fixed number does best: one worker
+  for Bun, Node and Go, two for Python.
+- **For the search handler, it stopped at two workers,** one for each
+  physical core. The third and fourth run on the cores' second
+  hyperthreads, and between them add 8 to 12% more requests (none for
+  Python) for about 70% more CPU time a request (twice as much for
+  Python). A worker is kept only if the runtime answers a tenth more
+  calls with it, and neither did. A worker with a core of its own should
+  add far more than that and be kept, but this machine can't show it.
+- **To get the last tenth on a machine like this one, set `workers = 4`.**
+- For "hello" on Python, the pool had settled two seconds into a run:
+  a second worker 0.1 seconds in (its workers take 32 calls at a time,
+  and the 33rd waits), then a third that was tried and retired.
+- Two of nine rounds of "hello" on Python with `workers` unset were slow
+  (13,100 and 19,600 req/s), one in this run and one in an earlier run
+  with an earlier version of the rule. Five more cold starts didn't show
+  it again, and no fixed number did. Not explained.
+
 ### Policies
 
 One policy at a time on a static `respond` route, so each row's CPU µs/req

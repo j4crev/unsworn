@@ -1584,12 +1584,15 @@
           ]
         },
         "workers": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawWorkers"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How many worker processes: a number for exactly that many, or\n`{ min, max }` to start `min` and add more under load. Default:\none, growing to the number of CPU cores (at most 4)."
         }
       },
       "required": [
@@ -1829,6 +1832,56 @@
         "tags"
       ],
       "type": "object"
+    },
+    "RawWorkerRange": {
+      "additionalProperties": false,
+      "properties": {
+        "idle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How long a worker the others could do without is kept before it's\nretired. Default: \"30s\"."
+        },
+        "max": {
+          "description": "The most to run. Default: the number of CPU cores, at most 4.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "min": {
+          "description": "How many to start, and keep when there's little to do. Default: 1.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawWorkers": {
+      "anyOf": [
+        {
+          "description": "Exactly this many, always.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "$ref": "#/$defs/RawWorkerRange",
+          "description": "Between these, by load."
+        }
+      ],
+      "description": "`workers` in a runtime."
     },
     "ResponseValidation": {
       "enum": [

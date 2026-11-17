@@ -25,6 +25,7 @@ use unsworn_proto::{
     PROTOCOL_VERSION, Request, Response, Verify,
 };
 
+use crate::scale::{self, Decision, Sample, Scaler};
 use crate::server::support::Body;
 pub use unsworn_core::pipeline::{BODY_IDLE, BodyError, CallError};
 
@@ -131,7 +132,16 @@ type Calls = Arc<Mutex<CallLog>>;
 
 struct Worker {
     id: String,
-    tx: mpsc::UnboundedSender<Frame>,
+    /// Its place in the pool, which its id ends with.
+    index: usize,
+    /// The process started for it: the worker, or the shell that runs it.
+    pid: Option<u32>,
+    /// Messages for the worker. `None` closes its input, which is how a
+    /// worker is asked to exit.
+    tx: mpsc::UnboundedSender<Option<Frame>>,
+    /// The pool is done with this worker: it gets no new requests, and
+    /// its exit isn't a crash.
+    retired: AtomicBool,
     pending: Mutex<HashMap<String, Pending>>,
     calls: Calls,
     inflight: AtomicUsize,
@@ -255,7 +265,14 @@ pub struct Pool {
     next_id: AtomicU64,
     shutting_down: AtomicBool,
     crashes: Mutex<Vec<Instant>>,
-    worker_count: usize,
+    /// The fewest workers to run, and the number started first.
+    min: usize,
+    /// The most to run. See [`crate::scale`] for when one is added.
+    max: usize,
+    /// A worker is being started to add to the pool.
+    growing: AtomicBool,
+    /// A call had to wait for a worker since the last look at the load.
+    waited: AtomicBool,
 }
 
 /// The pools for every runtime in a project.
@@ -366,14 +383,9 @@ impl Pool {
         stream_handlers: Vec<String>,
         opts: PoolOptions,
     ) -> Arc<Pool> {
-        let worker_count = runtime
-            .workers
-            .map(|w| w.max(1) as usize)
-            .unwrap_or_else(|| {
-                std::thread::available_parallelism()
-                    .map(|n| n.get().min(4))
-                    .unwrap_or(2)
-            });
+        let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+        let min = runtime.workers.min.max(1) as usize;
+        let max = runtime.workers.most(cores).max(min);
         Arc::new(Pool {
             runtime,
             handlers,
@@ -386,7 +398,10 @@ impl Pool {
             next_id: AtomicU64::new(1),
             shutting_down: AtomicBool::new(false),
             crashes: Mutex::new(Vec::new()),
-            worker_count,
+            min,
+            max,
+            growing: AtomicBool::new(false),
+            waited: AtomicBool::new(false),
         })
     }
 
@@ -483,7 +498,7 @@ impl Pool {
             );
         }
         let mut started = Vec::new();
-        for i in 0..self.worker_count {
+        for i in 0..self.min {
             match self.spawn_worker(i).await {
                 Ok(w) => started.push(w),
                 Err(e) => {
@@ -499,7 +514,74 @@ impl Pool {
             workers = started.len(),
             "runtime started"
         );
+        if self.max > self.min {
+            tokio::spawn(watch_load(Arc::downgrade(self)));
+        }
         Ok(())
+    }
+
+    /// The workers that take new requests.
+    fn active(&self) -> Vec<Arc<Worker>> {
+        self.workers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|w| w.alive.load(Ordering::Relaxed))
+            .cloned()
+            .collect()
+    }
+
+    /// Starts one more worker, unless the pool is at its most or already
+    /// starting one. `why` is for the log.
+    fn grow(self: &Arc<Self>, why: &'static str) {
+        if self.shutting_down.load(Ordering::Relaxed)
+            || self.workers.lock().unwrap().len() >= self.max
+            || self.growing.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        let pool = self.clone();
+        tokio::spawn(async move {
+            // The lowest place no worker has, so ids stay small.
+            let index = {
+                let workers = pool.workers.lock().unwrap();
+                (0..)
+                    .find(|i| !workers.iter().any(|w| w.index == *i))
+                    .unwrap_or(0)
+            };
+            match pool.spawn_worker(index).await {
+                Ok(_) => tracing::info!(
+                    runtime = %pool.runtime.name,
+                    workers = pool.workers.lock().unwrap().len(),
+                    "added a worker: {why}"
+                ),
+                Err(e) => {
+                    tracing::warn!(runtime = %pool.runtime.name, "couldn't add a worker: {e}");
+                }
+            }
+            pool.growing.store(false, Ordering::Release);
+        });
+    }
+
+    /// Retires the newest worker: it gets no more requests, finishes the
+    /// ones it has, and is then asked to exit. `why` is for the log.
+    fn shrink(self: &Arc<Self>, why: &'static str) {
+        let Some(worker) = self.active().into_iter().max_by_key(|w| w.index) else {
+            return;
+        };
+        worker.retired.store(true, Ordering::Relaxed);
+        worker.alive.store(false, Ordering::Relaxed);
+        tracing::info!(
+            runtime = %self.runtime.name,
+            worker = %worker.id,
+            "retiring a worker: {why}"
+        );
+        tokio::spawn(async move {
+            while worker.inflight.load(Ordering::Acquire) > 0 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            let _ = worker.tx.send(None);
+        });
     }
 
     /// A worker that won't start, for a runtime whose `build` was skipped,
@@ -582,6 +664,7 @@ impl Pool {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("can't start `{}`: {e}", rt.command))?;
+        let place = (index, child.id());
         let calls = Calls::default();
         let stderr = child.stderr.take().expect("stderr piped");
         spawn_log_reader(
@@ -599,6 +682,7 @@ impl Pool {
                 let stdin = child.stdin.take().expect("stdin piped");
                 self.connect(
                     worker_id.clone(),
+                    place,
                     stdout,
                     stdin,
                     Protocol::Jsonl,
@@ -627,6 +711,7 @@ impl Pool {
                         let (r, w) = stream.into_split();
                         self.connect(
                             worker_id.clone(),
+                            place,
                             r,
                             w,
                             Protocol::Framed,
@@ -646,6 +731,7 @@ impl Pool {
     async fn connect<R, W>(
         self: &Arc<Self>,
         worker_id: String,
+        (index, pid): (usize, Option<u32>),
         reader: R,
         writer: W,
         protocol: Protocol,
@@ -691,10 +777,13 @@ impl Pool {
             ));
         }
 
-        let (tx, rx) = mpsc::unbounded_channel::<Frame>();
+        let (tx, rx) = mpsc::unbounded_channel::<Option<Frame>>();
         let worker = Arc::new(Worker {
             id: worker_id.clone(),
+            index,
+            pid,
             tx,
+            retired: AtomicBool::new(false),
             pending: Mutex::new(HashMap::new()),
             calls,
             inflight: AtomicUsize::new(0),
@@ -729,10 +818,10 @@ impl Pool {
                 .lock()
                 .unwrap()
                 .insert(id.clone(), Pending::Verify(vtx));
-            let _ = worker.tx.send(Frame::new(Message::Verify(Verify {
+            let _ = worker.tx.send(Some(Frame::new(Message::Verify(Verify {
                 id,
                 handlers: self.handlers.clone(),
-            })));
+            }))));
             match tokio::time::timeout(startup, vrx).await {
                 Ok(Ok(missing)) => {
                     let mut map = self.missing.lock().unwrap();
@@ -836,10 +925,10 @@ impl Pool {
                             // The client went away.
                             w.pending.lock().unwrap().remove(&chunk.id);
                             self.release(w, &chunk.id);
-                            let _ = w.tx.send(Frame::new(Message::Cancel(Cancel {
+                            let _ = w.tx.send(Some(Frame::new(Message::Cancel(Cancel {
                                 id: chunk.id,
                                 reason: Some("client disconnected".into()),
-                            })));
+                            }))));
                         }
                     }
                 }
@@ -919,7 +1008,7 @@ impl Pool {
     fn worker_gone(self: &Arc<Self>, w: &Arc<Worker>) {
         self.workers.lock().unwrap().retain(|x| !Arc::ptr_eq(x, w));
         self.capacity.notify_waiters();
-        if self.shutting_down.load(Ordering::Relaxed) {
+        if self.shutting_down.load(Ordering::Relaxed) || w.retired.load(Ordering::Relaxed) {
             return;
         }
         let crashes = {
@@ -932,11 +1021,7 @@ impl Pool {
         let delay = Duration::from_millis(100 * 2u64.pow((crashes as u32).min(7)))
             .min(Duration::from_secs(10));
         let pool = self.clone();
-        let index: usize =
-            w.id.rsplit('-')
-                .next()
-                .and_then(|i| i.parse().ok())
-                .unwrap_or(0);
+        let index = w.index;
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
             if pool.shutting_down.load(Ordering::Relaxed) {
@@ -1000,6 +1085,9 @@ impl Pool {
             if let Some(w) = self.pick() {
                 break w;
             }
+            // Every worker is full: that's one reason to add another.
+            self.waited.store(true, Ordering::Relaxed);
+            self.grow("calls were waiting for a worker");
             if tokio::time::timeout_at(deadline.into(), wait)
                 .await
                 .is_err()
@@ -1078,7 +1166,7 @@ impl Pool {
                 (Frame::new(Message::Request(request)), Some((body, credit)))
             }
         };
-        if worker.tx.send(frame).is_err() {
+        if worker.tx.send(Some(frame)).is_err() {
             worker.pending.lock().unwrap().remove(&id);
             self.release(&worker, &id);
             return Err(CallError::WorkerFailed("the worker stopped".into()));
@@ -1135,7 +1223,7 @@ impl Pool {
                 Err(_) => break BodyError::Idle,
                 Ok(None) => {
                     if worker.pending.lock().unwrap().contains_key(&id) {
-                        let _ = worker.tx.send(Frame::new(Message::End(End { id })));
+                        let _ = worker.tx.send(Some(Frame::new(Message::End(End { id }))));
                     }
                     return;
                 }
@@ -1170,7 +1258,7 @@ impl Pool {
                 let Ok(frame) = Frame::with_body(chunk, piece) else {
                     return;
                 };
-                if worker.tx.send(frame).is_err() {
+                if worker.tx.send(Some(frame)).is_err() {
                     return;
                 }
             }
@@ -1190,10 +1278,10 @@ impl Pool {
             None => return,
         }
         self.release(&worker, &id);
-        let _ = worker.tx.send(Frame::new(Message::Cancel(Cancel {
+        let _ = worker.tx.send(Some(Frame::new(Message::Cancel(Cancel {
             id,
             reason: Some(CallError::Body(error).to_string()),
-        })));
+        }))));
     }
 
     fn pick(&self) -> Option<Arc<Worker>> {
@@ -1218,8 +1306,91 @@ impl Pool {
             }
             w.alive.store(false, Ordering::Relaxed);
             w.fail_all("Unsworn is shutting down");
+            // Closing its input asks the worker to exit. The task that
+            // reads its output kills it if it hasn't after two seconds.
+            let _ = w.tx.send(None);
         }
-        drop(workers); // dropping the senders closes stdin/sockets
+    }
+}
+
+/// Reads each worker's CPU time every [`scale::SAMPLE`], and adds or
+/// retires a worker when the [`Scaler`] says so. Ends with the pool.
+async fn watch_load(pool: std::sync::Weak<Pool>) {
+    let mut scaler = match pool.upgrade() {
+        Some(pool) => Scaler::new(pool.runtime.workers.idle),
+        None => return,
+    };
+    // CPU ticks at the last sample, by process, and idle ticks.
+    let mut seen: HashMap<u32, u64> = HashMap::new();
+    let mut idle_before: Option<u64> = None;
+    let mut at = Instant::now();
+    let mut calls = 0;
+    loop {
+        tokio::time::sleep(scale::SAMPLE).await;
+        let Some(pool) = pool.upgrade() else { return };
+        if pool.shutting_down.load(Ordering::Relaxed) {
+            return;
+        }
+        let workers = pool.active();
+        // With nothing called and nothing to retire, there's nothing to
+        // read either.
+        let now_calls = pool.next_id.load(Ordering::Relaxed);
+        if now_calls == calls && workers.len() <= pool.min {
+            seen.clear();
+            idle_before = None;
+            at = Instant::now();
+            continue;
+        }
+        let started = now_calls.saturating_sub(calls);
+        calls = now_calls;
+
+        let pids: Vec<Option<u32>> = workers.iter().map(|w| w.pid).collect();
+        let (ticks, idle) = tokio::task::spawn_blocking(move || {
+            let ticks = pids
+                .into_iter()
+                .map(|pid| pid.and_then(scale::tree_ticks))
+                .collect::<Vec<_>>();
+            (ticks, scale::idle_ticks())
+        })
+        .await
+        .unwrap_or_default();
+        let now = Instant::now();
+        let over = now.duration_since(at);
+        at = now;
+        let mut next = HashMap::new();
+        let loads: Vec<Option<f64>> = workers
+            .iter()
+            .zip(ticks)
+            .map(|(w, ticks)| {
+                let (pid, ticks) = (w.pid?, ticks?);
+                next.insert(pid, ticks);
+                let before = seen.get(&pid)?;
+                Some(scale::load(ticks.saturating_sub(*before), over))
+            })
+            .collect();
+        seen = next;
+        let idle_cpus = idle
+            .zip(idle_before)
+            .map(|(now, before)| scale::load(now.saturating_sub(before), over));
+        idle_before = idle;
+        let sample = Sample {
+            loads: &loads,
+            idle_cpus,
+            waited: pool.waited.swap(false, Ordering::Relaxed),
+            rate: started as f64 / over.as_secs_f64().max(0.001),
+            in_flight: workers
+                .iter()
+                .map(|w| w.inflight.load(Ordering::Relaxed))
+                .sum(),
+        };
+        match scaler.step(sample, pool.min, pool.max, now) {
+            Decision::Grow => pool.grow("its workers were busy"),
+            Decision::Shrink => pool.shrink("the others have room for its work"),
+            Decision::Withdraw => {
+                pool.shrink("the pool answered no more calls with it than without")
+            }
+            Decision::Hold => {}
+        }
     }
 }
 
@@ -1245,10 +1416,10 @@ impl Drop for CancelGuard {
             .is_some()
         {
             self.pool.release(&self.worker, &self.id);
-            let _ = self.worker.tx.send(Frame::new(Message::Cancel(Cancel {
+            let _ = self.worker.tx.send(Some(Frame::new(Message::Cancel(Cancel {
                 id: self.id.clone(),
                 reason: Some("timeout or client disconnected".into()),
-            })));
+            }))));
         }
     }
 }
@@ -1381,13 +1552,16 @@ fn worker_log_level() -> &'static str {
     }
 }
 
+/// Writes a worker's messages to its input, until a `None` says to close
+/// it. Dropping the writer is what closes it: the worker reads the end of
+/// its input and exits.
 async fn write_loop<W: AsyncWrite + Unpin>(
     mut writer: W,
-    mut rx: mpsc::UnboundedReceiver<Frame>,
+    mut rx: mpsc::UnboundedReceiver<Option<Frame>>,
     protocol: Protocol,
 ) {
     let mut buf = Vec::new();
-    while let Some(frame) = rx.recv().await {
+    while let Some(Some(frame)) = rx.recv().await {
         buf.clear();
         let encoded = match protocol {
             Protocol::Jsonl => proto::jsonl::encode_head(&frame, &mut buf),

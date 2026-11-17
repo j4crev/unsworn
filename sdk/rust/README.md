@@ -133,8 +133,9 @@ anything before handlers added), `text`, `body`, `handler` and `phase`.
 
 Each request runs as its own Tokio task, and `run` starts a single-threaded
 Tokio runtime for them, so a worker uses one thread, as a Bun, Node or
-Python worker does. Unsworn runs several workers per runtime (`workers`,
-one per CPU core up to four by default), and those are what use the machine's cores.
+Python worker does. Unsworn runs several workers per runtime when one
+isn't enough (`workers`: by default one, growing to one per CPU core, at
+most four), and those are what use the machine's cores.
 
 On one thread, a handler that blocks or computes for long holds up the
 worker's other requests. Move that work off the thread with

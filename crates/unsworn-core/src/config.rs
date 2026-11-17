@@ -195,6 +195,28 @@ pub enum Protocol {
     Binary,
 }
 
+/// `workers` in a runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum RawWorkers {
+    /// Exactly this many, always.
+    Fixed(u32),
+    /// Between these, by load.
+    Range(RawWorkerRange),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawWorkerRange {
+    /// How many to start, and keep when there's little to do. Default: 1.
+    pub min: Option<u32>,
+    /// The most to run. Default: the number of CPU cores, at most 4.
+    pub max: Option<u32>,
+    /// How long a worker the others could do without is kept before it's
+    /// retired. Default: "30s".
+    pub idle: Option<ConfigDuration>,
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawRuntime {
@@ -203,7 +225,10 @@ pub struct RawRuntime {
     pub build: Option<String>,
     #[serde(default)]
     pub protocol: Protocol,
-    pub workers: Option<u32>,
+    /// How many worker processes: a number for exactly that many, or
+    /// `{ min, max }` to start `min` and add more under load. Default:
+    /// one, growing to the number of CPU cores (at most 4).
+    pub workers: Option<RawWorkers>,
     #[serde(default)]
     pub eager: bool,
     #[serde(default)]

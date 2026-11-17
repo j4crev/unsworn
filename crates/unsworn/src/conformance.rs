@@ -112,7 +112,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
 
     // One worker keeps the crash and concurrency checks predictable.
     let mut single = (*rt).clone();
-    single.workers = Some(1);
+    single.workers = unsworn_core::project::Workers::fixed(1);
     let sockets = SocketDir::create().map_err(|e| e.to_string())?;
     let (log_tx, mut logs) = mpsc::unbounded_channel();
     let pool = Pool::standalone(

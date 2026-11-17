@@ -106,8 +106,14 @@ on the way out. In the order planned:
      [`types.md`](types.md). Still open: a typed client for callers.
    - **A compiled plan the core runs,** so edge and serverless builds
      ship the plan instead of the config files and the parsers for them.
-2. **A cheaper call into a handler.** Worker pools that start small and
-   grow when calls queue, and a worker connection per server thread.
+2. **A cheaper call into a handler.**
+   - ~~**Worker pools that start small.**~~ Done: a runtime starts one
+     worker and adds more when calls wait or its workers are busy and
+     there's idle CPU; see [`workers`](config.md#how-many-workers).
+   - **A worker connection per server thread,** so a call doesn't cross
+     threads on its way to a worker and back. To be tried on its own
+     first: the last attempt at one runtime per core made handler calls
+     slower, because worker I/O stayed on another thread.
 3. **Calls between handlers and to other services.** `ctx.call` from one
    handler to another, in any language, over the worker's own connection.
    Declared outbound services that Unsworn calls for a handler, attaching

@@ -105,7 +105,7 @@ takes it up to 40 ms the first time, and it retires the extra threads again
 after a while. Telling a waiting thread from a busy one needs Linux; on
 other systems queued calls get threads whenever none has run out of work.
 Handlers that compute in parallel use the runtime's `workers`, one process
-each.
+each: Unsworn starts with one and adds more while they're busy.
 `print()` output goes to stderr, which Unsworn collects into its logs.
 
 ## Logging

@@ -507,8 +507,11 @@ fn runtime(r: &crate::project::Runtime) -> Entry {
             Protocol::Framed | Protocol::Binary => "framed",
         },
     );
-    if let Some(n) = r.workers {
-        e.plain("workers", n.to_string());
+    match (r.workers.min, r.workers.max) {
+        (1, None) => {}
+        (min, Some(max)) if min == max => e.plain("workers", min.to_string()),
+        (min, Some(max)) => e.plain("workers", format!("{min} to {max}")),
+        (min, None) => e.plain("workers", format!("{min} or more")),
     }
     if r.eager {
         e.plain("eager", "yes");
