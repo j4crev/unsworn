@@ -281,6 +281,7 @@ Details: [architecture](docs/architecture.md), [config](docs/config.md),
 [plan and diff](docs/plan.md), [generated types](docs/types.md),
 [functions](docs/functions.md), [outbound services](docs/outbound.md),
 [`top`](docs/top.md), [`shadow`](docs/shadow.md),
+[container image](docs/image.md),
 [protocol](docs/protocol.md),
 [conformance](docs/conformance.md), [MCP](docs/mcp.md),
 [benchmarks](docs/benchmarks.md) and [roadmap](docs/roadmap.md).
@@ -306,7 +307,7 @@ different way. See [`docs/architecture.md`](docs/architecture.md).
 
 | Platform type | Examples | How Unsworn runs | Version |
 |---|---|---|---|
-| **Servers and containers** | Any VPS or bare metal, Docker, Kubernetes, Fly.io, Railway, Render, Google Cloud Run, AWS ECS/Fargate, Cloudflare Containers | The `unsworn` binary plus worker processes, from an official base image | v1 (available) |
+| **Servers and containers** | Any VPS or bare metal, Docker, Kubernetes, Fly.io, Railway, Render, Google Cloud Run, AWS ECS/Fargate, Cloudflare Containers | The `unsworn` binary plus worker processes. `unsworn build --target image` writes the Dockerfile ([guide](docs/image.md)) | v1 (available) |
 | **Edge isolates** | Cloudflare Workers | `unsworn build --target cloudflare`: the core runs as WebAssembly in the Worker, and JS/TS handlers are bundled in and called directly ([guide](docs/cloudflare.md)) | v2 (v0.3.0) |
 | **Serverless functions** | Vercel Functions, AWS Lambda, Netlify Functions | `unsworn build --target vercel`, `netlify` or `lambda`: one function runs the whole project, with the core as WebAssembly and JS/TS handlers bundled in and called directly ([guide](docs/serverless.md)) | v3 (v0.3.0) |
 
@@ -327,13 +328,15 @@ the release was built by this repository's release workflow. Set
 `UNSWORN_VERIFY=1` to require that check, or `0` to skip it; see
 [`SECURITY.md`](SECURITY.md).
 
-For containers, extend the `ghcr.io/j4crev/unsworn` base image with the
-runtimes your handlers need. It runs as the unprivileged user `unsworn`,
-and the project in `/app` should stay owned by root, so handler code can't
-change the rules it runs under. For the same reason it skips runtimes'
-`build` steps at startup: build compiled workers into your image (see the
-[`Dockerfile`](Dockerfile)). With
-Rust 1.88 or newer, `cargo install unsworn` works too.
+For containers, `unsworn build --target image` writes a Dockerfile for the
+project: each runtime at the version your project names, dependencies
+from their lockfiles, compiled workers built in stages of their own (see
+[`docs/image.md`](docs/image.md)). Or extend the `ghcr.io/j4crev/unsworn`
+base image yourself. Either way it runs as the unprivileged user
+`unsworn`, and the project in `/app` stays owned by root, so handler code
+can't change the rules it runs under. For the same reason it skips
+runtimes' `build` steps at startup: compiled workers are built into the
+image. With Rust 1.88 or newer, `cargo install unsworn` works too.
 
 To try unreleased changes, build from `main`:
 
@@ -357,7 +360,7 @@ unsworn dev         # serves it, reloads on changes, verifies handler names
 | `unsworn top` | Show each route's requests, latency and its handler's share of time and CPU on a running server, costliest first |
 | `unsworn gen` | Write typed request models for handlers (TypeScript, Python, Go, Rust) from each route's schemas; `--check` fails when one is out of date |
 | `unsworn openapi` | Print the OpenAPI document for what Unsworn serves |
-| `unsworn build` | Bundle the project for a deployment target: `--target cloudflare` makes a Cloudflare Worker, and `vercel`, `netlify` and `lambda` make a function for each |
+| `unsworn build` | Bundle the project for a deployment target: `--target image` writes a Dockerfile for the server and its workers, `cloudflare` makes a Cloudflare Worker, and `vercel`, `netlify` and `lambda` make a function for each |
 | `unsworn conformance` | Test a runtime's workers against the protocol |
 | `unsworn schema` | Print the config's JSON Schema (also at [`schema/unsworn.schema.json`](schema/unsworn.schema.json)) |
 

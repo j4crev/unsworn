@@ -280,8 +280,10 @@ limit buckets, validation, `before` handlers and `unsworn routes --policies`.
 
 ## Deployment targets
 
-- **v1: servers and containers.** The `unsworn` binary plus an official base
-  image that projects extend with their runtimes.
+- **v1: servers and containers.** The `unsworn` binary plus worker
+  processes. `unsworn build --target image` writes a Dockerfile with the
+  project's runtimes, dependencies and compiled workers, on top of the
+  official image's binary. See [`image.md`](image.md).
 - **v2: edge isolates** (`unsworn build --target cloudflare`). The core runs
   as WebAssembly (`crates/unsworn-wasm`) inside the Worker, and JS/TS
   handlers are bundled in and called directly. The wasm module asks a
@@ -327,7 +329,7 @@ from a per-target capability table (`unsworn-core/src/targets.rs`).
 | `unsworn openapi` | Emit the OpenAPI document. |
 | `unsworn gen [<lang>] [--check]` | Write typed request and response models for handlers, from each route's schemas, to the files `[gen]` lists. See [`types.md`](types.md). |
 | `unsworn conformance --runtime <r> --handlers <file>` | Run the protocol conformance suite against a runtime. |
-| `unsworn build --target <t>` | Bundle the project into a Cloudflare Worker (`cloudflare`) or a serverless function (`vercel`, `netlify`, `lambda`). |
+| `unsworn build --target <t>` | Write a Dockerfile for the server and its workers (`image`), or bundle the project into a Cloudflare Worker (`cloudflare`) or a serverless function (`vercel`, `netlify`, `lambda`). |
 | `unsworn schema` | Print the config's JSON Schema. |
 | `unsworn init` | Write a starter config. |
 

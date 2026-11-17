@@ -132,8 +132,12 @@ on the way out. In the order planned:
    before it takes over ([`shadow.md`](shadow.md)).
 5. **WebAssembly handlers** called in the server's process, and from the
    core on edge targets.
-6. **A container image target** (`unsworn build --target image`), and the
-   binary as an AWS Lambda custom runtime.
+6. **One deployment.**
+   - ~~**A container image target.**~~ Done: `unsworn build --target
+     image` writes a Dockerfile for the project, with each runtime at the
+     version the project names. See [`image.md`](image.md).
+   - **The binary as an AWS Lambda custom runtime,** for handlers in any
+     language on Lambda, without the WebAssembly core.
 
 ## Not scheduled yet
 

@@ -1,6 +1,7 @@
 //! `unsworn build --target <name>`: bundles a project for a platform that
 //! runs the core as WebAssembly, with JS/TS handlers called in the same
-//! isolate or function.
+//! isolate or function. The `image` target is the odd one out: it writes
+//! a Dockerfile for the server and its workers (see `image.rs`).
 //!
 //! What every target shares is here: compiling the project while noting the
 //! files it reads, checking it against the target, and writing the bundle
@@ -9,6 +10,7 @@
 
 mod cloudflare;
 mod functions;
+mod image;
 mod lambda;
 mod netlify;
 mod vercel;
@@ -32,6 +34,8 @@ pub struct BuildOptions {
     pub config: String,
     pub target: String,
     pub out: Option<PathBuf>,
+    /// For the `image` target: the image to copy the `unsworn` binary from.
+    pub from: Option<String>,
 }
 
 fn normalize(path: &str) -> String {
@@ -170,10 +174,13 @@ const TARGETS: &[Target] = &[
 ];
 
 pub fn build(opts: BuildOptions) -> Result<(), String> {
+    if opts.target == "image" {
+        return image::build(&opts, opts.from.as_deref());
+    }
     let Some(target) = TARGETS.iter().find(|t| t.name == opts.target) else {
         let names: Vec<&str> = TARGETS.iter().map(|t| t.name).collect();
         return Err(format!(
-            "unsworn build doesn't build for \"{}\"; its targets are {} (run the server with unsworn serve)",
+            "unsworn build doesn't build for \"{}\"; its targets are {}, and image for a container",
             opts.target,
             names.join(", ")
         ));
