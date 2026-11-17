@@ -7,7 +7,7 @@ use unsworn_sdk::{Error, Reply, Request, Result, handlers, json};
 fn main() {
     unsworn_sdk::run(handlers![
         echo, text, binary, status, stream, fail, slow, crash, allow, deny, noisy, log, upload,
-        content, mcp
+        content, mcp, relay
     ]);
 }
 
@@ -82,6 +82,15 @@ async fn log(_: Request) -> Result {
 
 async fn content(_: Request) -> Result {
     Ok(Reply::json(json!({ "ok": true })).with_content(json!([{ "type": "text", "text": "hi" }])))
+}
+
+async fn relay(req: Request) -> Result {
+    let function: String = req.query_value("fn")?;
+    let input = req.json()?.cloned().unwrap_or_default();
+    match req.call::<unsworn_sdk::JsonValue>(&function, input).await {
+        Ok(answer) => Ok(Reply::json(json!({ "answer": answer }))),
+        Err(e) => Ok(Reply::json(json!({ "failed": e.status }))),
+    }
 }
 
 async fn mcp(req: Request) -> Result {

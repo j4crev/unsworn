@@ -19,7 +19,8 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Notify, Semaphore, mpsc, oneshot};
 use unsworn_core::Project;
 use unsworn_core::config::Protocol;
-use unsworn_core::project::Runtime;
+use unsworn_core::config::ResponseValidation;
+use unsworn_core::project::{Function, Runtime};
 use unsworn_proto::{
     self as proto, Cancel, Chunk, DecodeError, End, Frame, Json, LogLevel, Message,
     PROTOCOL_VERSION, Request, Response, Verify,
@@ -79,7 +80,24 @@ enum Pending {
 struct CallInfo {
     request_id: String,
     route: String,
+    /// What a function called for this request starts from. Only kept in
+    /// a project that has functions.
+    caller: Option<Box<Caller>>,
 }
+
+/// The request a function is called for.
+#[derive(Clone)]
+struct Caller {
+    request_id: String,
+    handler: String,
+    /// The function gets the same context, and no more time.
+    context: Map<String, Value>,
+    deadline: Instant,
+}
+
+/// How deep calls may nest: a function calling a function, and so on. A
+/// handler that calls itself would otherwise only stop at its timeout.
+const MAX_CALL_DEPTH: u64 = 16;
 
 /// How long a finished request stays in its worker's `CallLog`, since
 /// stderr is read separately and can lag behind the response.
@@ -152,8 +170,16 @@ struct Worker {
     /// The worker reads a JSON request body from the raw bytes after the
     /// message.
     raw_json: bool,
+    /// Its handlers can call functions.
+    can_call: bool,
     /// Credit windows for streamed request bodies, by request id.
     credits: Mutex<HashMap<String, Arc<Credit>>>,
+    /// Function calls made for each request in flight, to stop when the
+    /// request ends before they do.
+    subcalls: Mutex<HashMap<String, Vec<tokio::task::AbortHandle>>>,
+    /// Whether `subcalls` has ever held anything, so a request that calls
+    /// nothing doesn't take its lock.
+    made_calls: AtomicBool,
 }
 
 /// The credit window for one streamed request body. Permits are bytes the
@@ -273,11 +299,18 @@ pub struct Pool {
     growing: AtomicBool,
     /// A call had to wait for a worker since the last look at the load.
     waited: AtomicBool,
+    /// Every pool of the project, set when it has functions for handlers
+    /// to call.
+    peers: std::sync::OnceLock<std::sync::Weak<Pools>>,
 }
 
 /// The pools for every runtime in a project.
 pub struct Pools {
     pools: BTreeMap<String, Arc<Pool>>,
+    /// The project's `[[function]]` entries, which a handler in any pool
+    /// may call.
+    functions: BTreeMap<String, Arc<Function>>,
+    response_validation: ResponseValidation,
 }
 
 impl Pools {
@@ -297,7 +330,32 @@ impl Pools {
                 )
             })
             .collect();
-        Arc::new(Pools { pools })
+        let pools = Arc::new(Pools {
+            pools,
+            functions: project.functions.clone(),
+            response_validation: project.server.response_validation,
+        });
+        if !pools.functions.is_empty() {
+            for pool in pools.pools.values() {
+                let _ = pool.peers.set(Arc::downgrade(&pools));
+            }
+        }
+        pools
+    }
+
+    /// One pool and the functions its handlers may call, each run by that
+    /// same pool. For the conformance suite, which tests one runtime.
+    pub fn single(pool: Arc<Pool>, functions: Vec<Function>) -> Arc<Pools> {
+        let pools = Arc::new(Pools {
+            pools: BTreeMap::from([(pool.runtime.name.clone(), pool.clone())]),
+            functions: functions
+                .into_iter()
+                .map(|f| (f.name.clone(), Arc::new(f)))
+                .collect(),
+            response_validation: ResponseValidation::Off,
+        });
+        let _ = pool.peers.set(Arc::downgrade(&pools));
+        pools
     }
 
     pub fn get(&self, runtime: &str) -> Option<&Arc<Pool>> {
@@ -375,6 +433,149 @@ impl Pools {
     }
 }
 
+impl Pools {
+    /// Runs a function for a handler that called it, and says how it went.
+    async fn call_function(&self, call: proto::Call, caller: Caller) -> proto::CallResult {
+        let result = |status: u16, json: Value, error: Option<String>| proto::CallResult {
+            id: call.id.clone(),
+            status,
+            json,
+            error,
+        };
+        let fail = |status: u16, error: String| result(status, Value::Null, Some(error));
+        let Some(function) = self.functions.get(&call.function) else {
+            let known: Vec<&str> = self.functions.keys().map(String::as_str).collect();
+            return fail(
+                404,
+                format!(
+                    "no function named \"{}\" (there is: {})",
+                    call.function,
+                    known.join(", ")
+                ),
+            );
+        };
+        let depth = caller
+            .context
+            .get("caller")
+            .and_then(|c| c["depth"].as_u64());
+        let depth = depth.unwrap_or(0) + 1;
+        if depth > MAX_CALL_DEPTH {
+            return fail(
+                508,
+                format!(
+                    "calls are nested more than {MAX_CALL_DEPTH} deep: does a function call itself?"
+                ),
+            );
+        }
+        if let Some(rule) = &function.input
+            && let Err(errors) = rule.check(&call.json, "input")
+        {
+            let errors: Vec<Value> = errors
+                .iter()
+                .map(|e| serde_json::json!({ "location": e.location, "message": e.message }))
+                .collect();
+            return result(
+                422,
+                serde_json::json!({ "errors": errors }),
+                Some(format!(
+                    "the input doesn't match the schema of the function \"{}\"",
+                    function.name
+                )),
+            );
+        }
+        let Some(pool) = self.pools.get(&function.handler.runtime) else {
+            return fail(503, format!("no runtime \"{}\"", function.handler.runtime));
+        };
+        // The function has its own time limit, and no more time than the
+        // request it's called for.
+        let deadline = caller.deadline.min(Instant::now() + function.timeout);
+        let mut context = caller.context;
+        context.insert(
+            "caller".into(),
+            serde_json::json!({
+                "function": function.name,
+                "from": caller.handler,
+                "depth": depth,
+            }),
+        );
+        let name = format!("fn:{}", function.name);
+        let input = serde_json::to_vec(&call.json).unwrap_or_else(|_| b"null".to_vec());
+        let request = Request {
+            handler: function.handler.raw.clone(),
+            route: name.clone(),
+            method: "POST".into(),
+            path: name,
+            context,
+            json: Some(Json::raw(Bytes::from(input))),
+            ..Request::default()
+        };
+        let reply = pool
+            .call(request, CallBody::Empty, deadline, caller.request_id)
+            .await;
+        let (response, body) = match reply {
+            Ok(Reply::Response { response, body }) => (response, body),
+            Ok(Reply::Continue(_)) => {
+                return fail(
+                    502,
+                    "the function answered `continue`, which is for `before` handlers".into(),
+                );
+            }
+            Err(CallError::Timeout) => return fail(504, "the function timed out".into()),
+            Err(CallError::Unavailable(m)) => {
+                return fail(503, format!("runtime unavailable: {m}"));
+            }
+            Err(e @ (CallError::WorkerFailed(_) | CallError::MissingHandler(_))) => {
+                return fail(502, e.to_string());
+            }
+            Err(CallError::Handler(message)) => return fail(500, message),
+            Err(e) => return fail(500, e.to_string()),
+        };
+        let json = match body {
+            ReplyBody::Empty => Value::Null,
+            ReplyBody::Bytes(bytes) if response.json.is_some() => {
+                match serde_json::from_slice(&bytes) {
+                    Ok(value) => value,
+                    Err(e) => return fail(502, format!("the function's JSON can't be read: {e}")),
+                }
+            }
+            ReplyBody::Bytes(_) if response.text.is_some() => {
+                Value::String(response.text.unwrap_or_default())
+            }
+            ReplyBody::Bytes(_) | ReplyBody::Stream(_) => {
+                return fail(
+                    502,
+                    "a function answers with JSON, and this one sent raw bytes or a stream".into(),
+                );
+            }
+        };
+        if response.status < 400
+            && let Some(rule) = &function.output
+            && self.response_validation != ResponseValidation::Off
+            && let Err(errors) = rule.check(&json, "output")
+        {
+            let detail: Vec<String> = errors
+                .iter()
+                .map(|e| format!("{}: {}", e.location, e.message))
+                .collect();
+            tracing::warn!(
+                function = %function.name,
+                "the function's output doesn't match its schema: {}",
+                detail.join("; ")
+            );
+            if self.response_validation == ResponseValidation::Enforce {
+                return fail(
+                    502,
+                    format!(
+                        "the output of the function \"{}\" doesn't match its schema",
+                        function.name
+                    ),
+                );
+            }
+        }
+        result(response.status, json, None)
+    }
+}
+
 impl Pool {
     /// A pool for one runtime and the handlers it will be sent.
     pub fn standalone(
@@ -402,12 +603,18 @@ impl Pool {
             max,
             growing: AtomicBool::new(false),
             waited: AtomicBool::new(false),
+            peers: std::sync::OnceLock::new(),
         })
     }
 
     /// Whether this runtime's workers answer `verify`.
     pub fn verify_supported(&self) -> bool {
         self.workers.lock().unwrap().iter().any(|w| w.verify)
+    }
+
+    /// Whether this runtime's workers say their handlers can call functions.
+    pub fn calls_supported(&self) -> bool {
+        self.workers.lock().unwrap().iter().any(|w| w.can_call)
     }
 
     /// Whether this runtime's workers accept streamed request bodies.
@@ -631,6 +838,8 @@ impl Pool {
             // This Unsworn takes a JSON body as raw bytes (`body_json`), in
             // both directions. An SDK that knows how says so in `ready`.
             .env("UNSWORN_RAW_JSON", "1")
+            // And answers `call` messages, for `ctx.call`.
+            .env("UNSWORN_CALLS", "1")
             .envs(&rt.env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -792,7 +1001,10 @@ impl Pool {
             verify: ready.verify,
             stream_body: ready.stream_body,
             raw_json: ready.raw_json,
+            can_call: ready.calls,
             credits: Mutex::new(HashMap::new()),
+            subcalls: Mutex::new(HashMap::new()),
+            made_calls: AtomicBool::new(false),
         });
         tokio::spawn(write_loop(writer, rx, protocol));
 
@@ -863,7 +1075,11 @@ impl Pool {
         Ok(worker)
     }
 
-    async fn read_loop<R: AsyncRead + Unpin>(&self, w: &Arc<Worker>, mut reader: FrameReader<R>) {
+    async fn read_loop<R: AsyncRead + Unpin>(
+        self: &Arc<Self>,
+        w: &Arc<Worker>,
+        mut reader: FrameReader<R>,
+    ) {
         while let Some(next) = reader.next().await {
             let frame = match next {
                 Ok(f) => f,
@@ -988,6 +1204,7 @@ impl Pool {
                         credit.ack(ack.bytes);
                     }
                 }
+                Message::Call(call) => self.function_call(w, call),
                 Message::Ready(_) | Message::Unknown => {}
                 other => {
                     tracing::warn!(worker = %w.id, "unexpected message from worker: {other:?}");
@@ -996,8 +1213,68 @@ impl Pool {
         }
     }
 
+    /// A handler called a function. Runs it in its runtime's pool and
+    /// sends the worker the result, unless the request the call was made
+    /// for ends first.
+    fn function_call(self: &Arc<Self>, w: &Arc<Worker>, call: proto::Call) {
+        let fail = |status: u16, error: String| {
+            let _ =
+                w.tx.send(Some(Frame::new(Message::Result(proto::CallResult {
+                    id: call.id.clone(),
+                    status,
+                    json: Value::Null,
+                    error: Some(error),
+                }))));
+        };
+        let Some(pools) = self.peers.get().and_then(std::sync::Weak::upgrade) else {
+            return fail(
+                404,
+                "this project has no functions: add a [[function]]".into(),
+            );
+        };
+        let in_flight = w.pending.lock().unwrap().contains_key(&call.request);
+        let caller = w
+            .calls
+            .lock()
+            .unwrap()
+            .get(&call.request)
+            .and_then(|c| c.caller.as_deref().cloned());
+        let Some(caller) = caller.filter(|_| in_flight) else {
+            return fail(
+                409,
+                format!(
+                    "a call is made for a request in flight, and \"{}\" isn't one",
+                    call.request
+                ),
+            );
+        };
+        let worker = w.clone();
+        let request = call.request.clone();
+        let task = tokio::spawn(async move {
+            let result = pools.call_function(call, caller).await;
+            let _ = worker.tx.send(Some(Frame::new(Message::Result(result))));
+        });
+        w.made_calls.store(true, Ordering::Relaxed);
+        let mut subcalls = w.subcalls.lock().unwrap();
+        // The request may have ended while this was starting.
+        if w.pending.lock().unwrap().contains_key(&request) {
+            subcalls
+                .entry(request)
+                .or_default()
+                .push(task.abort_handle());
+        } else {
+            task.abort();
+        }
+    }
+
     fn release(&self, w: &Worker, id: &str) {
         w.calls.lock().unwrap().finish(id);
+        if w.made_calls.load(Ordering::Relaxed)
+            && let Some(calls) = w.subcalls.lock().unwrap().remove(id)
+        {
+            // Nobody is waiting for what they'd answer.
+            calls.iter().for_each(tokio::task::AbortHandle::abort);
+        }
         if let Some(credit) = w.credits.lock().unwrap().remove(id) {
             credit.close();
         }
@@ -1136,6 +1413,14 @@ impl Pool {
         worker.calls.lock().unwrap().start(
             id.clone(),
             CallInfo {
+                caller: self.peers.get().map(|_| {
+                    Box::new(Caller {
+                        request_id: request_id.clone(),
+                        handler: request.handler.clone(),
+                        context: request.context.clone(),
+                        deadline,
+                    })
+                }),
                 request_id,
                 route: request.route.clone(),
             },
@@ -1691,6 +1976,7 @@ mod tests {
         CallInfo {
             request_id: format!("req-{n}"),
             route: "/r".into(),
+            caller: None,
         }
     }
 

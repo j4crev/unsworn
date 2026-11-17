@@ -85,12 +85,61 @@ export interface McpCall {
   client?: { name: string; version: string; [key: string]: unknown };
 }
 
+/**
+ * The functions `ctx.call` can call: each `[[function]]` in the config,
+ * with what it takes and answers with. `unsworn gen ts` fills this in, so
+ * calls are checked against the functions' schemas.
+ */
+// biome-ignore lint/suspicious/noEmptyInterface: filled in by generated code
+export interface Functions {}
+
+type FunctionName = keyof Functions extends never ? string : keyof Functions;
+type Input<K> = K extends keyof Functions ? (Functions[K] extends { input: infer I } ? I : unknown) : unknown;
+type Output<K> = K extends keyof Functions ? (Functions[K] extends { output: infer O } ? O : unknown) : unknown;
+
+/** A function answered with an error status, or couldn't be called. */
+export class CallError extends Error {
+  /**
+   * The function's status, or `404` for no such function, `422` for
+   * input its schema refuses, `504` for a timeout.
+   */
+  status: number;
+  /** What the function answered with, if anything. */
+  json: unknown;
+
+  constructor(status: number, message: string, json?: unknown) {
+    super(message);
+    this.name = "CallError";
+    this.status = status;
+    this.json = json;
+  }
+}
+
+/** Who called a function, in the function's `ctx.caller`. */
+export interface Caller {
+  /** The function's name. */
+  function: string;
+  /** The handler that called it. */
+  from: string;
+  depth: number;
+}
+
 /** Verified credentials plus anything added by `before` handlers. */
 export interface Context {
   /** Claims from the verified token or API key, plus `scheme`. */
   auth?: Record<string, unknown> & { scheme?: string; sub?: string };
   /** Set when the handler runs as an MCP tool. */
   mcp?: McpCall;
+  /** Set when the handler runs as a function another handler called. */
+  caller?: Caller;
+  /**
+   * Calls a `[[function]]`: a handler in any language, declared in the
+   * config. Unsworn checks the input against the function's schema, runs
+   * it with this request's context and what is left of its time, and
+   * gives back the JSON it answered with. Throws a `CallError` when the
+   * function answers `400` or above, or can't be called.
+   */
+  call<K extends FunctionName>(name: K, input?: Input<K>): Promise<Output<K>>;
   [key: string]: unknown;
 }
 

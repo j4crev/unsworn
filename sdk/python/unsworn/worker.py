@@ -16,7 +16,7 @@ import time
 import traceback
 from typing import Any, Callable
 
-from . import PROTOCOL_VERSION, Request, __version__
+from . import PROTOCOL_VERSION, CallError, Context, Request, __version__
 from .protocol import FramedCodec, JsonlCodec
 
 ROOT = os.environ.get("UNSWORN_ROOT", os.getcwd())
@@ -26,6 +26,8 @@ DEV = os.environ.get("UNSWORN_DEV") == "1"
 # Set by Unsworn versions that take a JSON body as the raw bytes after a
 # message (``body_json``), in both directions.
 RAW_JSON = os.environ.get("UNSWORN_RAW_JSON") == "1"
+# Set by Unsworn versions that answer `call` messages, for `ctx.call`.
+CALLS = os.environ.get("UNSWORN_CALLS") == "1"
 # Set by Unsworn versions that accept `log` messages. Without it, logging
 # keeps Python's defaults (stderr).
 LOG_LEVEL = os.environ.get("UNSWORN_LOG_LEVEL")
@@ -366,12 +368,54 @@ class Worker:
         self.tasks: dict[str, asyncio.Task] = {}
         self.requests: dict[str, Request] = {}
         self.bodies: dict[str, BodyStream] = {}
+        self.loop = asyncio.get_running_loop()
+        self.loop_thread = threading.get_ident()
+        # Calls to functions that Unsworn hasn't answered: the request each
+        # is for, and the future its answer goes to.
+        self.calls: dict[str, tuple[str, asyncio.Future]] = {}
+        self.next_call = 0
 
     def send(self, message: dict, body: bytes | None = None) -> None:
         self.write(self.codec.encode(message, body))
 
+    def call(self, rid: str, name: str, value: Any) -> Any:
+        """``ctx.call``: asks Unsworn to run a function for the request
+        ``rid``. On the loop's thread, which is where an ``async def``
+        handler runs, it returns something to await. On a handler thread
+        it waits for the answer."""
+        if threading.get_ident() == self.loop_thread:
+            return self._call(rid, name, value)
+        return asyncio.run_coroutine_threadsafe(self._call(rid, name, value), self.loop).result()
+
+    async def _call(self, rid: str, name: str, value: Any) -> Any:
+        if not CALLS:
+            raise CallError(501, "this Unsworn doesn't run functions for handlers: update it")
+        self.next_call += 1
+        call_id = f"c-{self.next_call}"
+        answer: asyncio.Future = self.loop.create_future()
+        self.calls[call_id] = (rid, answer)
+        self.send({"type": "call", "id": call_id, "request": rid, "function": name, "json": value})
+        try:
+            return await answer
+        finally:
+            self.calls.pop(call_id, None)
+
+    def _result(self, message: dict) -> None:
+        entry = self.calls.pop(message.get("id", ""), None)
+        if entry is None or entry[1].done():
+            return
+        status = message.get("status", 500)
+        if status < 400:
+            entry[1].set_result(message.get("json"))
+        else:
+            reason = message.get("error") or f"the function answered {status}"
+            entry[1].set_exception(CallError(status, reason, message.get("json")))
+
     def dispatch(self, message: dict, raw: bytes | None) -> None:
         kind = message.get("type")
+        if kind == "result":
+            self._result(message)
+            return
         if kind == "request":
             if message.get("stream"):
                 loop = asyncio.get_running_loop()
@@ -411,6 +455,13 @@ class Worker:
         self.tasks.pop(rid, None)
         self.requests.pop(rid, None)
         self.bodies.pop(rid, None)
+        # Unsworn drops a request's calls when the request ends, so nothing
+        # will answer the ones still waiting.
+        if self.calls:
+            for call_id, (request, answer) in list(self.calls.items()):
+                if request == rid:
+                    del self.calls[call_id]
+                    answer.cancel()
 
     async def handle(self, msg: dict, raw: bytes | None) -> None:
         rid = msg["id"]
@@ -433,7 +484,8 @@ class Worker:
         if body_json:
             req.__dict__["_raw_json"] = raw
         self.requests[rid] = req
-        ctx = msg.get("context") or {}
+        ctx = Context(msg.get("context") or {})
+        ctx._call = lambda name, value=None: self.call(rid, name, value)
         # Each task has its own context, so this only tags this request's logs.
         _current_id.set(rid)
         try:
@@ -546,6 +598,7 @@ def _ready() -> dict:
         "verify": True,
         "stream_body": True,
         "raw_json": RAW_JSON,
+        "calls": CALLS,
         "sdk": f"unsworn-python/{__version__}",
     }
 

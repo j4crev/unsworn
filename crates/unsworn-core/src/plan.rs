@@ -42,6 +42,8 @@ pub enum Kind {
     Runtime,
     Route,
     Tool,
+    /// A handler other handlers call by name.
+    Function,
     /// Part of a route's paths with rules of its own.
     Inside,
 }
@@ -86,6 +88,7 @@ impl Entry {
             Kind::Runtime => format!("runtime {}", self.name),
             Kind::Route => format!("{methods} {}", self.name),
             Kind::Tool => format!("tool {}", self.name),
+            Kind::Function => format!("function {}", self.name),
             Kind::Inside if methods.is_empty() => format!("at {}", self.name),
             Kind::Inside => format!("at {methods} {}", self.name),
         }
@@ -270,6 +273,7 @@ impl Plan {
         tools.sort_by(|a, b| a.name.cmp(&b.name));
         entries.extend(routes);
         entries.extend(tools);
+        entries.extend(project.functions.values().map(|f| function(project, f)));
         Plan {
             config_file: project.config_file.clone(),
             entries,
@@ -944,6 +948,23 @@ fn tool(project: &Project, route: &Route) -> Option<Entry> {
         e.plain("annotations", schema_text(a));
     }
     Some(e)
+}
+
+fn function(project: &Project, f: &crate::project::Function) -> Entry {
+    let mut e = Entry::new(Kind::Function, &f.name);
+    e.plain(
+        "handler",
+        format!("{} ({})", f.handler.raw, f.handler.runtime),
+    );
+    e.plain("timeout", format_duration(f.timeout));
+    if let Some(fact) = e.facts.last_mut() {
+        fact.shown = f.timeout != project.server.timeout;
+    }
+    body(&mut e, "input", &f.input);
+    if let Some(output) = &f.output {
+        e.plain("output", schema_text(&output.schema));
+    }
+    e
 }
 
 /// One changed line of an entry.

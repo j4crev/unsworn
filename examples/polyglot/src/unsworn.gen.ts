@@ -16,3 +16,15 @@ export type Legacy = Handler<{
     rest: string;
   };
 }>;
+
+// What `ctx.call` takes and gives back, for each `[[function]]`.
+declare module "@unswornjs/sdk" {
+  interface Functions {
+    initials: {
+      input: {
+        name: string;
+      };
+      output: string;
+    };
+  }
+}

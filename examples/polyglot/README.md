@@ -20,6 +20,11 @@ curl -H 'x-api-key: secret' -H 'x-tenant: acme' -H 'content-type: application/js
 unsworn routes --policies
 ```
 
+The users route is TypeScript and asks a Python handler for the user's
+initials with `ctx.call("initials", ...)`: a `[[function]]` in the config,
+with no service between the two. See
+[`docs/functions.md`](../../docs/functions.md).
+
 [`unsworn.plan`](unsworn.plan) is what the config and route files add up
 to, for each route. `unsworn plan` writes it, and `unsworn diff` shows what
 your changes do to it. See [`docs/plan.md`](../../docs/plan.md).

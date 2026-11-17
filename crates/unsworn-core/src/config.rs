@@ -35,6 +35,29 @@ pub struct RawConfig {
     pub policies: BTreeMap<String, RawPolicies>,
     #[serde(default, rename = "route")]
     pub route: Vec<RawRoute>,
+    /// Handlers that other handlers call by name. Nothing outside reaches
+    /// them.
+    #[serde(default, rename = "function")]
+    pub function: Vec<RawFunction>,
+}
+
+/// A `[[function]]`: a handler other handlers call with `ctx.call`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawFunction {
+    /// What callers call it by: letters, digits, `_`, `-` and `.`.
+    pub name: String,
+    pub handler: String,
+    /// The runtime, when the handler file's extension doesn't say.
+    pub runtime: Option<String>,
+    /// A JSON Schema for the input: a file path or an inline table. The
+    /// input is checked against it before the function runs.
+    pub input: Option<SchemaRef>,
+    /// A JSON Schema for what it answers with.
+    pub output: Option<SchemaRef>,
+    /// The longest a call may take. Default: `[server].timeout`. A call
+    /// also ends when the request it's made for runs out of time.
+    pub timeout: Option<ConfigDuration>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

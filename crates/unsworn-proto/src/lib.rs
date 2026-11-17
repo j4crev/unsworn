@@ -40,6 +40,8 @@ pub enum Message {
     Verified(Verified),
     Log(Log),
     Ack(Ack),
+    Call(Call),
+    Result(CallResult),
     /// A message type this version doesn't know. Receivers ignore it.
     Unknown,
 }
@@ -78,6 +80,8 @@ impl Message {
             "verified" => Message::Verified(serde_json::from_slice(json)?),
             "log" => Message::Log(serde_json::from_slice(json)?),
             "ack" => Message::Ack(serde_json::from_slice(json)?),
+            "call" => Message::Call(serde_json::from_slice(json)?),
+            "result" => Message::Result(serde_json::from_slice(json)?),
             _ => {
                 serde_json::from_slice::<serde::de::IgnoredAny>(json)?;
                 Message::Unknown
@@ -99,6 +103,8 @@ impl Message {
             Message::Verified(m) => Some(&m.id),
             Message::Log(m) => m.id.as_deref(),
             Message::Ack(m) => Some(&m.id),
+            Message::Call(m) => Some(&m.id),
+            Message::Result(m) => Some(&m.id),
             Message::Ready(_) | Message::Unknown => None,
         }
     }
@@ -160,6 +166,10 @@ pub struct Ready {
     /// message (`body_json`) instead of from its `json` member.
     #[serde(default, skip_serializing_if = "is_false")]
     pub raw_json: bool,
+    /// The worker's handlers can call functions (see [`Call`]). Nothing
+    /// in Unsworn depends on it; the conformance suite reads it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub calls: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sdk: Option<String>,
 }
@@ -512,6 +522,39 @@ pub struct MissingHandler {
 pub struct Ack {
     pub id: String,
     pub bytes: u64,
+}
+
+/// A handler calls a function: another handler, declared in the config as
+/// `[[function]]`, in any runtime. Sent by a worker, answered with a
+/// [`CallResult`] that has the same `id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Call {
+    /// Chosen by the worker, unique among its calls that are in flight.
+    pub id: String,
+    /// The request the call is made for. The function gets that request's
+    /// context and what is left of its time.
+    pub request: String,
+    /// The function's name.
+    pub function: String,
+    /// The function's input.
+    #[serde(default)]
+    pub json: Value,
+}
+
+/// How a [`Call`] ended. Sent by Unsworn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CallResult {
+    pub id: String,
+    /// The function's status, or the one for what went wrong: `404` for
+    /// no such function, `422` for input its schema refuses, `504` for a
+    /// timeout. A call succeeded when this is below 400.
+    pub status: u16,
+    /// What the function answered with.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub json: Value,
+    /// What went wrong, when Unsworn or the function's worker failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// A log record from a worker. With `id`, it belongs to that request.
@@ -920,6 +963,7 @@ mod tests {
                 max_in_flight: None,
                 verify: false,
                 stream_body: false,
+                calls: false,
                 raw_json: false,
                 sdk: None
             })

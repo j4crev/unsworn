@@ -47,6 +47,13 @@ auth = "key"
 rate_limit = { requests = 60, per = "1m", key = "ip" }
 before = ["src/tenant.ts#tenant"]
 
+# A Python handler the TypeScript one calls: `ctx.call("initials", ...)`.
+[[function]]
+name = "initials"
+handler = "src/names.py#initials"
+input = { type = "object", required = ["name"], properties = { name = { type = "string" } } }
+output = { type = "string" }
+
 # Contracts for routes defined by files.
 [[route]]
 path = "/api/users/{id}"

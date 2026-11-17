@@ -48,6 +48,29 @@ export const getUser: GetUser = async (req) => ({ json: { id: req.params.id } })
 `unsworn dev` keeps the file current. See
 [`docs/types.md`](../../docs/types.md).
 
+## Calling other handlers
+
+`ctx.call` calls a [function](../../docs/functions.md): a handler declared
+as `[[function]]` in the config, in any language.
+
+```ts
+import { CallError } from "@unswornjs/sdk";
+
+export const search: Handler = async (req, ctx) => {
+  try {
+    const vector = await ctx.call("embed", { text: req.query.q });   // a Python handler
+    return { json: await index.nearest(vector) };
+  } catch (err) {
+    if (err instanceof CallError && err.status === 422) return { status: 400, json: err.json };
+    throw err;
+  }
+};
+```
+
+Unsworn checks the input against the function's schema, and the function
+gets this request's context and what is left of its time. With
+`unsworn gen ts`, the name, the input and the result are typed.
+
 ## Replies
 
 A handler returns an object or a web `Response`:

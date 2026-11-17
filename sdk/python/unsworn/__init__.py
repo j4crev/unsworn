@@ -21,7 +21,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
-__all__ = ["Request", "json", "text", "body", "content", "tool_error", "next", "PROTOCOL_VERSION"]
+__all__ = [
+    "Request",
+    "Context",
+    "CallError",
+    "json",
+    "text",
+    "body",
+    "content",
+    "tool_error",
+    "next",
+    "PROTOCOL_VERSION",
+]
 __version__ = "0.3.2"
 
 PROTOCOL_VERSION = 1
@@ -60,6 +71,49 @@ class Request(Generic[P, Q, J]):
     stream: Any = None
     #: True once Unsworn has cancelled the request (timeout or client gone).
     cancelled: bool = False
+
+
+class CallError(Exception):
+    """A function answered with an error status, or couldn't be called.
+
+    ``status`` is the function's own, or 404 for no such function, 422 for
+    input its schema refuses and 504 for a timeout. ``json`` is what the
+    function answered with, if anything.
+    """
+
+    def __init__(self, status: int, message: str, json: Any = None) -> None:  # noqa: A002
+        super().__init__(message)
+        self.status = status
+        self.json = json
+
+
+class Context(dict):
+    """A handler's ``ctx``: the verified credentials under ``"auth"`` and
+    anything ``before`` handlers added, as a dict, plus :meth:`call`."""
+
+    #: Set by the worker: how to ask Unsworn to run a function.
+    _call: Any = None
+
+    def call(self, name: str, input: Any = None) -> Any:  # noqa: A002
+        """Calls a ``[[function]]``: a handler in any language, declared in
+        the config.
+
+        Unsworn checks ``input`` against the function's schema, runs it with
+        this request's context and what is left of its time, and gives back
+        the JSON it answered with. In an ``async def`` handler, await it::
+
+            vector = await ctx.call("embed", {"text": text})
+
+        In a plain ``def`` handler it waits and returns the answer::
+
+            vector = ctx.call("embed", {"text": text})
+
+        Raises :class:`CallError` when the function answers 400 or above,
+        or can't be called.
+        """
+        if self._call is None:
+            raise CallError(501, "ctx.call works in a handler that Unsworn is running")
+        return self._call(name, input)
 
 
 def json(value: Any, status: int = 200, headers: dict[str, str] | None = None) -> dict:

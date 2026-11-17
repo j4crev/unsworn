@@ -122,9 +122,65 @@ pub struct Request {
     pub body: Option<Bytes>,
     stream: Option<BodyStream>,
     cancel: Cancel,
+    calls: Option<worker::Calls>,
 }
 
+/// A function answered with an error status, or couldn't be called. See
+/// [`Request::call`].
+#[derive(Debug, Clone)]
+pub struct CallError {
+    /// The function's own status, or `404` for no such function, `422`
+    /// for input its schema refuses and `504` for a timeout.
+    pub status: u16,
+    pub message: String,
+    /// What the function answered with, if anything.
+    pub json: Value,
+}
+
+impl fmt::Display for CallError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl StdError for CallError {}
+
 impl Request {
+    /// Calls a function: a handler in any language, declared in the
+    /// config as `[[function]]`. Unsworn checks `input` against the
+    /// function's schema, runs it with this request's context and what is
+    /// left of its time, and gives back the JSON it answered with.
+    ///
+    /// Fails with a [`CallError`] when the function answers `400` or
+    /// above, or can't be called. `?` turns that into a `500` for this
+    /// request; match on it to do something else:
+    ///
+    /// ```ignore
+    /// let vector: Vec<f32> = req.call("embed", json!({ "text": text })).await?;
+    /// ```
+    pub async fn call<T: DeserializeOwned>(
+        &self,
+        name: &str,
+        input: impl serde::Serialize,
+    ) -> std::result::Result<T, CallError> {
+        let fail = |status, message: String| CallError {
+            status,
+            message,
+            json: Value::Null,
+        };
+        let Some(calls) = &self.calls else {
+            return Err(fail(
+                501,
+                "call works in a handler that Unsworn is running".into(),
+            ));
+        };
+        let input = serde_json::to_value(input)
+            .map_err(|e| fail(400, format!("can't encode the input for \"{name}\": {e}")))?;
+        let json = calls.call(&self.id, name, input).await?;
+        serde_json::from_value(json)
+            .map_err(|e| fail(502, format!("the answer from \"{name}\" doesn't fit: {e}")))
+    }
+
     /// A request header. `name` is matched case-insensitively.
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
@@ -313,6 +369,7 @@ impl Request {
             body: None,
             stream: None,
             cancel: Cancel::default(),
+            calls: None,
         }
     }
 }

@@ -73,3 +73,18 @@ GET /api/users/{id}
     auth               key
     rate_limit         60 per 1m by ip
     before             src/tenant.ts#tenant
+
+function initials
+  handler            src/names.py#initials (py)
+  input              {
+                       "properties": {
+                         "name": {
+                           "type": "string"
+                         }
+                       },
+                       "required": [
+                         "name"
+                       ],
+                       "type": "object"
+                     }
+  output             {"type":"string"}

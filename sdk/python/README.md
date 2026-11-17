@@ -47,6 +47,31 @@ def get_user(req: GetUserRequest, ctx):
 `unsworn dev` keeps the file current. See
 [`docs/types.md`](../../docs/types.md).
 
+## Calling other handlers
+
+`ctx.call` calls a [function](../../docs/functions.md): a handler declared
+as `[[function]]` in the config, in any language.
+
+```python
+from unsworn import CallError, json
+
+def search(req, ctx):
+    try:
+        ranked = ctx.call("rank", {"ids": ids, "user": ctx["auth"]["sub"]})   # a Rust handler
+    except CallError as e:
+        if e.status == 504:
+            ranked = ids   # too slow: answer unranked
+        else:
+            raise
+    return json(ranked)
+```
+
+In an `async def` handler, `await ctx.call(...)`. Unsworn checks the input
+against the function's schema, and the function gets this request's
+context and what is left of its time.
+
+`ctx` is still a dict: `ctx["auth"]`, `ctx.get("tenant")`.
+
 ## Replies
 
 | Return | Response |

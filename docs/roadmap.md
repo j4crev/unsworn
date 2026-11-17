@@ -114,10 +114,13 @@ on the way out. In the order planned:
      threads on its way to a worker and back. To be tried on its own
      first: the last attempt at one runtime per core made handler calls
      slower, because worker I/O stayed on another thread.
-3. **Calls between handlers and to other services.** `ctx.call` from one
-   handler to another, in any language, over the worker's own connection.
-   Declared outbound services that Unsworn calls for a handler, attaching
-   the credential, so the handler never holds it.
+3. **Calls between handlers and to other services.**
+   - ~~**`ctx.call` from one handler to another.**~~ Done: a
+     `[[function]]` is a handler any other handler calls by name, in any
+     language, over the worker's own connection. See
+     [`functions.md`](functions.md). Servers and containers only so far.
+   - **Declared outbound services** that Unsworn calls for a handler,
+     attaching the credential, so the handler never holds it.
 4. **Choosing a language by measurement.** Per-route latency and CPU,
    split between Unsworn and the handler (`unsworn top`), and a `shadow`
    handler that gets a copy of a route's traffic so a rewrite can be
