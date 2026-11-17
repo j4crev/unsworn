@@ -21,8 +21,8 @@ use unsworn_core::Project;
 use unsworn_core::config::Protocol;
 use unsworn_core::project::Runtime;
 use unsworn_proto::{
-    self as proto, Cancel, Chunk, DecodeError, End, Frame, LogLevel, Message, PROTOCOL_VERSION,
-    Request, Response, Verify,
+    self as proto, Cancel, Chunk, DecodeError, End, Frame, Json, LogLevel, Message,
+    PROTOCOL_VERSION, Request, Response, Verify,
 };
 
 use crate::server::support::Body;
@@ -139,6 +139,9 @@ struct Worker {
     alive: AtomicBool,
     verify: bool,
     stream_body: bool,
+    /// The worker reads a JSON request body from the raw bytes after the
+    /// message.
+    raw_json: bool,
     /// Credit windows for streamed request bodies, by request id.
     credits: Mutex<HashMap<String, Arc<Credit>>>,
 }
@@ -543,6 +546,9 @@ impl Pool {
             .env("UNSWORN_ROOT", &self.opts.root)
             .env("UNSWORN_WORKER_ID", &worker_id)
             .env("UNSWORN_LOG_LEVEL", worker_log_level())
+            // This Unsworn takes a JSON body as raw bytes (`body_json`), in
+            // both directions. An SDK that knows how says so in `ready`.
+            .env("UNSWORN_RAW_JSON", "1")
             .envs(&rt.env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -696,6 +702,7 @@ impl Pool {
             alive: AtomicBool::new(true),
             verify: ready.verify,
             stream_body: ready.stream_body,
+            raw_json: ready.raw_json,
             credits: Mutex::new(HashMap::new()),
         });
         tokio::spawn(write_loop(writer, rx, protocol));
@@ -783,9 +790,16 @@ impl Pool {
                     return;
                 }
             };
-            let body = frame.body;
+            let mut body = frame.body;
             match frame.message {
-                Message::Response(response) => {
+                Message::Response(mut response) => {
+                    // JSON sent as the raw body is the response's `json`
+                    // from here on, as text nothing has read.
+                    if response.body_json
+                        && let Some(text) = body.take()
+                    {
+                        response.json = Some(Json::unchecked(text));
+                    }
                     let id = response.id.clone();
                     let pending = w.pending.lock().unwrap().remove(&id);
                     let Some(Pending::Call(tx)) = pending else {
@@ -1004,6 +1018,25 @@ impl Pool {
             return Err(CallError::Unavailable(
                 "the runtime's workers don't accept streamed request bodies".into(),
             ));
+        }
+        // A JSON body goes to a worker that takes one as the raw bytes after
+        // the message, where the worker parses it if the handler asks.
+        // Other workers get it inside the message, which only text known
+        // to be JSON can be written into.
+        let mut body = body;
+        match request.json.take() {
+            Some(Json::Raw(raw)) if worker.raw_json && matches!(body, CallBody::Empty) => {
+                request.body_json = true;
+                body = CallBody::Bytes(raw.text().clone());
+            }
+            Some(Json::Raw(raw)) if !raw.is_checked() => {
+                if let Err(detail) = unsworn_core::pipeline::check_json_text(raw.text()) {
+                    self.release(&worker, &id);
+                    return Err(CallError::BadJson(detail));
+                }
+                request.json = Some(Json::raw(raw.text().clone()));
+            }
+            json => request.json = json,
         }
         request.id = id.clone();
         request.deadline_ms = Some(

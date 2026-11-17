@@ -156,6 +156,10 @@ pub struct Ready {
     /// The worker accepts streamed request bodies and acknowledges them.
     #[serde(default, skip_serializing_if = "is_false")]
     pub stream_body: bool,
+    /// The worker reads a request's JSON body from the raw bytes after the
+    /// message (`body_json`) instead of from its `json` member.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub raw_json: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sdk: Option<String>,
 }
@@ -196,6 +200,11 @@ pub struct Request {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_len: Option<u64>,
+    /// The raw body is the request's JSON body, for a worker whose `ready`
+    /// has `raw_json`. Nothing has checked that it is JSON unless the route
+    /// needed that.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub body_json: bool,
     /// The body follows as `chunk` messages, ending with `end`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub stream: bool,
@@ -218,9 +227,24 @@ pub enum Json {
     Raw(RawJson),
 }
 
-/// The text of a JSON document. See [`Json::raw`].
+/// The text of a JSON document. See [`Json::raw`] and [`Json::unchecked`].
 #[derive(Debug, Clone)]
-pub struct RawJson(Bytes);
+pub struct RawJson {
+    text: Bytes,
+    /// Something has read the text and found it to be JSON.
+    checked: bool,
+}
+
+impl RawJson {
+    pub fn text(&self) -> &Bytes {
+        &self.text
+    }
+
+    /// Whether the text is known to be JSON. See [`Json::unchecked`].
+    pub fn is_checked(&self) -> bool {
+        self.checked
+    }
+}
 
 thread_local! {
     /// Set while [`message_json`] encodes a request whose raw `json` it
@@ -238,7 +262,9 @@ fn json_apart(json: &Option<Json>) -> bool {
 
 /// Appends a message as JSON. A request's raw `json` is copied in as it
 /// is: serializing it like any other member reads the whole document again
-/// to make sure it's JSON, which [`Json::raw`] already promises.
+/// to make sure it's JSON, which [`Json::raw`] already promises. Text that
+/// nothing has checked can't go in that way, so it's an error here: send
+/// it as the raw body, or check it and use [`Json::raw`].
 fn message_json(message: &Message, out: &mut Vec<u8>) -> Result<(), serde_json::Error> {
     let raw = match message {
         Message::Request(Request {
@@ -247,6 +273,11 @@ fn message_json(message: &Message, out: &mut Vec<u8>) -> Result<(), serde_json::
         }) => raw,
         _ => return serde_json::to_writer(out, message),
     };
+    if !raw.checked {
+        return Err(serde::ser::Error::custom(
+            "a request's `json` hasn't been checked",
+        ));
+    }
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
@@ -260,7 +291,7 @@ fn message_json(message: &Message, out: &mut Vec<u8>) -> Result<(), serde_json::
     // A request is an object with other members, so this is its last brace.
     out.pop();
     out.extend_from_slice(b",\"json\":");
-    out.extend_from_slice(&raw.0);
+    out.extend_from_slice(&raw.text);
     out.push(b'}');
     Ok(())
 }
@@ -269,24 +300,26 @@ impl Json {
     /// `text` must be one valid JSON document: it's written into the
     /// message unchecked.
     pub fn raw(text: Bytes) -> Json {
-        // Tier 1 ends a message at a line feed. In valid JSON one can only
-        // be whitespace between tokens, so a space says the same.
-        if text.contains(&b'\n') {
-            let mut text = text.to_vec();
-            for byte in &mut text {
-                if *byte == b'\n' {
-                    *byte = b' ';
-                }
-            }
-            return Json::Raw(RawJson(text.into()));
-        }
-        Json::Raw(RawJson(text))
+        Json::Raw(RawJson {
+            text,
+            checked: true,
+        })
+    }
+
+    /// Text that is meant to be a JSON document, which nothing has read
+    /// yet: a request body on its way to a worker that parses it itself,
+    /// or the raw body a worker says is JSON.
+    pub fn unchecked(text: Bytes) -> Json {
+        Json::Raw(RawJson {
+            text,
+            checked: false,
+        })
     }
 
     pub fn to_value(&self) -> Value {
         match self {
             Json::Value(v) => v.clone(),
-            Json::Raw(text) => serde_json::from_slice(&text.0).unwrap_or(Value::Null),
+            Json::Raw(raw) => serde_json::from_slice(&raw.text).unwrap_or(Value::Null),
         }
     }
 
@@ -301,7 +334,7 @@ impl Json {
     pub fn to_bytes(&self) -> Bytes {
         match self {
             Json::Value(v) => serde_json::to_vec(v).unwrap_or_default().into(),
-            Json::Raw(text) => text.0.clone(),
+            Json::Raw(raw) => raw.text.clone(),
         }
     }
 }
@@ -333,8 +366,8 @@ impl Serialize for Json {
             Json::Value(v) => v.serialize(serializer),
             // Any serializer but this crate's encoders: checked, and
             // `null` if it turns out not to be JSON.
-            Json::Raw(text) => {
-                match serde_json::from_slice::<&serde_json::value::RawValue>(&text.0) {
+            Json::Raw(raw) => {
+                match serde_json::from_slice::<&serde_json::value::RawValue>(&raw.text) {
                     Ok(raw) => raw.serialize(serializer),
                     Err(_) => serializer.serialize_unit(),
                 }
@@ -386,6 +419,9 @@ pub struct Response {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_len: Option<u64>,
+    /// The raw body is JSON the worker wrote, sent in place of `json`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub body_json: bool,
     /// The body follows as `chunk` messages, ending with `end`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub stream: bool,
@@ -403,6 +439,7 @@ impl Response {
             json: None,
             text: None,
             body_len: None,
+            body_json: false,
             stream: false,
             mcp_content: None,
         }
@@ -624,7 +661,16 @@ pub mod jsonl {
     /// large body after it instead of copying it in.
     pub fn encode_head(frame: &Frame, out: &mut Vec<u8>) -> Result<(), EncodeError> {
         check_body(frame)?;
+        let start = out.len();
         message_json(&frame.message, out)?;
+        // A line feed ends the message. One can only have come from raw
+        // JSON text, where it is whitespace between tokens, so a space says
+        // the same.
+        for byte in &mut out[start..] {
+            if *byte == b'\n' {
+                *byte = b' ';
+            }
+        }
         out.push(b'\n');
         Ok(())
     }
@@ -874,6 +920,7 @@ mod tests {
                 max_in_flight: None,
                 verify: false,
                 stream_body: false,
+                raw_json: false,
                 sdk: None
             })
         );
@@ -897,11 +944,14 @@ mod tests {
                 assert_eq!(bytes.iter().filter(|b| **b == b'\n').count(), 1);
             }
             let sent = String::from_utf8_lossy(&bytes).into_owned();
-            // Member order and number spelling are the sender's.
-            assert!(
-                sent.contains(r#""json":{"b": [1,  2.50, 1e2], "a":"x\ny"}"#),
-                "{sent}"
-            );
+            // Member order and number spelling are the sender's. Only a
+            // line of JSON has to do without the line feeds.
+            let want = if framed {
+                format!("\"json\":{text}")
+            } else {
+                r#""json":{"b": [1,  2.50, 1e2], "a":"x\ny"}"#.to_string()
+            };
+            assert!(sent.contains(&want), "{sent}");
             let mut buf = BytesMut::from(&bytes[..]);
             let decoded = if framed {
                 framed::Decoder::default().decode(&mut buf)
@@ -927,10 +977,15 @@ mod tests {
             unreachable!()
         };
         let plain = serde_json::to_string(&request).unwrap();
-        assert!(
-            plain.contains(r#""json":{"b": [1,  2.50, 1e2], "a":"x\ny"}"#),
-            "{plain}"
-        );
+        assert!(plain.contains(&format!("\"json\":{text}")), "{plain}");
+        // Text nothing has checked can't be written into a message.
+        let unchecked = Message::Request(Request {
+            id: "r-2".into(),
+            json: Some(Json::unchecked(Bytes::from_static(b"{\"a\":"))),
+            ..Default::default()
+        });
+        assert!(framed::encode(&Frame::new(unchecked.clone()), &mut Vec::new()).is_err());
+        assert!(jsonl::encode(&Frame::new(unchecked), &mut Vec::new()).is_err());
     }
 
     #[test]

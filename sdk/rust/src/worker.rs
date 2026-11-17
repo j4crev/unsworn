@@ -110,6 +110,8 @@ pub async fn serve(handlers: Handlers) -> io::Result<()> {
 pub(crate) struct Out {
     tx: mpsc::UnboundedSender<Vec<u8>>,
     framed: bool,
+    /// JSON replies go as the raw body (`body_json`), not as `json`.
+    raw_json: bool,
 }
 
 impl Out {
@@ -126,6 +128,26 @@ impl Out {
             }
             Err(e) => eprintln!("unsworn: can't encode a message: {e}"),
         }
+    }
+
+    /// Answers a request whose body was sent as JSON and isn't: the `400`
+    /// Unsworn gives when it reads such a body itself.
+    fn bad_json(&self, id: &str, detail: &str) {
+        let mut response = Response::new(id, 400);
+        response.headers.insert(
+            "content-type".into(),
+            HeaderValues::One("application/problem+json".into()),
+        );
+        response.json = Some(
+            serde_json::json!({
+                "type": "about:blank",
+                "title": "Bad Request",
+                "status": 400,
+                "detail": detail,
+            })
+            .into(),
+        );
+        self.send(Frame::new(Message::Response(response)));
     }
 
     fn error(&self, id: &str, message: String) {
@@ -158,7 +180,13 @@ where
         }
         io::Result::Ok(())
     });
-    let out = Out { tx, framed };
+    // Set by an Unsworn that takes a JSON body as raw bytes, both ways.
+    let raw_json = std::env::var("UNSWORN_RAW_JSON").is_ok_and(|v| v == "1");
+    let out = Out {
+        tx,
+        framed,
+        raw_json,
+    };
     let max_in_flight = std::env::var("UNSWORN_MAX_IN_FLIGHT")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -169,6 +197,7 @@ where
         max_in_flight: Some(max_in_flight),
         verify: true,
         stream_body: true,
+        raw_json,
         sdk: Some(format!("unsworn-rust/{}", crate::VERSION)),
     })));
     crate::logging::install(&out);
@@ -262,6 +291,17 @@ fn start(
         bodies.lock().unwrap().insert(id.clone(), tx);
         crate::BodyStream::new(id.clone(), rx, out.clone())
     });
+    // A JSON body sent as the raw bytes after the message is kept as it
+    // is, and read if the handler asks for it.
+    let (json, body) = match body {
+        Some(text) if msg.body_json => (crate::JsonBody::text(text), None),
+        body => (
+            msg.json.map_or(crate::JsonBody::None, |json| {
+                crate::JsonBody::Value(json.into_value())
+            }),
+            body,
+        ),
+    };
     let req = Request {
         id: msg.id,
         phase: msg.phase,
@@ -274,7 +314,7 @@ fn start(
         raw_query: msg.raw_query,
         headers: msg.headers,
         ctx: msg.context,
-        json: msg.json.map(unsworn_proto::Json::into_value),
+        json,
         text: msg.text,
         body,
         stream,
@@ -298,6 +338,9 @@ fn start(
         };
         match result {
             Ok(Ok(reply)) => send_reply(&out, &id, reply, &task_cancel).await,
+            // Unsworn left the body for the handler to read, so this is
+            // the 400 it would have answered with.
+            Ok(Err(e)) if e.0.is::<crate::BadJson>() => out.bad_json(&id, &e.to_string()),
             Ok(Err(e)) => {
                 eprintln!("unsworn: {e}");
                 out.error(&id, e.to_string());
@@ -347,6 +390,21 @@ async fn send_reply(out: &Out, id: &str, reply: Reply, cancel: &Cancel) {
             })));
         }
         Body::Empty => out.send(Frame::new(Message::Response(response))),
+        // Written out here and sent as the raw body, which Unsworn passes
+        // on without reading it.
+        Body::Json(Ok(value)) if out.raw_json => {
+            response.body_json = true;
+            let encoded = serde_json::to_vec(&value)
+                .map_err(|e| e.to_string())
+                .and_then(|text| {
+                    Frame::with_body(Message::Response(response), text.into())
+                        .map_err(|e| e.to_string())
+                });
+            match encoded {
+                Ok(frame) => out.send(frame),
+                Err(e) => out.error(id, format!("can't encode the JSON reply: {e}")),
+            }
+        }
         Body::Json(Ok(value)) => {
             response.json = Some(value.into());
             out.send(Frame::new(Message::Response(response)));

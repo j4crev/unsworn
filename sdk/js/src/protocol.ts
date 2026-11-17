@@ -21,6 +21,8 @@ export interface RequestMessage {
   json?: unknown;
   text?: string;
   body_len?: number;
+  /** The raw body is the JSON body, in place of `json`. */
+  body_json?: boolean;
   stream?: boolean;
   deadline_ms?: number;
 }

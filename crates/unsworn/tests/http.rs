@@ -678,6 +678,119 @@ fn proxy_survives_an_upstream_closing_idle_connections() {
 }
 
 #[test]
+fn json_bodies_go_to_handlers_unread() {
+    if !needs_python() {
+        return;
+    }
+    // `sdk` is the Python SDK, which takes a JSON body as raw bytes. `raw`
+    // is a worker without an SDK, which gets it inside the message.
+    let cfg = r#"
+[runtimes.sdk]
+extensions = [".py"]
+command = "python3 -u -m unsworn.worker"
+protocol = "framed"
+workers = 1
+
+[runtimes.raw]
+extensions = [".x"]
+command = "python3 -u worker.py"
+workers = 1
+
+[[route]]
+path = "/read"
+method = "POST"
+handler = "src/h.py#read"
+
+[[route]]
+path = "/ignore"
+method = "POST"
+handler = "src/h.py#ignore"
+
+[[route]]
+path = "/schema"
+method = "POST"
+handler = "src/h.py#read"
+body = { type = "object" }
+
+[[route]]
+path = "/before"
+method = "POST"
+handler = "src/h.py#read"
+before = ["src/h.py#allow"]
+
+[[route]]
+path = "/raw"
+method = "POST"
+handler = "src/raw.x#text"
+"#;
+    let handlers = r#"
+from unsworn import json, text, next
+
+def read(req, ctx):
+    return json({"got": req.json})
+
+def ignore(req, ctx):
+    return text("ignored")
+
+def allow(req, ctx):
+    return next({})
+"#;
+    let p = Project::new(&[
+        ("unsworn.toml", cfg),
+        ("worker.py", ECHO_WORKER),
+        ("src/h.py", handlers),
+        ("src/raw.x", ""),
+    ]);
+    let s = p.serve();
+    let post = |path: &str, body: &[u8]| {
+        s.request("POST", path, &[("content-type", "application/json")], body)
+    };
+
+    let r = post("/read", br#"{"name": "Ada", "n": [1, 2.5]}"#);
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json(), json!({"got": {"name": "Ada", "n": [1, 2.5]}}));
+    assert_eq!(r.header("content-type"), Some("application/json"));
+
+    // A body that isn't JSON: the handler that reads it finds out, and the
+    // client gets the same kind of answer as from Unsworn.
+    let r = post("/read", br#"{"name": "#);
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert_eq!(r.header("content-type"), Some("application/problem+json"));
+    let detail = r.json()["detail"].as_str().unwrap_or_default().to_string();
+    assert!(detail.starts_with("the body isn't valid JSON"), "{detail}");
+    // A handler that doesn't read the body never finds out.
+    let r = post("/ignore", br#"{"name": "#);
+    assert_eq!((r.status, r.text().as_str()), (200, "ignored"));
+    // With one reader, which of two members with one name counts is up to
+    // that reader.
+    let r = post("/read", br#"{"a": 1, "a": 2}"#);
+    assert_eq!(r.json(), json!({"got": {"a": 2}}));
+
+    // Unsworn still reads a body it has a schema for, or that a `before`
+    // handler reads as well.
+    for path in ["/schema", "/before"] {
+        let r = post(path, br#"{"a": 1, "a": 2}"#);
+        assert_eq!(r.status, 400, "{path}: {}", r.text());
+        assert!(r.text().contains("appears more than once"), "{}", r.text());
+        let r = post(path, br#"{"a": 1}"#);
+        assert_eq!(r.json(), json!({"got": {"a": 1}}), "{path}");
+    }
+
+    // A worker that gets JSON inside the message: Unsworn reads it first.
+    let r = post("/raw", br#"{"name": "Ada"}"#);
+    assert_eq!((r.status, r.text().as_str()), (200, "Hello, Ada"));
+    let r = post("/raw", br#"{"name": "#);
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(
+        r.text().contains("the body isn't valid JSON"),
+        "{}",
+        r.text()
+    );
+    let r = post("/raw", br#"{"name": "Ada", "name": "Bo"}"#);
+    assert_eq!(r.status, 400, "{}", r.text());
+}
+
+#[test]
 fn check_routes_and_openapi_commands() {
     let p = Project::new(&[(
         "unsworn.toml",
@@ -1034,6 +1147,11 @@ method = "GET"
 handler = "src/hello.ts#hello"
 
 [[route]]
+path = "/read"
+method = "POST"
+handler = "src/hello.ts#read"
+
+[[route]]
 path = "/app/{{*rest}}"
 handler = "src/app.ts"
 "#,
@@ -1041,11 +1159,13 @@ handler = "src/app.ts"
     );
     let hello = r#"
 export const hello = (req, ctx) => ({ json: { hi: req.params.name } });
+export const read = (req, ctx) => ({ json: { got: req.json, again: req.json === req.json } });
 "#;
     let app = r#"
 export default {
-  fetch(req) {
+  async fetch(req) {
     const url = new URL(req.url);
+    if (req.method === "POST") return new Response(await req.text());
     return new Response(JSON.stringify({ fetched: url.pathname }), {
       headers: { "content-type": "application/json", "set-cookie": "a=1" },
     });
@@ -1064,6 +1184,23 @@ export default {
     let r = s.get("/app/inner/path");
     assert_eq!(r.json()["fetched"], "/app/inner/path");
     assert_eq!(r.header("set-cookie"), Some("a=1"));
+
+    // A JSON body is parsed when the handler reads it, once.
+    let json_type = [("content-type", "application/json")];
+    let r = s.request("POST", "/read", &json_type, br#"{"n": [1, 2.5]}"#);
+    assert_eq!(r.json(), json!({"got": {"n": [1, 2.5]}, "again": true}));
+    let r = s.request("POST", "/read", &json_type, br#"{"n": "#);
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert_eq!(r.header("content-type"), Some("application/problem+json"));
+    assert!(
+        r.text().contains("the body isn't valid JSON"),
+        "{}",
+        r.text()
+    );
+    // An app with `fetch` gets the body as it was sent, spacing and all.
+    let sent = br#"{ "b": 1.50,  "a": [ ] }"#;
+    let r = s.request("POST", "/app/echo", &json_type, sent);
+    assert_eq!(r.text().as_bytes(), sent);
 }
 
 #[test]

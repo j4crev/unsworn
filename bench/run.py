@@ -701,9 +701,10 @@ def scenarios() -> list[S]:
             ("Unsworn → Go, Tier 1", "unsworn:handlers:go-jsonl:4", "/binary"),
         ]:
             out.append(S("bodies", f"{size}: {name}", server, path, "POST", octet, size, rate=None, conns=conns))
-    # A JSON body. For a handler, Unsworn parses it and sends it on as the
-    # request's `json`, and the handler answers 204 without sending it back.
-    # A `proxy` route without a body schema passes it through unread.
+    # A JSON body. A handler gets it as raw bytes that nothing has read, and
+    # answers 204 without reading it either, so these rows are what the body
+    # costs to carry. A `proxy` route without a body schema passes it
+    # through unread too.
     json_h = {"Content-Type": "application/json"}
     for name, server, path, expect in [
         ("Go on its own", "go", "/echo", 200),
@@ -712,8 +713,9 @@ def scenarios() -> list[S]:
         ("Unsworn → Go, Tier 2", "unsworn:handlers:go-framed:4", "/status?code=204", 204),
     ]:
         out.append(S("bodies", f"64 KB JSON: {name}", server, path, "POST", json_h, "64 KB JSON", expect, rate=None))
-    # The same body sent back as the response's `json`, inside the small
-    # object the conformance `echo` handler answers with.
+    # The same body read by the handler and sent back as the response's
+    # JSON, inside the small object the conformance `echo` handler answers
+    # with.
     for name, server in [
         ("Unsworn → Bun, Tier 2", "unsworn:handlers:bun-framed:4"),
         ("Unsworn → Go, Tier 2", "unsworn:handlers:go-framed:4"),

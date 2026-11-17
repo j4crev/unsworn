@@ -30,6 +30,7 @@ type inMessage struct {
 	JSON       json.RawMessage   `json:"json"`
 	Text       *string           `json:"text"`
 	BodyLen    int64             `json:"body_len"`
+	BodyJSON   bool              `json:"body_json"`
 	Stream     bool              `json:"stream"`
 	DeadlineMs *int64            `json:"deadline_ms"`
 	Handlers   []string          `json:"handlers"`
@@ -41,6 +42,7 @@ type readyMessage struct {
 	MaxInFlight int    `json:"max_in_flight"`
 	Verify      bool   `json:"verify"`
 	StreamBody  bool   `json:"stream_body"`
+	RawJSON     bool   `json:"raw_json,omitempty"`
 	SDK         string `json:"sdk"`
 }
 
@@ -58,7 +60,9 @@ type responseMessage struct {
 	JSON    json.RawMessage `json:"json,omitempty"`
 	Text    *string         `json:"text,omitempty"`
 	BodyLen int             `json:"body_len,omitempty"`
-	Stream  bool            `json:"stream,omitempty"`
+	// BodyJSON says the raw body is JSON, sent in place of JSON.
+	BodyJSON bool `json:"body_json,omitempty"`
+	Stream   bool `json:"stream,omitempty"`
 	// MCPContent is only used by handlers that run as MCP tools.
 	MCPContent json.RawMessage `json:"mcp_content,omitempty"`
 }

@@ -23,6 +23,7 @@ variables:
 | `UNSWORN_ROOT` | `/app` | Project root; handler paths are relative to it |
 | `UNSWORN_WORKER_ID` | `ts-0` | Worker id, for logs |
 | `UNSWORN_DEV` | `1` | Set only under `unsworn dev` and `unsworn check --deep`. SDKs then include stack traces in `error` messages |
+| `UNSWORN_RAW_JSON` | `1` | This Unsworn takes a JSON body as raw bytes, marked [`body_json`](#json-as-the-raw-body-raw_json-and-body_json), in both directions |
 | `UNSWORN_LOG_LEVEL` | `info` | The most verbose [`log`](#log-worker--unsworn) level Unsworn keeps: `error`, `warn`, `info`, `debug`, `trace` or `off` |
 
 The worker also inherits Unsworn's own environment, without the variables
@@ -54,6 +55,9 @@ string chosen by Unsworn that is unique per worker connection.
 - `stream_body`: optional, default `false`. Whether the worker accepts
   [streamed request bodies](#streamed-request-bodies-chunk-end-and-ack).
   Handlers on `stream_body` routes are reported missing otherwise.
+- `raw_json`: optional, default `false`. Whether the worker reads a JSON
+  request body from the raw bytes after the message. See
+  [JSON as the raw body](#json-as-the-raw-body-raw_json-and-body_json).
 - `sdk`: optional, for logs and diagnostics.
 
 ### `request` (Unsworn → worker)
@@ -89,6 +93,8 @@ string chosen by Unsworn that is unique per worker connection.
   tool calls it also has `mcp` (see [MCP tool calls](#mcp-tool-calls)).
 - Body, at most one of:
   - `json`: the JSON body, when the request had one, as the client sent it
+  - `body_len` with `"body_json": true`: the JSON body as raw bytes, for a
+    worker whose `ready` has `raw_json`
   - `text`: a UTF-8 text body
   - `body_len`: the number of raw body bytes that follow (see each tier)
   - `"stream": true`: the body follows as `chunk` messages, on routes with
@@ -109,6 +115,33 @@ string chosen by Unsworn that is unique per worker connection.
   Unsworn sets `content-type` for `json` and `text` unless a header overrides
   it. `json` goes to the client as the worker wrote it: the same member
   order, spacing and number spelling.
+- `"body_json": true` with `body_len`: the raw body is the JSON to answer
+  with, in place of `json`. Only under an Unsworn that sets
+  `UNSWORN_RAW_JSON`.
+
+### JSON as the raw body: `raw_json` and `body_json`
+
+A JSON body inside a message is read twice before a handler sees it: by
+Unsworn, to be sure the message it writes is JSON, and by the worker, as
+part of the message. For a large body that costs several times what the
+body takes to send. Sent as the raw bytes after the message, it's read once,
+by whoever needs it.
+
+- **Requests.** A worker that sends `"raw_json": true` in `ready` gets a
+  JSON body as `body_len` raw bytes with `"body_json": true`, and no `json`
+  member. Unsworn has read the body only if the route has a `body` schema
+  or `before` handlers, so the bytes may not be JSON at all. The SDKs parse
+  them when the handler first asks for the body, and answer `400` with an
+  `application/problem+json` body (`"detail": "the body isn't valid JSON:
+  ..."`) if they can't. A handler that doesn't read the body isn't told.
+- **Responses.** Under an Unsworn that sets `UNSWORN_RAW_JSON=1`, a worker
+  may answer with `body_len` raw bytes and `"body_json": true` in place of
+  `json`. Unsworn sends the bytes on without reading them, with
+  `content-type: application/json` unless a header says otherwise. An older
+  Unsworn doesn't know `body_json`, which is why the variable is there to
+  check.
+- A worker that doesn't send `raw_json` gets `json` inside the message, as
+  before, after Unsworn has read it.
 
 ### `continue` (worker → Unsworn, `before` phase only)
 

@@ -113,8 +113,9 @@ pub struct Request {
     /// The verified credentials under `"auth"`, plus anything before
     /// handlers added with [`Reply::next`].
     pub ctx: Map<String, Value>,
-    /// The JSON body, when the request had one.
-    pub json: Option<Value>,
+    /// The JSON body, when the request had one. See [`Request::json`] and
+    /// [`Request::body_json`].
+    json: JsonBody,
     /// The text body, when the request had one.
     pub text: Option<String>,
     /// The raw body, when the request had one.
@@ -151,11 +152,43 @@ impl Request {
         Ok(serde_json::from_value(Value::Object(self.query.clone()))?)
     }
 
-    /// The JSON body, as `T`.
+    /// Whether the request has a JSON body.
+    pub fn has_json(&self) -> bool {
+        !matches!(self.json, JsonBody::None)
+    }
+
+    /// The JSON body as a value, or `None` when the request has none. It's
+    /// parsed the first time this is called, so a handler that never asks
+    /// doesn't pay for it. For a type of your own, [`Request::body_json`]
+    /// reads the body once, straight into it.
+    ///
+    /// Unsworn may not have read the body, so it may turn out not to be
+    /// JSON. Return that error (with `?`) and the client gets a `400`.
+    pub fn json(&self) -> Result<Option<&Value>> {
+        match &self.json {
+            JsonBody::None => Ok(None),
+            JsonBody::Value(value) => Ok(Some(value)),
+            JsonBody::Text { text, parsed } => {
+                if let Some(value) = parsed.get() {
+                    return Ok(Some(value));
+                }
+                let value = serde_json::from_slice(text).map_err(body_error)?;
+                Ok(Some(parsed.get_or_init(|| value)))
+            }
+        }
+    }
+
+    /// The JSON body, as `T`. An error for a body that isn't JSON at all
+    /// gives the client a `400` when the handler returns it. One for JSON
+    /// of the wrong shape is an ordinary handler error.
     pub fn body_json<T: DeserializeOwned>(&self) -> Result<T> {
         match &self.json {
-            Some(v) => Ok(T::deserialize(v)?),
-            None => Err(Error::msg("the request has no JSON body")),
+            JsonBody::None => Err(Error::msg("the request has no JSON body")),
+            JsonBody::Value(value) => Ok(T::deserialize(value)?),
+            JsonBody::Text { text, parsed } => match parsed.get() {
+                Some(value) => Ok(T::deserialize(value)?),
+                None => serde_json::from_slice(text).map_err(body_error),
+            },
         }
     }
 
@@ -215,6 +248,51 @@ pub struct McpClient {
     pub version: String,
 }
 
+/// A request's JSON body.
+#[derive(Debug)]
+pub(crate) enum JsonBody {
+    None,
+    /// Sent inside the message, so it arrived parsed.
+    Value(Value),
+    /// Sent as the bytes after the message, which nothing may have read.
+    /// `parsed` is filled when a handler first asks for the value.
+    Text {
+        text: Bytes,
+        parsed: std::sync::OnceLock<Value>,
+    },
+}
+
+impl JsonBody {
+    pub(crate) fn text(text: Bytes) -> JsonBody {
+        JsonBody::Text {
+            text,
+            parsed: std::sync::OnceLock::new(),
+        }
+    }
+}
+
+/// A body that was sent as JSON and isn't. The worker answers `400` for a
+/// handler error that is one of these.
+#[derive(Debug)]
+pub(crate) struct BadJson(pub(crate) String);
+
+impl fmt::Display for BadJson {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the body isn't valid JSON: {}", self.0)
+    }
+}
+
+impl StdError for BadJson {}
+
+/// A parse error as a handler error: [`BadJson`] unless the text was JSON
+/// and only didn't fit the type asked for.
+fn body_error(e: serde_json::Error) -> Error {
+    match e.classify() {
+        serde_json::error::Category::Data => e.into(),
+        _ => BadJson(e.to_string()).into(),
+    }
+}
+
 impl Request {
     #[cfg(test)]
     pub(crate) fn test() -> Request {
@@ -230,7 +308,7 @@ impl Request {
             raw_query: None,
             headers: BTreeMap::new(),
             ctx: Map::new(),
-            json: None,
+            json: JsonBody::None,
             text: None,
             body: None,
             stream: None,
@@ -409,5 +487,48 @@ mod mcp_tests {
         assert!(matches!(&e.body, Body::Json(Ok(v)) if v["error"] == "city not found"));
         let c = Reply::content(json!([{"type": "text", "text": "hi"}]));
         assert_eq!((c.status, c.mcp_content.is_some()), (200, true));
+    }
+
+    #[test]
+    fn the_json_body_is_read_on_request() {
+        #[derive(serde::Deserialize)]
+        struct Args {
+            n: u32,
+        }
+        let with = |text: &'static str| Request {
+            json: JsonBody::text(Bytes::from_static(text.as_bytes())),
+            ..Request::test()
+        };
+        let req = with(r#"{"n": 2}"#);
+        assert!(req.has_json());
+        assert_eq!(req.body_json::<Args>().unwrap().n, 2);
+        assert_eq!(req.json().unwrap(), Some(&json!({"n": 2})));
+        // The value is kept, and `body_json` reads from it afterwards.
+        assert!(std::ptr::eq(
+            req.json().unwrap().unwrap(),
+            req.json().unwrap().unwrap()
+        ));
+        assert_eq!(req.body_json::<Args>().unwrap().n, 2);
+
+        // Not JSON at all is the client's mistake.
+        let bad = |e: Error| e.0.downcast_ref::<BadJson>().is_some();
+        assert!(with(r#"{"n": "#).json().is_err_and(bad));
+        assert!(with(r#"{"n": "#).body_json::<Args>().is_err_and(bad));
+        // JSON of another shape is the handler's to answer for.
+        assert!(
+            with(r#"{"n": "two"}"#)
+                .body_json::<Args>()
+                .is_err_and(|e| !bad(e))
+        );
+
+        let none = Request::test();
+        assert!(!none.has_json());
+        assert_eq!(none.json().unwrap(), None);
+        assert!(none.body_json::<Args>().is_err());
+        let inside = Request {
+            json: JsonBody::Value(json!({"n": 3})),
+            ..Request::test()
+        };
+        assert_eq!(inside.body_json::<Args>().unwrap().n, 3);
     }
 }

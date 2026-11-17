@@ -232,6 +232,12 @@ impl Host for ServerHost {
         Ok(first.unwrap_or_else(|| out.freeze()))
     }
 
+    /// The pool sends such a body to the worker as raw bytes, or checks it
+    /// first for a worker that needs it inside the message.
+    fn takes_unread_json(&self) -> bool {
+        true
+    }
+
     fn limit_body(&self, body: Body, max: u64) -> Body {
         Limited::new(body, max as usize).boxed_unsync()
     }

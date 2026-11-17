@@ -2,6 +2,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,12 +22,20 @@ func echo(req *unsworn.Request) (unsworn.Reply, error) {
 	if v, ok := req.Headers["x-test"]; ok {
 		header = v
 	}
+	// Bind, not req.JSON as it is: nothing has read the body before the
+	// handler, so this is where one that isn't JSON is found out.
+	var body json.RawMessage
+	if req.JSON != nil {
+		if err := req.Bind(&body); err != nil {
+			return unsworn.Reply{}, err
+		}
+	}
 	return unsworn.JSON(map[string]any{
 		"method":  req.Method,
 		"params":  req.Params,
 		"query":   req.Query,
 		"context": req.Ctx,
-		"json":    req.JSON,
+		"json":    body,
 		"header":  header,
 	}), nil
 }

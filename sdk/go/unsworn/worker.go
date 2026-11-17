@@ -3,6 +3,7 @@ package unsworn
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -50,6 +51,9 @@ func Run() error {
 type worker struct {
 	codec codec
 	dev   bool
+	// rawJSON is set under an Unsworn that takes a JSON body as the raw
+	// bytes after a message (body_json), in both directions.
+	rawJSON bool
 
 	writeMu sync.Mutex
 	out     io.Writer
@@ -79,6 +83,7 @@ func run(c codec, out io.Writer) error {
 		codec:    c,
 		out:      out,
 		dev:      os.Getenv("UNSWORN_DEV") == "1",
+		rawJSON:  os.Getenv("UNSWORN_RAW_JSON") == "1",
 		inFlight: map[string]*call{},
 	}
 	maxInFlight := 64
@@ -91,6 +96,7 @@ func run(c codec, out io.Writer) error {
 		MaxInFlight: maxInFlight,
 		Verify:      true,
 		StreamBody:  true,
+		RawJSON:     w.rawJSON,
 		SDK:         "unsworn-go/" + Version,
 	}, nil); err != nil {
 		return err
@@ -208,6 +214,11 @@ func (w *worker) start(m *inMessage, body []byte) {
 		Body:     body,
 		ctx:      ctx,
 	}
+	if m.BodyJSON && body != nil {
+		// The JSON body, as the bytes after the message. Nothing may
+		// have read it yet: Bind does.
+		req.JSON, req.Body = body, nil
+	}
 	if c.body != nil {
 		req.BodyReader = c.body
 	}
@@ -236,6 +247,19 @@ func (w *worker) start(m *inMessage, body []byte) {
 		}
 		if err == nil {
 			err = w.reply(req, reply)
+		}
+		var bad *badJSONError
+		if errors.As(err, &bad) && !w.isCancelled(req.ID) && ctx.Err() == nil {
+			// Unsworn left the body for the handler to read, so this is
+			// the 400 it would have answered with.
+			w.send(responseMessage{
+				Type:    "response",
+				ID:      req.ID,
+				Status:  400,
+				Headers: map[string]any{"content-type": "application/problem+json"},
+				JSON:    problemJSON(400, "Bad Request", "the body isn't valid JSON: "+bad.err.Error()),
+			}, nil)
+			return
 		}
 		if err != nil && !w.isCancelled(req.ID) && ctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "unsworn: %s: %v\n", req.Handler, err)
@@ -297,6 +321,12 @@ func (w *worker) reply(req *Request, r Reply) error {
 		if err != nil {
 			return fmt.Errorf("can't encode the JSON reply: %w", err)
 		}
+		if w.rawJSON && len(data) > 0 {
+			// Sent as the raw body, which Unsworn passes on without
+			// reading it.
+			res.BodyJSON, res.BodyLen = true, len(data)
+			return w.send(res, data)
+		}
 		res.JSON = data
 		return w.send(res, nil)
 	case kindText:
@@ -344,4 +374,15 @@ func orEmpty(m map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	return m
+}
+
+// problemJSON is an RFC 9457 problem document.
+func problemJSON(status int, title, detail string) json.RawMessage {
+	data, _ := marshal(map[string]any{
+		"type":   "about:blank",
+		"title":  title,
+		"status": status,
+		"detail": detail,
+	})
+	return data
 }

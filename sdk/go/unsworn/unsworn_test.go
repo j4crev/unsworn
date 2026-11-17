@@ -3,6 +3,7 @@ package unsworn
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -139,5 +140,25 @@ func TestMCPHelpers(t *testing.T) {
 	c := Content([]string{"x"})
 	if c.status != 200 || c.content == nil {
 		t.Fatalf("Content = %+v", c)
+	}
+}
+
+func TestBindTellsBadJSONFromAMismatch(t *testing.T) {
+	var v struct {
+		N int `json:"n"`
+	}
+	// Not JSON at all: the worker answers 400 for this error.
+	err := (&Request{JSON: []byte(`{"n": `)}).Bind(&v)
+	var bad *badJSONError
+	if !errors.As(err, &bad) {
+		t.Fatalf("got %v, want a bad JSON error", err)
+	}
+	// JSON of the wrong shape is the handler's to answer.
+	err = (&Request{JSON: []byte(`{"n": "one"}`)}).Bind(&v)
+	if err == nil || errors.As(err, &bad) {
+		t.Fatalf("got %v, want a type error", err)
+	}
+	if err := (&Request{JSON: []byte(`{"n": 1}`)}).Bind(&v); err != nil || v.N != 1 {
+		t.Fatalf("got %v and %d", err, v.N)
 	}
 }

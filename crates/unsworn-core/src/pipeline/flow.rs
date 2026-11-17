@@ -15,8 +15,8 @@ mod mcp;
 use super::auth::{AuthOutcome, KeyCache, authenticate_request};
 use super::host::{Body, CallError, Deadline, Host, ProxyRequest, Reply, Response, StaticRequest};
 use super::{
-    Problem, access, cache_key, check_body, check_content_length, decode_param, finish_headers,
-    header_map, normalize_path, preflight_headers, query_pairs, rate_limit_bucket,
+    JsonBody, Problem, access, cache_key, check_body, check_content_length, decode_param,
+    finish_headers, header_map, normalize_path, preflight_headers, query_pairs, rate_limit_bucket,
     redirect_location, response_head, validate_inputs,
 };
 use crate::config::{ResponseValidation, TrailingSlash};
@@ -496,8 +496,24 @@ async fn prepare<H: Host>(
     }
 
     // MCP reads its own JSON-RPC body, with JSON-RPC errors.
-    let is_json = !is_mcp
-        && check_body(route, &parts.headers, body_bytes.as_deref()).map_err(problem_response)?;
+    // A body with one reader, the route's handler, can go to it unread. A
+    // `before` handler would be a second reader, and two parsers can
+    // disagree about a body one of them should have refused.
+    let may_leave_unread = ctx.host.takes_unread_json()
+        && matches!(route.action, Action::Handler(_))
+        && eff.before.is_empty();
+    let json_body = if is_mcp {
+        JsonBody::No
+    } else {
+        check_body(
+            route,
+            &parts.headers,
+            body_bytes.as_deref(),
+            may_leave_unread,
+        )
+        .map_err(problem_response)?
+    };
+    let is_json = json_body != JsonBody::No;
     let raw_body = if is_json {
         None
     } else {
@@ -527,7 +543,10 @@ async fn prepare<H: Host>(
         json: body_bytes
             .clone()
             .filter(|_| is_json && for_a_handler)
-            .map(unsworn_proto::Json::raw),
+            .map(|text| match json_body {
+                JsonBody::Unread => unsworn_proto::Json::unchecked(text),
+                _ => unsworn_proto::Json::raw(text),
+            }),
         ..Default::default()
     };
     Ok(Prepared {
@@ -864,6 +883,9 @@ async fn store_in_cache<H: Host>(
 
 fn call_error<B>(dev: bool, handler: &HandlerRef, e: CallError) -> Response<B> {
     use super::host::BodyError;
+    if let CallError::BadJson(detail) = e {
+        return problem(StatusCode::BAD_REQUEST, detail);
+    }
     if matches!(e, CallError::Body(_)) {
         tracing::info!(handler = %handler.raw, "{e}");
     } else {
@@ -892,6 +914,8 @@ fn call_error<B>(dev: bool, handler: &HandlerRef, e: CallError) -> Response<B> {
         CallError::Body(BodyError::Read) => {
             (StatusCode::BAD_REQUEST, "couldn't read the request body")
         }
+        // Answered above, with its own detail.
+        CallError::BadJson(_) => (StatusCode::BAD_REQUEST, "the body isn't valid JSON"),
     };
     if dev {
         problem(status, format!("{e} ({})", handler.raw))
