@@ -13,6 +13,7 @@
 //! calls that would compile there but panic, such as `Instant::now`.
 
 pub mod auth;
+pub mod codegen;
 pub mod config;
 pub mod diag;
 pub mod export;

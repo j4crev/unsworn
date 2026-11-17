@@ -74,6 +74,15 @@ compile (`compile_symbolic`), which leaves each `{env.NAME}` as written
 instead of reading the variable, so it's the same on every machine and
 holds no secret. See [`plan.md`](plan.md).
 
+#### Generated types
+
+`unsworn_core::codegen` turns each handler's contract (its routes'
+`params`, `query`, `body` and `response` schemas, or a tool's `input` and
+`output`) into types for TypeScript, Python, Go or Rust. The schemas go
+through one small type model first, so the four languages agree on what a
+schema means. `unsworn gen` and `unsworn dev` write the files. See
+[`types.md`](types.md).
+
 The core never opens sockets, spawns processes, reads files or reads the
 clock. Config files come through a separate `Host` trait for loading
 (`unsworn_core::project::Host`). This keeps it testable (its pipeline tests
@@ -285,7 +294,7 @@ from a per-target capability table (`unsworn-core/src/targets.rs`).
 | `unsworn plan [--check]` | Write what every route and MCP tool enforces to `unsworn.plan`. `--check` fails when the file is out of date. See [`plan.md`](plan.md). |
 | `unsworn diff [<base>] [--fail-on <looser\|any>]` | Compare the rules with those at a git revision or in another directory, marking the changes that let more requests through. |
 | `unsworn openapi` | Emit the OpenAPI document. |
-| `unsworn gen <lang>` | Planned: generate typed request and response models for handlers. |
+| `unsworn gen [<lang>] [--check]` | Write typed request and response models for handlers, from each route's schemas, to the files `[gen]` lists. See [`types.md`](types.md). |
 | `unsworn conformance --runtime <r> --handlers <file>` | Run the protocol conformance suite against a runtime. |
 | `unsworn build --target <t>` | Bundle the project into a Cloudflare Worker (`cloudflare`) or a serverless function (`vercel`, `netlify`, `lambda`). |
 | `unsworn schema` | Print the config's JSON Schema. |

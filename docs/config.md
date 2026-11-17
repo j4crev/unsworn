@@ -57,6 +57,7 @@ into a second programming language.
 [runtimes.*]   # how to run handlers for each language
 [auth.*]       # named authentication schemes
 [store]        # shared state for rate limits and caches
+[gen]          # optional: files of generated types for handlers
 [defaults]     # policies applied to every route unless overridden
 [policies.*]   # named policy sets that routes can `use`
 [[route]]      # explicit routes, and policies for routes from other sources
@@ -370,6 +371,20 @@ soonest, or the bucket that refills soonest, makes way. To cache more, use
   the values of `header.<name>` rate-limit keys are SHA-256 hashes.
   Give Redis a password, reach it over `rediss://` unless it's on a network
   you control, and don't share it with software you trust less.
+
+### `[gen]`
+
+```toml
+[gen]
+ts     = "src/unsworn.gen.ts"
+python = "unsworn_gen.py"
+go     = { file = "routes/unsworn_gen.go", package = "main" }   # or just the path
+rust   = "src/unsworn_gen.rs"
+```
+
+Where to write each language's types for handlers: one file per language,
+inside the project. `unsworn dev` keeps the files current and `unsworn gen`
+writes them. What's in them is described in [`types.md`](types.md).
 
 ### `{env.NAME}`
 

@@ -26,6 +26,27 @@ handler = "src/users.py#get_user"
 params = { id = { type = "integer", min = 1 } }
 ```
 
+## Types from the config
+
+`unsworn gen` writes a route's contract as types, and `Request` takes
+them:
+
+```toml
+[gen]
+python = "unsworn_gen.py"
+```
+
+```python
+from unsworn import json
+from unsworn_gen import GetUserRequest
+
+def get_user(req: GetUserRequest, ctx):
+    return json({"id": req.params["id"]})   # a type checker knows id is an int
+```
+
+`unsworn dev` keeps the file current. See
+[`docs/types.md`](../../docs/types.md).
+
 ## Replies
 
 | Return | Response |

@@ -12,6 +12,7 @@ compile_error!("the unsworn server runs on Linux only");
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod build;
+mod codegen;
 mod commands;
 mod conformance;
 mod load;
@@ -121,6 +122,23 @@ enum Command {
         #[arg(long, value_parser = ["looser", "any"])]
         fail_on: Option<String>,
     },
+    /// Write typed request models for handlers, from each route's params,
+    /// query, body and response schemas. Without a language, writes every
+    /// file the config's `[gen]` table lists.
+    Gen {
+        /// One language: ts, python, go or rust. Its types are printed
+        /// unless `[gen]` or `--output` names a file.
+        lang: Option<String>,
+        /// The file to write, relative to the project directory.
+        #[arg(long, short)]
+        output: Option<String>,
+        /// The Go package of the generated file. Default: main.
+        #[arg(long)]
+        package: Option<String>,
+        /// Fail when a file isn't up to date, without writing it. For CI.
+        #[arg(long)]
+        check: bool,
+    },
     /// Print the OpenAPI document for the routes Unsworn serves.
     Openapi {
         /// Write to a file instead of stdout.
@@ -225,6 +243,19 @@ fn main() -> ExitCode {
             config_given,
             base.as_deref(),
             fail_on.as_deref(),
+        ),
+        Command::Gen {
+            lang,
+            output,
+            package,
+            check,
+        } => codegen::run(
+            &root,
+            &config,
+            lang.as_deref(),
+            output.as_deref(),
+            package.as_deref(),
+            check,
         ),
         Command::Openapi { output } => commands::openapi(&root, &config, output.as_deref()),
         Command::Conformance {

@@ -19,7 +19,7 @@ Run handlers with the worker, from ``unsworn.toml``::
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 __all__ = ["Request", "json", "text", "body", "content", "tool_error", "next", "PROTOCOL_VERSION"]
 __version__ = "0.3.2"
@@ -27,20 +27,32 @@ __version__ = "0.3.2"
 PROTOCOL_VERSION = 1
 
 
+#: The types of a request's path parameters, query parameters and JSON body.
+P = TypeVar("P")
+Q = TypeVar("Q")
+J = TypeVar("J")
+
+
 @dataclass
-class Request:
-    """A request, already matched, authenticated and validated by Unsworn."""
+class Request(Generic[P, Q, J]):
+    """A request, already matched, authenticated and validated by Unsworn.
+
+    ``Request[Params, Query, Body]`` says what a route's contract gives its
+    handler. ``unsworn gen python`` writes those types from the config, as
+    ``GetUserRequest`` for a handler named ``get_user``. A plain ``Request``
+    takes anything.
+    """
 
     method: str
     path: str
     route: str
     handler: str
     phase: str = "handle"
-    params: dict[str, Any] = field(default_factory=dict)
-    query: dict[str, Any] = field(default_factory=dict)
+    params: P = field(default_factory=dict)  # type: ignore[assignment]
+    query: Q = field(default_factory=dict)  # type: ignore[assignment]
     raw_query: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
-    json: Any = None
+    json: J = None  # type: ignore[assignment]
     text: str | None = None
     body: bytes | None = None
     #: The body as it arrives, on routes with ``stream_body = true``: iterate
