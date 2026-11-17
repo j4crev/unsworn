@@ -1592,7 +1592,7 @@
               "type": "null"
             }
           ],
-          "description": "How many worker processes: a number for exactly that many, or\n`{ min, max }` to start `min` and add more under load. Default:\none, growing to the number of CPU cores (at most 4)."
+          "description": "How many worker processes: a number for exactly that many, or\n`{ min, max }` to start `min` and add more under load. Default:\none, growing to the number of CPUs available."
         }
       },
       "required": [
@@ -1848,7 +1848,7 @@
           "description": "How long a worker the others could do without is kept before it's\nretired. Default: \"30s\"."
         },
         "max": {
-          "description": "The most to run. Default: the number of CPU cores, at most 4.",
+          "description": "The most to run. Default: the number of CPUs available.",
           "format": "uint32",
           "minimum": 0,
           "type": [

@@ -1341,7 +1341,6 @@ async fn watch_load(pool: std::sync::Weak<Pool>) {
             at = Instant::now();
             continue;
         }
-        let started = now_calls.saturating_sub(calls);
         calls = now_calls;
 
         let pids: Vec<Option<u32>> = workers.iter().map(|w| w.pid).collect();
@@ -1377,18 +1376,10 @@ async fn watch_load(pool: std::sync::Weak<Pool>) {
             loads: &loads,
             idle_cpus,
             waited: pool.waited.swap(false, Ordering::Relaxed),
-            rate: started as f64 / over.as_secs_f64().max(0.001),
-            in_flight: workers
-                .iter()
-                .map(|w| w.inflight.load(Ordering::Relaxed))
-                .sum(),
         };
         match scaler.step(sample, pool.min, pool.max, now) {
             Decision::Grow => pool.grow("its workers were busy"),
             Decision::Shrink => pool.shrink("the others have room for its work"),
-            Decision::Withdraw => {
-                pool.shrink("the pool answered no more calls with it than without")
-            }
             Decision::Hold => {}
         }
     }

@@ -1,7 +1,7 @@
 //! Deciding how many workers a runtime needs.
 //!
 //! A pool starts with its fewest workers and adds one when the ones it has
-//! can't keep up. Three things say so:
+//! can't keep up, until there's one for each CPU. Two things say so:
 //!
 //! - **A call had to wait for a worker.** Every worker was at its
 //!   `max_in_flight`, which is how a worker that takes one request at a
@@ -11,20 +11,14 @@
 //!   its CPU time is read from `/proc` instead. Another worker only helps
 //!   if something can run it: when the CPUs are all busy, one more process
 //!   is one more to switch between.
-//! - **Calls are piling up** in workers that are busy, which is what more
-//!   requests arriving than they can answer looks like.
 //!
-//! A busy worker isn't always the reason calls take as long as they do.
-//! One Bun or Node worker answering a handler that does nothing uses a
-//! whole core at 70,000 calls a second, and a second worker next to it
-//! answers no more of them: Unsworn's side of the call is the limit, and
-//! each call costs a tenth more CPU with two. So a worker added for the
-//! second reason is on trial. If the pool doesn't answer at least a tenth
-//! more calls with it, it's retired again, and the pool waits a while,
-//! longer each time, before it tries another.
+//! A worker that is busy all the time has calls queueing behind the one
+//! it's working on, so the pool doesn't wait for proof that another would
+//! answer more of them. Requests that arrive at a steady rate are answered
+//! at that rate with one worker or two, and much sooner with two.
 //!
-//! A worker also goes once the rest could do the work at half their
-//! capacity, and that has been so for a while.
+//! A worker goes once the rest could do the work at half their capacity,
+//! and that has been so for a while.
 
 use std::time::{Duration, Instant};
 
@@ -36,20 +30,6 @@ const BUSY: f64 = 0.9;
 const BUSY_SAMPLES: u32 = 2;
 /// How much idle CPU, in CPUs, there has to be for one more worker.
 const SPARE_CPU: f64 = 0.5;
-/// How many calls in flight for each worker count as piling up.
-const BACKLOG: usize = 128;
-/// How many samples a worker on trial is judged over.
-const TRIAL_SAMPLES: u32 = 4;
-/// How much higher the call rate has to be with the worker on trial.
-const TRIAL_GAIN: f64 = 1.1;
-/// A gain that settles it early, after [`BUSY_SAMPLES`] samples.
-const TRIAL_CLEAR_GAIN: f64 = 1.3;
-/// How long a trial waits for its worker to start before giving up.
-const TRIAL_START: Duration = Duration::from_secs(15);
-/// How long the pool waits after a worker didn't help before it tries
-/// another, at first and at most. It doubles each time.
-const WAIT_FIRST: Duration = Duration::from_secs(60);
-const WAIT_MOST: Duration = Duration::from_secs(16 * 60);
 
 /// What to do with the pool after a sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,8 +39,6 @@ pub enum Decision {
     Grow,
     /// Retire a worker: the others have room for its work.
     Shrink,
-    /// Retire the worker that was on trial: it didn't help.
-    Withdraw,
 }
 
 /// What the pool looked like over one [`SAMPLE`].
@@ -73,23 +51,6 @@ pub struct Sample<'a> {
     pub idle_cpus: Option<f64>,
     /// A call had to wait for a worker, which means none is to spare.
     pub waited: bool,
-    /// Calls started, per second.
-    pub rate: f64,
-    /// Calls in flight at the end of the sample, over all workers.
-    pub in_flight: usize,
-}
-
-/// A worker added because the others were busy, until it has shown that
-/// it helps.
-#[derive(Debug)]
-struct Trial {
-    /// The call rate before it was added.
-    before: f64,
-    /// How many workers there were then.
-    workers: usize,
-    since: Instant,
-    samples: u32,
-    rate_sum: f64,
 }
 
 /// The state between samples.
@@ -99,14 +60,7 @@ pub struct Scaler {
     /// retired.
     spare_for: Duration,
     busy_samples: u32,
-    /// The call rates of those busy samples, added up.
-    busy_rate_sum: f64,
     spare_since: Option<Instant>,
-    trial: Option<Trial>,
-    /// No trials before this: the last one didn't help.
-    wait_until: Option<Instant>,
-    /// How long to wait after the next one that doesn't.
-    wait: Duration,
 }
 
 impl Scaler {
@@ -114,11 +68,7 @@ impl Scaler {
         Scaler {
             spare_for,
             busy_samples: 0,
-            busy_rate_sum: 0.0,
             spare_since: None,
-            trial: None,
-            wait_until: None,
-            wait: WAIT_FIRST,
         }
     }
 
@@ -127,74 +77,18 @@ impl Scaler {
     pub fn step(&mut self, sample: Sample, min: usize, max: usize, now: Instant) -> Decision {
         let n = sample.loads.len();
         let known: Vec<f64> = sample.loads.iter().flatten().copied().collect();
+        // A worker that has only just started has no load yet, which also
+        // keeps the pool from adding a second before the first is counted.
         let all_known = n > 0 && known.len() == n;
-
-        if let Some(trial) = &mut self.trial {
-            // Wait for the new worker, then for a sample of its own.
-            if n <= trial.workers {
-                if now.duration_since(trial.since) >= TRIAL_START {
-                    self.trial = None;
-                }
-                return Decision::Hold;
-            }
-            if !all_known {
-                return Decision::Hold;
-            }
-            trial.samples += 1;
-            trial.rate_sum += sample.rate;
-            let rate = trial.rate_sum / f64::from(trial.samples);
-            let clear = trial.samples >= BUSY_SAMPLES && rate >= trial.before * TRIAL_CLEAR_GAIN;
-            if trial.samples < TRIAL_SAMPLES && !clear {
-                return Decision::Hold;
-            }
-            let helped = rate >= trial.before * TRIAL_GAIN;
-            self.trial = None;
-            self.busy_samples = 0;
-            self.busy_rate_sum = 0.0;
-            if !helped {
-                self.wait_until = Some(now + self.wait);
-                self.wait = (self.wait * 2).min(WAIT_MOST);
-                return Decision::Withdraw;
-            }
-            self.wait = WAIT_FIRST;
-            // Still all busy: the next one goes on trial against this rate.
-            let room = sample.idle_cpus.is_none_or(|idle| idle >= SPARE_CPU);
-            if n < max && room && known.iter().all(|load| *load >= BUSY) {
-                self.trial = Some(Trial {
-                    before: rate,
-                    workers: n,
-                    since: now,
-                    samples: 0,
-                    rate_sum: 0.0,
-                });
-                return Decision::Grow;
-            }
-            return Decision::Hold;
-        }
 
         if all_known && known.iter().all(|load| *load >= BUSY) {
             self.busy_samples += 1;
-            self.busy_rate_sum += sample.rate;
         } else {
             self.busy_samples = 0;
-            self.busy_rate_sum = 0.0;
         }
         let room = sample.idle_cpus.is_none_or(|idle| idle >= SPARE_CPU);
-        // More arriving than is answered needs no trial, and doesn't wait.
-        let piled = sample.in_flight >= BACKLOG * n;
-        let free = self.wait_until.is_none_or(|until| now >= until);
-        if n < max && room && self.busy_samples >= BUSY_SAMPLES && (piled || free) {
-            if !piled {
-                self.trial = Some(Trial {
-                    before: self.busy_rate_sum / f64::from(self.busy_samples),
-                    workers: n,
-                    since: now,
-                    samples: 0,
-                    rate_sum: 0.0,
-                });
-            }
+        if n < max && room && self.busy_samples >= BUSY_SAMPLES {
             self.busy_samples = 0;
-            self.busy_rate_sum = 0.0;
             self.spare_since = None;
             return Decision::Grow;
         }
@@ -333,45 +227,16 @@ mod tests {
         }
     }
 
-    /// A sample of workers with these loads, answering `rate` calls a
-    /// second.
-    fn at(loads: &[Option<f64>], rate: f64) -> Sample<'_> {
+    fn of(loads: &[Option<f64>]) -> Sample<'_> {
         Sample {
             loads,
-            rate,
             ..Sample::default()
         }
-    }
-
-    fn of(loads: &[Option<f64>]) -> Sample<'_> {
-        at(loads, 1000.0)
     }
 
     /// Steps a pool of one to four workers.
     fn step(s: &mut Scaler, sample: Sample, now: Instant) -> Decision {
         s.step(sample, 1, 4, now)
-    }
-
-    /// Runs a trial to its end: the new worker's first sample, then
-    /// `samples` it's judged over at `rate`. Returns the verdict.
-    fn trial_over(
-        s: &mut Scaler,
-        loads: &[Option<f64>],
-        rate: f64,
-        samples: u32,
-        now: Instant,
-    ) -> Decision {
-        let mut starting = loads.to_vec();
-        *starting.last_mut().unwrap() = None;
-        assert_eq!(step(s, of(&starting), now), Decision::Hold);
-        for _ in 1..samples {
-            assert_eq!(step(s, at(loads, rate), now), Decision::Hold);
-        }
-        step(s, at(loads, rate), now)
-    }
-
-    fn trial(s: &mut Scaler, loads: &[Option<f64>], rate: f64, now: Instant) -> Decision {
-        trial_over(s, loads, rate, TRIAL_SAMPLES, now)
     }
 
     #[test]
@@ -420,97 +285,39 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_that_adds_calls_stays() {
+    fn keeps_growing_while_every_worker_stays_busy() {
+        let mut s = Scaler::default();
+        let now = Instant::now();
+        // Work that fills a core for each worker it's given: the pool adds
+        // one at a time, up to the most it may run.
+        for n in 1..4 {
+            let busy = vec![Some(1.0); n];
+            assert_eq!(step(&mut s, of(&busy), now), Decision::Hold, "{n}");
+            assert_eq!(step(&mut s, of(&busy), now), Decision::Grow, "{n}");
+            // The new worker has no load to show in its first sample, and
+            // the pool waits for one before it counts the workers as busy.
+            let mut starting = busy.clone();
+            starting.push(None);
+            assert_eq!(step(&mut s, of(&starting), now), Decision::Hold, "{n}");
+        }
+        let full = [Some(1.0); 4];
+        for _ in 0..10 {
+            assert_eq!(step(&mut s, of(&full), now), Decision::Hold);
+        }
+    }
+
+    #[test]
+    fn stops_growing_once_the_workers_have_time_to_spare() {
         let mut s = Scaler::default();
         let now = Instant::now();
         let one = [Some(1.0)];
-        assert_eq!(step(&mut s, at(&one, 700.0), now), Decision::Hold);
-        assert_eq!(step(&mut s, at(&one, 720.0), now), Decision::Grow);
-        // The pool waits for it to start.
-        assert_eq!(step(&mut s, at(&one, 710.0), now), Decision::Hold);
-        // Twice the workers answer nearly twice the calls. That's clear
-        // after two samples, and with both still busy, a third is tried.
-        let two = [Some(1.0), Some(1.0)];
-        assert_eq!(trial_over(&mut s, &two, 1400.0, 2, now), Decision::Grow);
-        // A third adds a sixth, which takes the whole trial to tell, and
-        // then the three have time to spare.
-        let three = [Some(0.8), Some(0.8), Some(0.8)];
-        assert_eq!(trial(&mut s, &three, 1650.0, now), Decision::Hold);
+        assert_eq!(step(&mut s, of(&one), now), Decision::Hold);
+        assert_eq!(step(&mut s, of(&one), now), Decision::Grow);
+        // Two share what one was doing, and neither is busy.
+        let two = [Some(0.55), Some(0.55)];
         for _ in 0..10 {
-            assert_eq!(step(&mut s, at(&three, 1650.0), now), Decision::Hold);
+            assert_eq!(step(&mut s, of(&two), now), Decision::Hold);
         }
-    }
-
-    #[test]
-    fn a_worker_that_adds_none_is_retired_and_the_next_try_waits() {
-        let mut s = Scaler::default();
-        let start = Instant::now();
-        let one = [Some(1.0)];
-        let two = [Some(0.5), Some(0.5)];
-        assert_eq!(step(&mut s, at(&one, 70_000.0), start), Decision::Hold);
-        assert_eq!(step(&mut s, at(&one, 71_000.0), start), Decision::Grow);
-        // Two workers, the same calls: something else is the limit.
-        assert_eq!(trial(&mut s, &two, 70_000.0, start), Decision::Withdraw);
-
-        // The one worker is as busy as before, and that's no reason now.
-        let soon = start + WAIT_FIRST - Duration::from_secs(1);
-        for _ in 0..10 {
-            assert_eq!(step(&mut s, at(&one, 71_000.0), soon), Decision::Hold);
-        }
-        // After the wait it's tried again, and then the wait is longer.
-        let later = start + WAIT_FIRST;
-        assert_eq!(step(&mut s, at(&one, 71_000.0), later), Decision::Grow);
-        assert_eq!(trial(&mut s, &two, 70_000.0, later), Decision::Withdraw);
-        let not_yet = later + WAIT_FIRST;
-        for _ in 0..3 {
-            assert_eq!(step(&mut s, at(&one, 71_000.0), not_yet), Decision::Hold);
-        }
-        let again = later + WAIT_FIRST * 2;
-        assert_eq!(step(&mut s, at(&one, 71_000.0), again), Decision::Grow);
-    }
-
-    #[test]
-    fn calls_piling_up_need_no_trial_and_no_wait() {
-        let mut s = Scaler::default();
-        let start = Instant::now();
-        let one = [Some(1.0)];
-        let two = [Some(0.5), Some(0.5)];
-        assert_eq!(step(&mut s, at(&one, 1000.0), start), Decision::Hold);
-        assert_eq!(step(&mut s, at(&one, 1000.0), start), Decision::Grow);
-        assert_eq!(trial(&mut s, &two, 1000.0, start), Decision::Withdraw);
-
-        // More arrive than one worker answers: they pile up in it.
-        let piled = Sample {
-            in_flight: BACKLOG,
-            ..at(&one, 1000.0)
-        };
-        assert_eq!(step(&mut s, piled, start), Decision::Hold);
-        assert_eq!(step(&mut s, piled, start), Decision::Grow);
-        // That worker isn't on trial: it stays whatever the rate does.
-        let mut starting = two;
-        starting[1] = None;
-        assert_eq!(step(&mut s, of(&starting), start), Decision::Hold);
-        for _ in 0..TRIAL_SAMPLES * 2 {
-            assert_eq!(step(&mut s, at(&two, 1000.0), start), Decision::Hold);
-        }
-    }
-
-    #[test]
-    fn a_trial_whose_worker_never_starts_is_dropped() {
-        let mut s = Scaler::default();
-        let start = Instant::now();
-        let one = [Some(1.0)];
-        assert_eq!(step(&mut s, of(&one), start), Decision::Hold);
-        assert_eq!(step(&mut s, of(&one), start), Decision::Grow);
-        assert_eq!(
-            step(&mut s, of(&one), start + Duration::from_secs(5)),
-            Decision::Hold
-        );
-        let later = start + TRIAL_START;
-        assert_eq!(step(&mut s, of(&one), later), Decision::Hold);
-        // The pool is free to try again.
-        assert_eq!(step(&mut s, of(&one), later), Decision::Hold);
-        assert_eq!(step(&mut s, of(&one), later), Decision::Grow);
     }
 
     #[test]
@@ -519,12 +326,11 @@ mod tests {
         let now = Instant::now();
         let full = [Some(1.0); 4];
         for _ in 0..10 {
-            let piled = Sample {
-                in_flight: 10_000,
+            let waited = Sample {
                 waited: true,
                 ..of(&full)
             };
-            assert_eq!(step(&mut s, piled, now), Decision::Hold);
+            assert_eq!(step(&mut s, waited, now), Decision::Hold);
         }
     }
 

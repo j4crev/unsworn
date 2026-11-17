@@ -210,7 +210,7 @@ pub enum RawWorkers {
 pub struct RawWorkerRange {
     /// How many to start, and keep when there's little to do. Default: 1.
     pub min: Option<u32>,
-    /// The most to run. Default: the number of CPU cores, at most 4.
+    /// The most to run. Default: the number of CPUs available.
     pub max: Option<u32>,
     /// How long a worker the others could do without is kept before it's
     /// retired. Default: "30s".
@@ -227,7 +227,7 @@ pub struct RawRuntime {
     pub protocol: Protocol,
     /// How many worker processes: a number for exactly that many, or
     /// `{ min, max }` to start `min` and add more under load. Default:
-    /// one, growing to the number of CPU cores (at most 4).
+    /// one, growing to the number of CPUs available.
     pub workers: Option<RawWorkers>,
     #[serde(default)]
     pub eager: bool,

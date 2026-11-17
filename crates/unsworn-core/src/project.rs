@@ -74,7 +74,7 @@ pub struct Runtime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Workers {
     pub min: u32,
-    /// `None` leaves it to the host: the number of CPU cores, at most 4.
+    /// `None` leaves it to the host: one for each CPU it may use.
     pub max: Option<u32>,
     /// How long a worker the others could do without is kept.
     pub idle: Duration,
@@ -102,11 +102,11 @@ impl Workers {
         }
     }
 
-    /// The most workers to run on a machine with `cores` CPU cores.
+    /// The most workers to run where `cores` CPUs are available.
     pub fn most(&self, cores: usize) -> usize {
         match self.max {
             Some(max) => max as usize,
-            None => cores.clamp(1, 4).max(self.min as usize),
+            None => cores.max(1).max(self.min as usize),
         }
     }
 }

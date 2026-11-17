@@ -187,11 +187,11 @@ workers    = 2
   message (see [`protocol.md`](protocol.md)).
 - **Sizing.** A pool starts with its fewest workers (one by default) and
   adds one when calls have to wait for a worker, or when every worker has
-  used most of a CPU core and there is idle CPU for another. A worker
-  added for the second reason is kept only if the pool answers more calls
-  with it. The pool retires a worker when the rest have had room for its
-  work for a while. The rules are in `crates/unsworn/src/scale.rs`, and
-  the setting is [`workers`](config.md#how-many-workers).
+  used most of a CPU core and there is idle CPU for another, up to one
+  worker for each CPU. The pool retires a worker when the rest have had
+  room for its work for a while. The rules are in
+  `crates/unsworn/src/scale.rs`, and the setting is
+  [`workers`](config.md#how-many-workers).
 - **Lazy start.** By default, a runtime's workers start on its first request,
   which keeps startup fast on scale-to-zero platforms. `eager = true` starts
   them at boot.
