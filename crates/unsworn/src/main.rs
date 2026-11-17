@@ -15,6 +15,7 @@ mod build;
 mod commands;
 mod conformance;
 mod load;
+mod plan;
 mod server;
 mod store;
 mod workers;
@@ -98,6 +99,28 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Write the rules the project enforces, worked out for every route,
+    /// to `unsworn.plan`. Commit it next to the config.
+    Plan {
+        /// Fail when the file isn't up to date, without writing it. For CI.
+        #[arg(long)]
+        check: bool,
+        /// The file to write, relative to the project directory. `-`
+        /// prints the plan.
+        #[arg(long, short)]
+        output: Option<String>,
+    },
+    /// Show what changed in the rules since another version of the
+    /// project, and which changes let more requests through.
+    Diff {
+        /// A git revision (the default is HEAD), or the directory of
+        /// another copy of the project.
+        base: Option<String>,
+        /// Exit with an error when a change loosens the rules (`looser`),
+        /// or when anything changed (`any`).
+        #[arg(long, value_parser = ["looser", "any"])]
+        fail_on: Option<String>,
+    },
     /// Print the OpenAPI document for the routes Unsworn serves.
     Openapi {
         /// Write to a file instead of stdout.
@@ -150,6 +173,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let config_given = cli.config.is_some();
     let config = load::find_config(&root, cli.config.as_deref());
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -194,6 +218,14 @@ fn main() -> ExitCode {
             out,
         }),
         Command::Routes { policies, json } => commands::routes(&root, &config, policies, json),
+        Command::Plan { check, output } => plan::plan(&root, &config, check, output.as_deref()),
+        Command::Diff { base, fail_on } => plan::diff(
+            &root,
+            &config,
+            config_given,
+            base.as_deref(),
+            fail_on.as_deref(),
+        ),
         Command::Openapi { output } => commands::openapi(&root, &config, output.as_deref()),
         Command::Conformance {
             runtime: rt,

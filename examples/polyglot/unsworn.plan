@@ -1,0 +1,75 @@
+# What this project enforces, worked out from unsworn.toml and everything it
+# brings in: each route's merged policies and checks, the auth schemes,
+# the server's limits. Written by `unsworn plan`; don't edit it. Change
+# the config, run `unsworn plan` again and commit both, so a review shows
+# what a change does to the rules. `unsworn plan --check` fails when
+# this file is out of date.
+
+plan 1
+
+server
+  listen             127.0.0.1:8080
+  tls                off
+  max_body           1MB
+  timeout            30s
+  max_connections    10000
+  idle_timeout       5m
+
+store
+  backend            memory
+
+auth key
+  type               api_key
+  header             x-api-key
+  keys               listed in the config
+
+runtime py
+  extensions         .py
+  command            python3 -u -m unsworn.worker
+  protocol           framed
+  workers            1
+  env                PYTHONPATH
+
+runtime ts
+  extensions         .ts
+  command            bun run ../../sdk/js/src/worker.ts
+  protocol           framed
+  workers            1
+
+POST /api/summarize
+  handler            routes/api.summarize.post.py (py)
+  auth               key
+  rate_limit         60 per 1m by ip
+  before             src/tenant.ts#tenant
+  body               {
+                       "properties": {
+                         "text": {
+                           "maxLength": 10000,
+                           "type": "string"
+                         }
+                       },
+                       "required": [
+                         "text"
+                       ],
+                       "type": "object"
+                     }
+
+GET /api/users/{id}
+  handler            routes/api.users.[id].get.ts (ts)
+  auth               key
+  rate_limit         60 per 1m by ip
+  cache              30s; vary x-api-key
+  before             src/tenant.ts#tenant
+  params.id          {"minimum":1,"type":"integer"}
+
+* /health
+  respond            200 json {"ok":true}
+  auth               none
+
+* /{*rest}
+  handler            src/legacy.ts (ts)
+  auth               none
+  at /api/{*rest}
+    auth               key
+    rate_limit         60 per 1m by ip
+    before             src/tenant.ts#tenant

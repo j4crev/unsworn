@@ -26,6 +26,9 @@ src/
   structures, so features never differ between them.
 - A **JSON Schema** for the config is published with each release, so editors
   can autocomplete and flag errors.
+- `unsworn plan` writes what all of it adds up to, for every route, to a
+  file to commit, and `unsworn diff` shows what a change does to the rules.
+  See [`plan.md`](plan.md).
 - `unsworn check` validates the config and the routes directory and prints
   errors with a path and a fix, for example:
 

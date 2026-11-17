@@ -29,6 +29,18 @@ Those rules are declared in `unsworn.toml` and enforced by a
 binary that handler code can't change. A handler only runs after its request
 has been tested against those rules.
 
+A change to the rules can be reviewed too. `unsworn plan` writes what every
+route ends up enforcing to a file you commit, and `unsworn diff` says what
+a branch changes and marks what it loosens:
+
+```
+$ unsworn diff origin/main
+~ * /admin/{*rest}
+  ! auth               jwt → none  (looser)
+```
+
+See [`docs/plan.md`](docs/plan.md).
+
 ### Built for MCP servers
 
 AI agents reach your systems through MCP servers. Every caller of an MCP
@@ -226,11 +238,14 @@ All of this is configured in `unsworn.toml`, with no code:
   with precise, fixable errors, and SDK workers confirm at startup that every
   handler name in the config exists. The config has a published JSON Schema
   for editor autocomplete.
+- **Rule changes show up in review.** The [plan](docs/plan.md) is every
+  route's merged policies in one committed file, and `unsworn diff` lists
+  what a change does to them.
 
 Details: [architecture](docs/architecture.md), [config](docs/config.md),
-[protocol](docs/protocol.md), [conformance](docs/conformance.md),
-[MCP](docs/mcp.md), [benchmarks](docs/benchmarks.md) and
-[roadmap](docs/roadmap.md).
+[plan and diff](docs/plan.md), [protocol](docs/protocol.md),
+[conformance](docs/conformance.md), [MCP](docs/mcp.md),
+[benchmarks](docs/benchmarks.md) and [roadmap](docs/roadmap.md).
 
 ## Where Unsworn sits
 
@@ -299,6 +314,8 @@ unsworn dev         # serves it, reloads on changes, verifies handler names
 | `unsworn dev` | Serve with file watching, every runtime started up front, and detailed errors |
 | `unsworn check` | Validate config, routes and handler files; `--deep` asks workers whether every handler exists; `--target <t>` checks a deployment target |
 | `unsworn routes` | Print the route table and each route's source, including MCP tools; `--policies` shows merged policies and each tool's arguments |
+| `unsworn plan` | Write what every route and tool enforces to `unsworn.plan`, to commit with the config; `--check` fails when it's out of date |
+| `unsworn diff` | Show what changed in the rules since a git revision (or another directory), marking what got looser; `--fail-on looser` for CI |
 | `unsworn openapi` | Print the OpenAPI document for what Unsworn serves |
 | `unsworn build` | Bundle the project for a deployment target: `--target cloudflare` makes a Cloudflare Worker, and `vercel`, `netlify` and `lambda` make a function for each |
 | `unsworn conformance` | Test a runtime's workers against the protocol |

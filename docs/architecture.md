@@ -63,6 +63,17 @@ header rules and the MCP endpoint. Bodies the core doesn't need to read,
 such as streamed handler replies and proxied responses, pass through it as
 the host's own body type.
 
+#### The plan
+
+`unsworn_core::plan` turns a compiled project into its *plan*: for each
+route and method, the policies every layer adds up to (worked out by the
+same merge a request goes through), its checks and what it does, next to
+the auth schemes and server limits. `unsworn plan` writes it as text and
+`unsworn diff` compares two of them. A plan is built from a *symbolic*
+compile (`compile_symbolic`), which leaves each `{env.NAME}` as written
+instead of reading the variable, so it's the same on every machine and
+holds no secret. See [`plan.md`](plan.md).
+
 The core never opens sockets, spawns processes, reads files or reads the
 clock. Config files come through a separate `Host` trait for loading
 (`unsworn_core::project::Host`). This keeps it testable (its pipeline tests
@@ -271,6 +282,8 @@ from a per-target capability table (`unsworn-core/src/targets.rs`).
 | `unsworn dev` | Serve with file watching, handler rebuilds and verbose errors. |
 | `unsworn check [--deep] [--target <t>]` | Validate config and routes and report target capability gaps. `--deep` also starts workers to verify handler names. |
 | `unsworn routes [--policies]` | Print the resolved route table and the source of each route. `--policies` adds each route's merged policies and where each value came from. |
+| `unsworn plan [--check]` | Write what every route and MCP tool enforces to `unsworn.plan`. `--check` fails when the file is out of date. See [`plan.md`](plan.md). |
+| `unsworn diff [<base>] [--fail-on <looser\|any>]` | Compare the rules with those at a git revision or in another directory, marking the changes that let more requests through. |
 | `unsworn openapi` | Emit the OpenAPI document. |
 | `unsworn gen <lang>` | Planned: generate typed request and response models for handlers. |
 | `unsworn conformance --runtime <r> --handlers <file>` | Run the protocol conformance suite against a runtime. |
