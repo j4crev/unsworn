@@ -62,6 +62,7 @@ into a second programming language.
 [policies.*]   # named policy sets that routes can `use`
 [[route]]      # explicit routes, and policies for routes from other sources
 [[function]]   # optional: handlers that other handlers call by name
+[outbound.*]   # optional: services Unsworn calls for handlers, adding their credentials
 ```
 
 ### `[server]`
@@ -446,16 +447,30 @@ A handler that other handlers call with `ctx.call("embed", input)`, in
 any language. It has no path, so nothing outside reaches it. See
 [`functions.md`](functions.md).
 
+### `[outbound.<name>]`
+
+```toml
+[outbound.stripe]
+url     = "https://api.stripe.com"
+headers = { Authorization = "Bearer {env.STRIPE_KEY}" }
+methods = ["GET", "POST"]                        # optional
+paths   = ["/v1/charges", "/v1/charges/{id}"]    # optional
+```
+
+A service handlers reach with `ctx.fetch("stripe", path)`. Unsworn makes
+the request and adds `headers`, so no handler holds the credential. See
+[`outbound.md`](outbound.md).
+
 ### `{env.NAME}`
 
 Values in these places can include `{env.NAME}`, replaced with the
 environment variable `NAME` when the config loads: auth scheme secrets, JWKS
-and verifier URLs, verifier `headers`, issuers, audiences and API keys, proxy upstreams, `[store].url` and `token`, and
-runtime `env` values. A missing variable is an error.
+and verifier URLs, verifier `headers`, issuers, audiences and API keys, proxy upstreams, `[store].url` and `token`,
+an outbound service's `url` and `headers`, and runtime `env` values. A missing variable is an error.
 
 Workers inherit Unsworn's environment, except for the variables it reads
 its own credentials from: a JWT `secret`, API `keys`, verifier `headers`,
-and `[store].url` and `token`. A handler that could read the signing secret
+`[store].url` and `token`, and an outbound service's `headers`. A handler that could read the signing secret
 could mint its own tokens, so those stay with Unsworn. If a handler needs
 one of them (the same Redis, say), pass it on by name:
 

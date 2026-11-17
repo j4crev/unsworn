@@ -249,6 +249,16 @@ showing the policies a call to it gets and where each one came from.
 - **Output validation.** If a tool declares `output`, results are checked
   against it, following the route's response-validation setting.
 
+### What a tool can reach
+
+A tool's input is written by a model, which may be acting on text someone
+else wrote. So what a tool can do with the credentials it runs with
+matters as much as who can call it. Declare the services a tool needs as
+[outbound services](outbound.md): the handler calls
+`ctx.fetch("billing", "/invoices", ...)`, Unsworn adds the API key, and
+the handler never holds it. The config then says both halves, who may
+call the tool and what it may call, with its methods and paths.
+
 ### Policies
 
 A request to the endpoint is checked in two steps.

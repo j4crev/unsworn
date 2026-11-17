@@ -7,7 +7,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import { type Bridge, type CallResult, type HttpResponseValue, initSync, Unsworn } from "../wasm/unsworn.js";
 import { handlerRequest, outcome, pickHandler, type RequestFields, splitRef, toBytes } from "./handler.ts";
-import { CallError } from "./index.ts";
+import { CallError, FetchError } from "./index.ts";
+
+/** `ctx.fetch` where handlers run in the core's own process. */
+function noFetch(): Promise<never> {
+  return Promise.reject(
+    new FetchError(501, "outbound services (`ctx.fetch`) work on the server only; `unsworn check --target` reports them"),
+  );
+}
 
 /** `ctx.call` where handlers run in the core's own process. */
 function noCalls(): Promise<never> {
@@ -191,6 +198,7 @@ export function baseBridge(bundle: Bundle, dev: boolean, fetchArgs?: () => unkno
       });
       const ctx = msg.context ?? {};
       Object.defineProperty(ctx, "call", { value: noCalls });
+      Object.defineProperty(ctx, "fetch", { value: noFetch });
       const run = (async () => outcome(await fn(req, ctx)))();
       try {
         const out = await Promise.race([run, timeout]);

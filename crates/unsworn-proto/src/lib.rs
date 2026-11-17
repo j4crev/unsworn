@@ -42,6 +42,8 @@ pub enum Message {
     Ack(Ack),
     Call(Call),
     Result(CallResult),
+    Fetch(Fetch),
+    Fetched(Fetched),
     /// A message type this version doesn't know. Receivers ignore it.
     Unknown,
 }
@@ -82,6 +84,8 @@ impl Message {
             "ack" => Message::Ack(serde_json::from_slice(json)?),
             "call" => Message::Call(serde_json::from_slice(json)?),
             "result" => Message::Result(serde_json::from_slice(json)?),
+            "fetch" => Message::Fetch(serde_json::from_slice(json)?),
+            "fetched" => Message::Fetched(serde_json::from_slice(json)?),
             _ => {
                 serde_json::from_slice::<serde::de::IgnoredAny>(json)?;
                 Message::Unknown
@@ -105,6 +109,8 @@ impl Message {
             Message::Ack(m) => Some(&m.id),
             Message::Call(m) => Some(&m.id),
             Message::Result(m) => Some(&m.id),
+            Message::Fetch(m) => Some(&m.id),
+            Message::Fetched(m) => Some(&m.id),
             Message::Ready(_) | Message::Unknown => None,
         }
     }
@@ -115,6 +121,8 @@ impl Message {
             Message::Request(m) => m.body_len,
             Message::Response(m) => m.body_len,
             Message::Chunk(m) => m.body_len,
+            Message::Fetch(m) => m.body_len,
+            Message::Fetched(m) => m.body_len,
             _ => None,
         }
     }
@@ -124,6 +132,8 @@ impl Message {
             Message::Request(m) => &mut m.body_len,
             Message::Response(m) => &mut m.body_len,
             Message::Chunk(m) => &mut m.body_len,
+            Message::Fetch(m) => &mut m.body_len,
+            Message::Fetched(m) => &mut m.body_len,
             _ if len.is_none() => return Ok(()),
             _ => return Err(EncodeError::BodyNotAllowed),
         };
@@ -170,6 +180,10 @@ pub struct Ready {
     /// in Unsworn depends on it; the conformance suite reads it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub calls: bool,
+    /// The worker's handlers can ask for requests to outbound services
+    /// (see [`Fetch`]). Read by the conformance suite.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fetch: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sdk: Option<String>,
 }
@@ -555,6 +569,53 @@ pub struct CallResult {
     /// What went wrong, when Unsworn or the function's worker failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// A handler asks Unsworn to make an HTTP request to a service the config
+/// declares under `[outbound.<name>]`. Unsworn adds the service's own
+/// headers, such as its credential, which the handler never sees. Sent by
+/// a worker, answered with a [`Fetched`] that has the same `id`. The
+/// request's body is the raw bytes after the message.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Fetch {
+    /// Chosen by the worker, unique among its fetches that are in flight.
+    pub id: String,
+    /// The request the fetch is made for.
+    pub request: String,
+    /// The service's name.
+    pub service: String,
+    #[serde(default = "get")]
+    pub method: String,
+    /// The path and query, after the service's URL. Starts with `/`.
+    pub path: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_len: Option<u64>,
+}
+
+fn get() -> String {
+    "GET".into()
+}
+
+/// A service's answer to a [`Fetch`], with its body as the raw bytes after
+/// the message. Or, with `error`, why there isn't one.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Fetched {
+    pub id: String,
+    /// The service's status. With `error`, the one for what went wrong:
+    /// `404` for no such service, `403` for a method or path the config
+    /// doesn't allow, `502` for a service that couldn't be reached and
+    /// `504` for one that took too long.
+    pub status: u16,
+    /// The response's headers, with lowercase names.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// Set when the request wasn't made or got no answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_len: Option<u64>,
 }
 
 /// A log record from a worker. With `id`, it belongs to that request.
@@ -965,6 +1026,7 @@ mod tests {
                 stream_body: false,
                 calls: false,
                 raw_json: false,
+                fetch: false,
                 sdk: None
             })
         );

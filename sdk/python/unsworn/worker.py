@@ -16,7 +16,7 @@ import time
 import traceback
 from typing import Any, Callable
 
-from . import PROTOCOL_VERSION, CallError, Context, Request, __version__
+from . import _UNSET, PROTOCOL_VERSION, CallError, Context, Fetched, FetchError, Request, __version__
 from .protocol import FramedCodec, JsonlCodec
 
 ROOT = os.environ.get("UNSWORN_ROOT", os.getcwd())
@@ -28,6 +28,8 @@ DEV = os.environ.get("UNSWORN_DEV") == "1"
 RAW_JSON = os.environ.get("UNSWORN_RAW_JSON") == "1"
 # Set by Unsworn versions that answer `call` messages, for `ctx.call`.
 CALLS = os.environ.get("UNSWORN_CALLS") == "1"
+# And `fetch` messages, for `ctx.fetch`.
+FETCH = os.environ.get("UNSWORN_FETCH") == "1"
 # Set by Unsworn versions that accept `log` messages. Without it, logging
 # keeps Python's defaults (stderr).
 LOG_LEVEL = os.environ.get("UNSWORN_LOG_LEVEL")
@@ -400,6 +402,56 @@ class Worker:
         finally:
             self.calls.pop(call_id, None)
 
+    def fetch(self, rid: str, *args: Any) -> Any:
+        """``ctx.fetch``: asks Unsworn for a request to an outbound service.
+        Awaitable on the loop's thread, and waits on a handler thread, as
+        :meth:`call` does."""
+        if threading.get_ident() == self.loop_thread:
+            return self._fetch(rid, *args)
+        return asyncio.run_coroutine_threadsafe(self._fetch(rid, *args), self.loop).result()
+
+    async def _fetch(
+        self, rid: str, service: str, path: str, method: str | None, headers: dict | None, value: Any, body: Any
+    ) -> Fetched:
+        if not FETCH:
+            raise FetchError(501, "this Unsworn doesn't make requests for handlers: update it")
+        sent = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+        raw: bytes | None = None
+        if value is not _UNSET:
+            raw = json.dumps(value, separators=(",", ":")).encode()
+            sent.setdefault("content-type", "application/json")
+        elif body is not None:
+            raw = body.encode() if isinstance(body, str) else bytes(body)
+        self.next_call += 1
+        fetch_id = f"f-{self.next_call}"
+        answer: asyncio.Future = self.loop.create_future()
+        self.calls[fetch_id] = (rid, answer)
+        self.send(
+            {
+                "type": "fetch",
+                "id": fetch_id,
+                "request": rid,
+                "service": service,
+                "method": (method or ("POST" if raw else "GET")).upper(),
+                "path": path,
+                "headers": sent,
+            },
+            raw or None,
+        )
+        try:
+            return await answer
+        finally:
+            self.calls.pop(fetch_id, None)
+
+    def _fetched(self, message: dict, raw: bytes | None) -> None:
+        entry = self.calls.pop(message.get("id", ""), None)
+        if entry is None or entry[1].done():
+            return
+        if message.get("error") is not None:
+            entry[1].set_exception(FetchError(message.get("status", 502), message["error"]))
+        else:
+            entry[1].set_result(Fetched(message.get("status", 0), message.get("headers") or {}, raw or b""))
+
     def _result(self, message: dict) -> None:
         entry = self.calls.pop(message.get("id", ""), None)
         if entry is None or entry[1].done():
@@ -415,6 +467,9 @@ class Worker:
         kind = message.get("type")
         if kind == "result":
             self._result(message)
+            return
+        if kind == "fetched":
+            self._fetched(message, raw)
             return
         if kind == "request":
             if message.get("stream"):
@@ -486,6 +541,7 @@ class Worker:
         self.requests[rid] = req
         ctx = Context(msg.get("context") or {})
         ctx._call = lambda name, value=None: self.call(rid, name, value)
+        ctx._fetch = lambda *args: self.fetch(rid, *args)
         # Each task has its own context, so this only tags this request's logs.
         _current_id.set(rid)
         try:
@@ -599,6 +655,7 @@ def _ready() -> dict:
         "stream_body": True,
         "raw_json": RAW_JSON,
         "calls": CALLS,
+        "fetch": FETCH,
         "sdk": f"unsworn-python/{__version__}",
     }
 

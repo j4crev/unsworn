@@ -1,6 +1,14 @@
 // Conformance handlers for the JS/TS SDK. See docs/conformance.md.
 
-import { type Before, CallError, type Handler, content as contentReply, log, next } from "../src/index.ts";
+import {
+  type Before,
+  CallError,
+  FetchError,
+  type Handler,
+  content as contentReply,
+  log,
+  next,
+} from "../src/index.ts";
 
 export const echo: Handler = (req, ctx) => ({
   json: {
@@ -67,6 +75,20 @@ export const relay: Handler = async (req, ctx) => {
     return { json: { answer: await ctx.call(String(req.query.fn), req.json) } };
   } catch (err) {
     if (err instanceof CallError) return { json: { failed: err.status } };
+    throw err;
+  }
+};
+
+export const outbound: Handler = async (req, ctx) => {
+  try {
+    const answer = await ctx.fetch("conformance", String(req.query.path), {
+      method: "POST",
+      headers: { "x-from": "handler" },
+      body: req.body,
+    });
+    return { body: answer.body, headers: { "x-status": String(answer.status) } };
+  } catch (err) {
+    if (err instanceof FetchError) return { json: { failed: err.status } };
     throw err;
   }
 };

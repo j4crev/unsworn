@@ -20,14 +20,14 @@ use tokio::sync::{Notify, Semaphore, mpsc, oneshot};
 use unsworn_core::Project;
 use unsworn_core::config::Protocol;
 use unsworn_core::config::ResponseValidation;
-use unsworn_core::project::{Function, Runtime};
+use unsworn_core::project::{Function, Outbound, Runtime};
 use unsworn_proto::{
     self as proto, Cancel, Chunk, DecodeError, End, Frame, Json, LogLevel, Message,
     PROTOCOL_VERSION, Request, Response, Verify,
 };
 
 use crate::scale::{self, Decision, Sample, Scaler};
-use crate::server::support::Body;
+use crate::server::support::{Body, HttpClient};
 pub use unsworn_core::pipeline::{BODY_IDLE, BodyError, CallError};
 
 /// Unacknowledged bytes of a streamed request body allowed per request.
@@ -172,6 +172,8 @@ struct Worker {
     raw_json: bool,
     /// Its handlers can call functions.
     can_call: bool,
+    /// Its handlers can ask for requests to outbound services.
+    can_fetch: bool,
     /// Credit windows for streamed request bodies, by request id.
     credits: Mutex<HashMap<String, Arc<Credit>>>,
     /// Function calls made for each request in flight, to stop when the
@@ -311,6 +313,11 @@ pub struct Pools {
     /// may call.
     functions: BTreeMap<String, Arc<Function>>,
     response_validation: ResponseValidation,
+    /// The project's `[outbound.<name>]` services, which Unsworn calls
+    /// for handlers.
+    outbound: BTreeMap<String, Arc<Outbound>>,
+    /// Makes those requests. Built for the first one.
+    client: std::sync::OnceLock<HttpClient>,
 }
 
 impl Pools {
@@ -334,8 +341,10 @@ impl Pools {
             pools,
             functions: project.functions.clone(),
             response_validation: project.server.response_validation,
+            outbound: project.outbound.clone(),
+            client: std::sync::OnceLock::new(),
         });
-        if !pools.functions.is_empty() {
+        if !pools.functions.is_empty() || !pools.outbound.is_empty() {
             for pool in pools.pools.values() {
                 let _ = pool.peers.set(Arc::downgrade(&pools));
             }
@@ -343,9 +352,14 @@ impl Pools {
         pools
     }
 
-    /// One pool and the functions its handlers may call, each run by that
-    /// same pool. For the conformance suite, which tests one runtime.
-    pub fn single(pool: Arc<Pool>, functions: Vec<Function>) -> Arc<Pools> {
+    /// One pool, the functions its handlers may call (each run by that
+    /// same pool) and the services they may fetch from. For the
+    /// conformance suite, which tests one runtime.
+    pub fn single(
+        pool: Arc<Pool>,
+        functions: Vec<Function>,
+        outbound: Vec<Outbound>,
+    ) -> Arc<Pools> {
         let pools = Arc::new(Pools {
             pools: BTreeMap::from([(pool.runtime.name.clone(), pool.clone())]),
             functions: functions
@@ -353,6 +367,11 @@ impl Pools {
                 .map(|f| (f.name.clone(), Arc::new(f)))
                 .collect(),
             response_validation: ResponseValidation::Off,
+            outbound: outbound
+                .into_iter()
+                .map(|o| (o.name.clone(), Arc::new(o)))
+                .collect(),
+            client: std::sync::OnceLock::new(),
         });
         let _ = pool.peers.set(Arc::downgrade(&pools));
         pools
@@ -576,6 +595,150 @@ impl Pools {
     }
 }
 
+/// Headers that belong to one connection, or that the request is given
+/// anyway, which a handler's `fetch` doesn't get to set.
+const NOT_FORWARDED: &[&str] = &[
+    "connection",
+    "content-length",
+    "host",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+
+impl Pools {
+    /// Makes a handler's request to an outbound service, with the
+    /// service's own headers added, and gives back the `fetched` to send.
+    async fn fetch(&self, fetch: proto::Fetch, body: Option<Bytes>, caller: &Caller) -> Frame {
+        let id = fetch.id.clone();
+        let fail = |status: u16, error: String| {
+            Frame::new(Message::Fetched(proto::Fetched {
+                id: id.clone(),
+                status,
+                error: Some(error),
+                ..Default::default()
+            }))
+        };
+        let Some(service) = self.outbound.get(&fetch.service) else {
+            let known: Vec<&str> = self.outbound.keys().map(String::as_str).collect();
+            return fail(
+                404,
+                format!(
+                    "no outbound service named \"{}\" (there is: {})",
+                    fetch.service,
+                    known.join(", ")
+                ),
+            );
+        };
+        let method = fetch.method.to_ascii_uppercase();
+        if let Err(why) = service.allows(&method, &fetch.path) {
+            return fail(403, why);
+        }
+        let mut request = http::Request::builder()
+            .method(method.as_str())
+            .uri(format!("{}{}", service.url, fetch.path));
+        // The handler's headers first, then the service's over them: a
+        // handler can't replace the credential, or see it.
+        let sent = fetch.headers.iter().filter(|(name, _)| {
+            let name = name.to_ascii_lowercase();
+            !NOT_FORWARDED.contains(&name.as_str())
+                && !service.headers.iter().any(|(own, _)| *own == name)
+        });
+        for (name, value) in sent.map(|(n, v)| (n.as_str(), v.as_str())).chain(
+            service
+                .headers
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_str())),
+        ) {
+            request = request.header(name, value);
+        }
+        let request = match request.body(crate::server::support::full(body.unwrap_or_default())) {
+            Ok(request) => request,
+            Err(e) => return fail(400, format!("the request can't be made: {e}")),
+        };
+
+        let started = Instant::now();
+        let deadline = caller.deadline.min(started + service.timeout);
+        let client = self
+            .client
+            .get_or_init(crate::server::support::build_client);
+        let limit = usize::try_from(service.max_response).unwrap_or(usize::MAX);
+        let answer = async {
+            let response = client
+                .request(request)
+                .await
+                .map_err(|e| format!("couldn't reach the service: {e}"))?;
+            let (parts, body) = response.into_parts();
+            let body = http_body_util::Limited::new(body, limit)
+                .collect()
+                .await
+                .map_err(|e| {
+                    if e.is::<http_body_util::LengthLimitError>() {
+                        format!(
+                            "the response is larger than [outbound.{}].max_response",
+                            service.name
+                        )
+                    } else {
+                        format!("the response couldn't be read: {e}")
+                    }
+                })?
+                .to_bytes();
+            Ok::<_, String>((parts, body))
+        };
+        let outcome = tokio::time::timeout_at(deadline.into(), answer).await;
+        let path = fetch.path.split('?').next().unwrap_or_default();
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let (parts, body) = match outcome {
+            Ok(Ok(found)) => found,
+            Ok(Err(error)) => {
+                tracing::warn!(target: "outbound", service = %service.name, %method, %path, id = %caller.request_id, "{error}");
+                return fail(502, error);
+            }
+            Err(_) => {
+                tracing::warn!(target: "outbound", service = %service.name, %method, %path, id = %caller.request_id, "timed out");
+                return fail(504, "the service took too long to answer".into());
+            }
+        };
+        // What a handler reached, and when: the query is left out, since
+        // that's where a token may be.
+        tracing::info!(
+            target: "outbound",
+            service = %service.name,
+            %method,
+            %path,
+            status = parts.status.as_u16(),
+            ms = format_args!("{ms:.3}"),
+            id = %caller.request_id,
+        );
+        let mut headers: BTreeMap<String, String> = BTreeMap::new();
+        for (name, value) in &parts.headers {
+            let Ok(value) = value.to_str() else { continue };
+            headers
+                .entry(name.as_str().to_string())
+                .and_modify(|all| {
+                    all.push_str(", ");
+                    all.push_str(value);
+                })
+                .or_insert_with(|| value.to_string());
+        }
+        let fetched = Message::Fetched(proto::Fetched {
+            id: id.clone(),
+            status: parts.status.as_u16(),
+            headers,
+            ..Default::default()
+        });
+        if body.is_empty() {
+            return Frame::new(fetched);
+        }
+        Frame::with_body(fetched, body).unwrap_or_else(|e| fail(502, e.to_string()))
+    }
+}
+
 impl Pool {
     /// A pool for one runtime and the handlers it will be sent.
     pub fn standalone(
@@ -615,6 +778,12 @@ impl Pool {
     /// Whether this runtime's workers say their handlers can call functions.
     pub fn calls_supported(&self) -> bool {
         self.workers.lock().unwrap().iter().any(|w| w.can_call)
+    }
+
+    /// Whether this runtime's workers say their handlers can ask for
+    /// requests to outbound services.
+    pub fn fetch_supported(&self) -> bool {
+        self.workers.lock().unwrap().iter().any(|w| w.can_fetch)
     }
 
     /// Whether this runtime's workers accept streamed request bodies.
@@ -838,8 +1007,10 @@ impl Pool {
             // This Unsworn takes a JSON body as raw bytes (`body_json`), in
             // both directions. An SDK that knows how says so in `ready`.
             .env("UNSWORN_RAW_JSON", "1")
-            // And answers `call` messages, for `ctx.call`.
+            // And answers `call` and `fetch` messages, for `ctx.call` and
+            // `ctx.fetch`.
             .env("UNSWORN_CALLS", "1")
+            .env("UNSWORN_FETCH", "1")
             .envs(&rt.env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1002,6 +1173,7 @@ impl Pool {
             stream_body: ready.stream_body,
             raw_json: ready.raw_json,
             can_call: ready.calls,
+            can_fetch: ready.fetch,
             credits: Mutex::new(HashMap::new()),
             subcalls: Mutex::new(HashMap::new()),
             made_calls: AtomicBool::new(false),
@@ -1205,6 +1377,7 @@ impl Pool {
                     }
                 }
                 Message::Call(call) => self.function_call(w, call),
+                Message::Fetch(fetch) => self.outbound_fetch(w, fetch, body.take()),
                 Message::Ready(_) | Message::Unknown => {}
                 other => {
                     tracing::warn!(worker = %w.id, "unexpected message from worker: {other:?}");
@@ -1213,47 +1386,38 @@ impl Pool {
         }
     }
 
-    /// A handler called a function. Runs it in its runtime's pool and
-    /// sends the worker the result, unless the request the call was made
-    /// for ends first.
-    fn function_call(self: &Arc<Self>, w: &Arc<Worker>, call: proto::Call) {
-        let fail = |status: u16, error: String| {
-            let _ =
-                w.tx.send(Some(Frame::new(Message::Result(proto::CallResult {
-                    id: call.id.clone(),
-                    status,
-                    json: Value::Null,
-                    error: Some(error),
-                }))));
-        };
+    /// The project's pools and the request a `call` or `fetch` is for.
+    /// `Err` is the status and reason there's nothing to do it for.
+    fn caller_of(&self, w: &Worker, request: &str) -> Result<(Arc<Pools>, Caller), (u16, String)> {
         let Some(pools) = self.peers.get().and_then(std::sync::Weak::upgrade) else {
-            return fail(
+            return Err((
                 404,
-                "this project has no functions: add a [[function]]".into(),
-            );
+                "this project has no functions or outbound services".into(),
+            ));
         };
-        let in_flight = w.pending.lock().unwrap().contains_key(&call.request);
+        let in_flight = w.pending.lock().unwrap().contains_key(request);
         let caller = w
             .calls
             .lock()
             .unwrap()
-            .get(&call.request)
+            .get(request)
             .and_then(|c| c.caller.as_deref().cloned());
-        let Some(caller) = caller.filter(|_| in_flight) else {
-            return fail(
+        match caller.filter(|_| in_flight) {
+            Some(caller) => Ok((pools, caller)),
+            None => Err((
                 409,
-                format!(
-                    "a call is made for a request in flight, and \"{}\" isn't one",
-                    call.request
-                ),
-            );
-        };
-        let worker = w.clone();
-        let request = call.request.clone();
-        let task = tokio::spawn(async move {
-            let result = pools.call_function(call, caller).await;
-            let _ = worker.tx.send(Some(Frame::new(Message::Result(result))));
-        });
+                format!("a call is made for a request in flight, and \"{request}\" isn't one"),
+            )),
+        }
+    }
+
+    /// Runs `work` for a request, until the request ends.
+    fn spawn_for(
+        w: &Arc<Worker>,
+        request: String,
+        work: impl Future<Output = ()> + Send + 'static,
+    ) {
+        let task = tokio::spawn(work);
         w.made_calls.store(true, Ordering::Relaxed);
         let mut subcalls = w.subcalls.lock().unwrap();
         // The request may have ended while this was starting.
@@ -1265,6 +1429,53 @@ impl Pool {
         } else {
             task.abort();
         }
+    }
+
+    /// A handler called a function. Runs it in its runtime's pool and
+    /// sends the worker the result, unless the request the call was made
+    /// for ends first.
+    fn function_call(self: &Arc<Self>, w: &Arc<Worker>, call: proto::Call) {
+        let (pools, caller) = match self.caller_of(w, &call.request) {
+            Ok(found) => found,
+            Err((status, error)) => {
+                let _ =
+                    w.tx.send(Some(Frame::new(Message::Result(proto::CallResult {
+                        id: call.id,
+                        status,
+                        json: Value::Null,
+                        error: Some(error),
+                    }))));
+                return;
+            }
+        };
+        let worker = w.clone();
+        Self::spawn_for(w, call.request.clone(), async move {
+            let result = pools.call_function(call, caller).await;
+            let _ = worker.tx.send(Some(Frame::new(Message::Result(result))));
+        });
+    }
+
+    /// A handler asked for a request to an outbound service. Makes it and
+    /// sends the worker the answer, unless the handler's own request ends
+    /// first.
+    fn outbound_fetch(self: &Arc<Self>, w: &Arc<Worker>, fetch: proto::Fetch, body: Option<Bytes>) {
+        let (pools, caller) = match self.caller_of(w, &fetch.request) {
+            Ok(found) => found,
+            Err((status, error)) => {
+                let _ = w.tx.send(Some(Frame::new(Message::Fetched(proto::Fetched {
+                    id: fetch.id,
+                    status,
+                    error: Some(error),
+                    ..Default::default()
+                }))));
+                return;
+            }
+        };
+        let worker = w.clone();
+        Self::spawn_for(w, fetch.request.clone(), async move {
+            let frame = pools.fetch(fetch, body, &caller).await;
+            let _ = worker.tx.send(Some(frame));
+        });
     }
 
     fn release(&self, w: &Worker, id: &str) {

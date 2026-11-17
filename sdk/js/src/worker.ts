@@ -13,7 +13,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { connect } from "node:net";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { CallError } from "./index.ts";
+import { CallError, type Fetched, FetchError, type FetchInit } from "./index.ts";
 import {
   BadJson,
   type Callable,
@@ -30,6 +30,7 @@ import {
   JsonlCodec,
   type Outgoing,
   PROTOCOL_VERSION,
+  type FetchedMessage,
   type RequestMessage,
   type ResultMessage,
   type VerifyMessage,
@@ -44,6 +45,8 @@ const dev = process.env.UNSWORN_DEV === "1";
 const rawJson = process.env.UNSWORN_RAW_JSON === "1";
 // Set by Unsworn versions that answer `call` messages, for `ctx.call`.
 const canCall = process.env.UNSWORN_CALLS === "1";
+// And `fetch` messages, for `ctx.fetch`.
+const canFetch = process.env.UNSWORN_FETCH === "1";
 // Set by Unsworn versions that accept `log` messages. Without it, logs go to stderr.
 const logLevel = process.env.UNSWORN_LOG_LEVEL;
 
@@ -174,14 +177,77 @@ function dropCalls(request: string, reason: string) {
     calls.delete(id);
     pending.reject(new CallError(499, reason));
   }
+  for (const [id, pending] of fetches) {
+    if (pending.request !== request) continue;
+    fetches.delete(id);
+    pending.reject(new FetchError(499, reason));
+  }
 }
 
-/** The handler's `ctx`: the request's context, plus `call`. */
+// ---------------------------------------------------------------------------
+// Requests to outbound services
+
+interface PendingFetch {
+  request: string;
+  resolve: (value: Fetched) => void;
+  reject: (error: Error) => void;
+}
+
+const fetches = new Map<string, PendingFetch>();
+const decoder = new TextDecoder();
+
+/** `ctx.fetch`: asks Unsworn to send a request to an outbound service. */
+function fetchService(request: string, service: string, path: string, init: FetchInit = {}): Promise<Fetched> {
+  if (!canFetch) {
+    return Promise.reject(new FetchError(501, "this Unsworn doesn't make requests for handlers: update it"));
+  }
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(init.headers ?? {})) headers[name.toLowerCase()] = String(value);
+  let body: Uint8Array | undefined;
+  if (init.json !== undefined) {
+    body = encoder.encode(JSON.stringify(init.json));
+    headers["content-type"] ??= "application/json";
+  } else if (init.body !== undefined) {
+    body = typeof init.body === "string" ? encoder.encode(init.body) : init.body;
+  }
+  const method = (init.method ?? (body ? "POST" : "GET")).toUpperCase();
+  const answer = new Promise<Fetched>((resolve, reject) => {
+    const id = `f-${++nextCall}`;
+    fetches.set(id, { request, resolve, reject });
+    send({ type: "fetch", id, request, service, method, path, headers }, body?.length ? body : undefined);
+  });
+  answer.catch(() => {});
+  return answer;
+}
+
+function fetched(msg: FetchedMessage, body: Uint8Array | undefined) {
+  const pending = fetches.get(msg.id);
+  if (!pending) return;
+  fetches.delete(msg.id);
+  if (msg.error !== undefined) {
+    pending.reject(new FetchError(msg.status, msg.error));
+    return;
+  }
+  const bytes = body ?? new Uint8Array(0);
+  pending.resolve({
+    status: msg.status,
+    ok: msg.status >= 200 && msg.status < 300,
+    headers: msg.headers ?? {},
+    body: bytes,
+    text: () => decoder.decode(bytes),
+    json: <T>() => JSON.parse(decoder.decode(bytes)) as T,
+  });
+}
+
+/** The handler's `ctx`: the request's context, plus `call` and `fetch`. */
 function context(msg: RequestMessage): Record<string, unknown> {
   const ctx = msg.context ?? {};
   // Not enumerable, so the context still reads (and prints) as plain data.
   Object.defineProperty(ctx, "call", {
     value: (name: string, input?: unknown) => call(msg.id, name, input),
+  });
+  Object.defineProperty(ctx, "fetch", {
+    value: (service: string, path: string, init?: FetchInit) => fetchService(msg.id, service, path, init),
   });
   return ctx;
 }
@@ -315,7 +381,7 @@ async function handle(msg: RequestMessage, body: Uint8Array | undefined) {
   } finally {
     inFlight.delete(msg.id);
     bodies.delete(msg.id);
-    if (calls.size) dropCalls(msg.id, "the request ended before the call did");
+    if (calls.size || fetches.size) dropCalls(msg.id, "the request ended before the call did");
   }
 }
 
@@ -356,6 +422,9 @@ function dispatch(frame: Frame) {
     case "result":
       result(msg as ResultMessage);
       break;
+    case "fetched":
+      fetched(msg as FetchedMessage, frame.body);
+      break;
     default:
       break; // unknown messages are ignored
   }
@@ -373,6 +442,7 @@ function ready() {
     stream_body: true,
     raw_json: rawJson,
     calls: canCall,
+    fetch: canFetch,
     sdk: "unsworn-js/0.3.1",
   });
 }

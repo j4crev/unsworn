@@ -145,7 +145,128 @@ impl fmt::Display for CallError {
 
 impl StdError for CallError {}
 
+/// A request for [`Request::fetch`]: `Outbound::get("/v1/charges")`, or
+/// `Outbound::post("/v1/charges").json(&charge)?`.
+#[derive(Debug, Clone, Default)]
+pub struct Outbound {
+    pub(crate) method: String,
+    pub(crate) path: String,
+    pub(crate) headers: BTreeMap<String, String>,
+    pub(crate) body: Option<Bytes>,
+}
+
+impl Outbound {
+    /// A request with this method to `path`, which goes after the
+    /// service's URL and may carry a query.
+    pub fn new(method: &str, path: impl Into<String>) -> Outbound {
+        Outbound {
+            method: method.to_ascii_uppercase(),
+            path: path.into(),
+            ..Outbound::default()
+        }
+    }
+
+    pub fn get(path: impl Into<String>) -> Outbound {
+        Outbound::new("GET", path)
+    }
+
+    pub fn post(path: impl Into<String>) -> Outbound {
+        Outbound::new("POST", path)
+    }
+
+    pub fn header(mut self, name: &str, value: impl Into<String>) -> Outbound {
+        self.headers.insert(name.to_ascii_lowercase(), value.into());
+        self
+    }
+
+    /// Sends `value` as the JSON body, with `content-type: application/json`.
+    pub fn json(mut self, value: impl serde::Serialize) -> Result<Outbound, serde_json::Error> {
+        self.body = Some(Bytes::from(serde_json::to_vec(&value)?));
+        self.headers
+            .entry("content-type".into())
+            .or_insert_with(|| "application/json".into());
+        Ok(self)
+    }
+
+    /// Sends raw bytes as the body.
+    pub fn body(mut self, body: impl Into<Bytes>) -> Outbound {
+        self.body = Some(body.into());
+        self
+    }
+}
+
+/// A service's answer to [`Request::fetch`].
+#[derive(Debug, Clone)]
+pub struct Fetched {
+    pub status: u16,
+    /// Response headers, with lowercase names.
+    pub headers: BTreeMap<String, String>,
+    pub body: Bytes,
+}
+
+impl Fetched {
+    /// Whether the status is 200 to 299.
+    pub fn ok(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
+
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.body).into_owned()
+    }
+
+    /// Decodes the JSON body.
+    pub fn json<T: DeserializeOwned>(&self) -> std::result::Result<T, serde_json::Error> {
+        serde_json::from_slice(&self.body)
+    }
+}
+
+/// [`Request::fetch`] couldn't make the request, or got no answer.
+#[derive(Debug, Clone)]
+pub struct FetchError {
+    /// `404` for no such service, `403` for a method or path the config
+    /// doesn't allow, `502` for a service that couldn't be reached and
+    /// `504` for one that took too long.
+    pub status: u16,
+    pub message: String,
+}
+
+impl fmt::Display for FetchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl StdError for FetchError {}
+
 impl Request {
+    /// Sends a request to an outbound service: one the config declares
+    /// under `[outbound.<name>]`. Unsworn makes the request and adds the
+    /// service's own headers, such as its API key, so this handler never
+    /// holds them.
+    ///
+    /// Gives back the service's answer whatever its status, and a
+    /// [`FetchError`] when the request couldn't be made or got no answer.
+    ///
+    /// ```ignore
+    /// let charge: Charge = req
+    ///     .fetch("stripe", Outbound::post("/v1/charges").json(&new_charge)?)
+    ///     .await?
+    ///     .json()?;
+    /// ```
+    pub async fn fetch(
+        &self,
+        service: &str,
+        request: Outbound,
+    ) -> std::result::Result<Fetched, FetchError> {
+        match &self.calls {
+            Some(calls) => calls.fetch(&self.id, service, request).await,
+            None => Err(FetchError {
+                status: 501,
+                message: "fetch works in a handler that Unsworn is running".into(),
+            }),
+        }
+    }
+
     /// Calls a function: a handler in any language, declared in the
     /// config as `[[function]]`. Unsworn checks `input` against the
     /// function's schema, runs it with this request's context and what is

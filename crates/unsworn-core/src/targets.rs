@@ -26,7 +26,8 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
         "cloudflare" => cloudflare(project),
         _ => functions(project, target),
     };
-    // Calls between handlers go through the server's worker connections.
+    // Calls between handlers, and to services, go through the server's
+    // worker connections.
     if let Some(name) = project.functions.keys().next() {
         out.push(
             Diagnostic::error(
@@ -34,6 +35,15 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
                 format!("functions that handlers call (`ctx.call`) only run on the server, not on {target}"),
             )
             .hint("on this target, import the other handler and call it, or keep the function on a server"),
+        );
+    }
+    if let Some(name) = project.outbound.keys().next() {
+        out.push(
+            Diagnostic::error(
+                format!("[outbound.{name}]"),
+                format!("services Unsworn calls for handlers (`ctx.fetch`) only work on the server, not on {target}"),
+            )
+            .hint("on this target, call the service from the handler with the platform's own secrets"),
         );
     }
     out

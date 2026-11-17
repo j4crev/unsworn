@@ -41,6 +41,20 @@ $ unsworn diff origin/main
 
 See [`docs/plan.md`](docs/plan.md).
 
+The rules cover the way out too. Declare a service a handler needs, and
+Unsworn makes the request and adds the credential:
+
+```toml
+[outbound.stripe]
+url     = "https://api.stripe.com"
+headers = { Authorization = "Bearer {env.STRIPE_KEY}" }
+paths   = ["/v1/charges", "/v1/charges/{id}"]
+```
+
+The handler calls `ctx.fetch("stripe", "/v1/charges", ...)` and never
+holds the key, so a handler that's tricked into misbehaving has nothing
+to leak. See [`docs/outbound.md`](docs/outbound.md).
+
 ### Built for MCP servers
 
 AI agents reach your systems through MCP servers. Every caller of an MCP
@@ -226,7 +240,7 @@ All of this is configured in `unsworn.toml`, with no code:
 | AI agents (MCP) | OAuth protected-resource metadata, origin checks and streaming pass-through for existing MCP servers, with per-tool policies; MCP tools as handlers, with tool lists filtered by scope; routes and OpenAPI operations as tools |
 | Responses | static JSON or text, redirects, static files with SPA fallback, health checks |
 | Forwarding | reverse proxy with WebSocket pass-through, load balancing, catch-all to an existing app |
-| Security | JWT/JWKS, API keys, CORS, IP allow and deny lists, body size limits |
+| Security | JWT/JWKS, API keys, CORS, IP allow and deny lists, body size limits, outbound services with credentials handlers never hold |
 | Traffic | rate limits, timeouts, response caching |
 | Contracts | params, query, header and body validation (JSON Schema), OpenAPI input and output |
 | Ops | access logs, Prometheus metrics, request IDs, health checks, config hot reload |
@@ -260,7 +274,7 @@ All of this is configured in `unsworn.toml`, with no code:
 
 Details: [architecture](docs/architecture.md), [config](docs/config.md),
 [plan and diff](docs/plan.md), [generated types](docs/types.md),
-[functions](docs/functions.md),
+[functions](docs/functions.md), [outbound services](docs/outbound.md),
 [protocol](docs/protocol.md),
 [conformance](docs/conformance.md), [MCP](docs/mcp.md),
 [benchmarks](docs/benchmarks.md) and [roadmap](docs/roadmap.md).

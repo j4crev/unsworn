@@ -98,6 +98,9 @@ What's in it:
   `mcp_tool` line.
 - **`function <name>`** for each [`[[function]]`](functions.md), with its
   handler and its input and output schemas.
+- **`outbound <name>`** for each [outbound service](outbound.md): its
+  URL, the names of the headers Unsworn adds, and the methods and paths
+  handlers may use.
 
 A route's `timeout` and `max_body` are written only when they differ from
 the server's.
@@ -148,7 +151,8 @@ changed. A `!` marks a change that lets more requests through:
 | `cors` | added, more origins allowed, or credentials allowed |
 | `before` | a handler is removed |
 | `max_body` | raised |
-| `params`, `query`, `headers`, `body`, a tool's `input` | the check is removed |
+| `params`, `query`, `headers`, `body`, a tool's or function's `input` | the check is removed |
+| an outbound service's `methods`, `paths` | removed, or more allowed |
 
 The opposite is marked `(tighter)`. Anything else is listed without a
 mark: a different schema, a different scheme, a handler that moved to

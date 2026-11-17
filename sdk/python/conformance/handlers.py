@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 
-from unsworn import CallError, body, content as content_reply, json, next
+from unsworn import CallError, FetchError, body, content as content_reply, json, next
 from unsworn import text as text_reply
 
 
@@ -81,6 +81,16 @@ def relay(req, ctx):
         return json({"answer": ctx.call(req.query["fn"], req.json)})
     except CallError as e:
         return json({"failed": e.status})
+
+
+def outbound(req, ctx):
+    try:
+        answer = ctx.fetch(
+            "conformance", req.query["path"], method="POST", headers={"x-from": "handler"}, body=req.body
+        )
+    except FetchError as e:
+        return json({"failed": e.status})
+    return body(answer.body, headers={"x-status": str(answer.status)})
 
 
 def mcp(req, ctx):

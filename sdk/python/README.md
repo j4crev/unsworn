@@ -72,6 +72,23 @@ context and what is left of its time.
 
 `ctx` is still a dict: `ctx["auth"]`, `ctx.get("tenant")`.
 
+## Reaching other services
+
+`ctx.fetch` sends a request to an [outbound service](../../docs/outbound.md),
+declared as `[outbound.<name>]` in the config. Unsworn makes the request
+and adds the service's credential, so the handler never holds it:
+
+```python
+answer = ctx.fetch("stripe", "/v1/charges", json={"amount": 1200, "currency": "usd"})
+if not answer.ok:
+    return json({"error": "the charge failed"}, status=502)
+charge = answer.json()
+```
+
+In an `async def` handler, `await ctx.fetch(...)`. It gives back the
+service's answer whatever its status, and raises `FetchError` when the
+request isn't allowed or got no answer.
+
 ## Replies
 
 | Return | Response |

@@ -142,6 +142,9 @@ await ctx.call("embd", {});              // error: "embd" isn't a function
 In Python, Go and Rust they are `EmbedInput` and `EmbedOutput`, named
 after the function.
 
+The TypeScript file also lists each [outbound service](outbound.md), so
+`ctx.fetch("strpe", ...)` is a compile error.
+
 ## How schemas become types
 
 | JSON Schema | TypeScript | Python | Go | Rust |

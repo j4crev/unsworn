@@ -167,7 +167,12 @@ pub(crate) struct Calls {
     enabled: bool,
     next: Arc<std::sync::atomic::AtomicU64>,
     waiting: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<unsworn_proto::CallResult>>>>,
+    /// Set under an Unsworn that answers `fetch` messages.
+    can_fetch: bool,
+    fetching: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<FetchAnswer>>>>,
 }
+
+type FetchAnswer = (unsworn_proto::Fetched, Option<Bytes>);
 
 impl std::fmt::Debug for Calls {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -176,6 +181,62 @@ impl std::fmt::Debug for Calls {
 }
 
 impl Calls {
+    pub(crate) async fn fetch(
+        &self,
+        request: &str,
+        service: &str,
+        outbound: crate::Outbound,
+    ) -> Result<crate::Fetched, crate::FetchError> {
+        let fail = |status, message: String| crate::FetchError { status, message };
+        if !self.can_fetch {
+            return Err(fail(
+                501,
+                "this Unsworn doesn't make requests for handlers: update it".into(),
+            ));
+        }
+        let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = format!("f-{n}");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.fetching.lock().unwrap().insert(id.clone(), tx);
+        struct Forget<'a>(&'a Calls, &'a str);
+        impl Drop for Forget<'_> {
+            fn drop(&mut self) {
+                self.0.fetching.lock().unwrap().remove(self.1);
+            }
+        }
+        let _forget = Forget(self, &id);
+        let message = Message::Fetch(unsworn_proto::Fetch {
+            id: id.clone(),
+            request: request.to_string(),
+            service: service.to_string(),
+            method: if outbound.method.is_empty() {
+                "GET".into()
+            } else {
+                outbound.method
+            },
+            path: outbound.path,
+            headers: outbound.headers,
+            body_len: None,
+        });
+        let frame = match outbound.body.filter(|b| !b.is_empty()) {
+            Some(body) => Frame::with_body(message, body)
+                .map_err(|e| fail(400, format!("the request can't be sent: {e}")))?,
+            None => Frame::new(message),
+        };
+        self.out.send(frame);
+        let (fetched, body) = rx
+            .await
+            .map_err(|_| fail(499, "the request ended before the fetch did".into()))?;
+        match fetched.error {
+            Some(error) => Err(fail(fetched.status, error)),
+            None => Ok(crate::Fetched {
+                status: fetched.status,
+                headers: fetched.headers,
+                body: body.unwrap_or_default(),
+            }),
+        }
+    }
+
     pub(crate) async fn call(
         &self,
         request: &str,
@@ -262,8 +323,9 @@ where
         .and_then(|v| v.parse().ok())
         .filter(|n| *n > 0)
         .unwrap_or(64);
-    // Set by an Unsworn that answers `call` messages.
+    // Set by an Unsworn that answers `call` messages, and `fetch` ones.
     let can_call = std::env::var("UNSWORN_CALLS").is_ok_and(|v| v == "1");
+    let can_fetch = std::env::var("UNSWORN_FETCH").is_ok_and(|v| v == "1");
     out.send(Frame::new(Message::Ready(Ready {
         protocol: PROTOCOL_VERSION,
         max_in_flight: Some(max_in_flight),
@@ -271,6 +333,7 @@ where
         stream_body: true,
         raw_json,
         calls: can_call,
+        fetch: can_fetch,
         sdk: Some(format!("unsworn-rust/{}", crate::VERSION)),
     })));
     crate::logging::install(&out);
@@ -279,6 +342,8 @@ where
         enabled: can_call,
         next: Arc::default(),
         waiting: Arc::default(),
+        can_fetch,
+        fetching: Arc::default(),
     };
 
     let handlers = Arc::new(handlers);
@@ -314,6 +379,11 @@ where
             Message::Result(result) => {
                 if let Some(tx) = calls.waiting.lock().unwrap().remove(&result.id) {
                     let _ = tx.send(result);
+                }
+            }
+            Message::Fetched(fetched) => {
+                if let Some(tx) = calls.fetching.lock().unwrap().remove(&fetched.id) {
+                    let _ = tx.send((fetched, frame.body));
                 }
             }
             Message::Chunk(chunk) => {

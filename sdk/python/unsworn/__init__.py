@@ -25,6 +25,8 @@ __all__ = [
     "Request",
     "Context",
     "CallError",
+    "Fetched",
+    "FetchError",
     "json",
     "text",
     "body",
@@ -73,6 +75,9 @@ class Request(Generic[P, Q, J]):
     cancelled: bool = False
 
 
+_UNSET: Any = object()
+
+
 class CallError(Exception):
     """A function answered with an error status, or couldn't be called.
 
@@ -85,6 +90,42 @@ class CallError(Exception):
         super().__init__(message)
         self.status = status
         self.json = json
+
+
+class FetchError(Exception):
+    """``ctx.fetch`` couldn't make the request, or got no answer.
+
+    ``status`` is 404 for no such service, 403 for a method or path the
+    config doesn't allow, 502 for a service that couldn't be reached and
+    504 for one that took too long.
+    """
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+@dataclass
+class Fetched:
+    """A service's answer to ``ctx.fetch``."""
+
+    status: int
+    #: Response headers, with lowercase names.
+    headers: dict[str, str]
+    body: bytes
+
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status < 300
+
+    @property
+    def text(self) -> str:
+        return self.body.decode("utf-8", "replace")
+
+    def json(self) -> Any:
+        import json as _json
+
+        return _json.loads(self.body)
 
 
 class Context(dict):
@@ -115,6 +156,36 @@ class Context(dict):
             raise CallError(501, "ctx.call works in a handler that Unsworn is running")
         return self._call(name, input)
 
+    #: Set by the worker: how to ask Unsworn for a request to a service.
+    _fetch: Any = None
+
+    def fetch(
+        self,
+        service: str,
+        path: str,
+        *,
+        method: str | None = None,
+        headers: dict[str, str] | None = None,
+        json: Any = _UNSET,  # noqa: A002
+        body: bytes | str | None = None,
+    ) -> Any:
+        """Sends a request to an outbound service: one the config declares
+        under ``[outbound.<name>]``.
+
+        Unsworn makes the request and adds the service's own headers, such
+        as its API key, so this handler never holds them. ``path`` goes
+        after the service's URL and may carry a query. ``json`` is sent as
+        a JSON body; ``method`` defaults to GET, or POST with a body.
+
+        Gives back a :class:`Fetched` whatever the service's status, and
+        raises :class:`FetchError` when the request couldn't be made or got
+        no answer. Await it in an ``async def`` handler, as with
+        :meth:`call`.
+        """
+        if self._fetch is None:
+            raise FetchError(501, "ctx.fetch works in a handler that Unsworn is running")
+        return self._fetch(service, path, method, headers, json, body)
+
 
 def json(value: Any, status: int = 200, headers: dict[str, str] | None = None) -> dict:
     """A JSON reply."""
@@ -138,9 +209,6 @@ def body(value: Any, status: int = 200, headers: dict[str, str] | None = None) -
     if headers:
         reply["headers"] = headers
     return reply
-
-
-_UNSET: Any = object()
 
 
 def content(blocks: list[dict[str, Any]], json: Any = _UNSET) -> dict:  # noqa: A002
