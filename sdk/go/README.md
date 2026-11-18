@@ -131,6 +131,26 @@ anything before handlers added), `JSON`, `Text`, `Body`, `Handler` and
 
 Each request runs in its own goroutine.
 
+### Types from the config
+
+`unsworn gen` writes a struct for each part of a route's contract, to
+bind into:
+
+```toml
+[gen]
+go = "unsworn_gen.go"        # or { file = "...", package = "..." }
+```
+
+```go
+var p GetUserParams          // written by `unsworn gen` from the route
+if err := req.BindParams(&p); err != nil {
+	return unsworn.Reply{}, err
+}
+```
+
+`unsworn dev` rewrites the file before it rebuilds the worker. See
+[`docs/types.md`](../../docs/types.md).
+
 ## Logging
 
 The worker makes `slog`'s default logger send records to Unsworn, unless the

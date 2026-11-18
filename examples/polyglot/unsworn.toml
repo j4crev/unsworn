@@ -21,6 +21,12 @@ protocol = "framed"
 workers = 1
 env = { PYTHONPATH = "../../sdk/python" }
 
+# Types for the handlers, from the contracts below. `unsworn dev` keeps
+# them current, and `unsworn gen` writes them.
+[gen]
+ts = "src/unsworn.gen.ts"
+python = "unsworn_gen.py"
+
 [auth.key]
 type = "api_key"
 keys = "{env.DEMO_KEY}"

@@ -29,6 +29,25 @@ handler = "src/users.ts#getUser"
 params = { id = { type = "integer", min = 1 } }
 ```
 
+## Types from the config
+
+`Handler<{ params: { id: number } }>` repeats what the config already says.
+`unsworn gen` writes that type for you, from the route:
+
+```toml
+[gen]
+ts = "src/unsworn.gen.ts"
+```
+
+```ts
+import type { GetUser } from "./unsworn.gen";
+
+export const getUser: GetUser = async (req) => ({ json: { id: req.params.id } });
+```
+
+`unsworn dev` keeps the file current. See
+[`docs/types.md`](../../docs/types.md).
+
 ## Replies
 
 A handler returns an object or a web `Response`:

@@ -392,6 +392,74 @@
         }
       ]
     },
+    "RawGen": {
+      "additionalProperties": false,
+      "description": "`[gen]`: where `unsworn gen` and `unsworn dev` write each language's\ntypes, relative to the project directory.",
+      "properties": {
+        "go": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawGenGo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Go: a path, or `{ file = \"...\", package = \"...\" }` when the file\nisn't in package `main`."
+        },
+        "python": {
+          "description": "Python, such as \"unsworn_gen.py\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rust": {
+          "description": "Rust, such as \"src/unsworn_gen.rs\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ts": {
+          "description": "TypeScript, such as \"src/unsworn.gen.ts\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawGenGo": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/RawGenGoFile"
+        }
+      ]
+    },
+    "RawGenGoFile": {
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "package": {
+          "description": "The file's Go package. Default: \"main\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "file"
+      ],
+      "type": "object"
+    },
     "RawHeaders": {
       "additionalProperties": false,
       "properties": {
@@ -1843,6 +1911,17 @@
     },
     "defaults": {
       "$ref": "#/$defs/RawPolicies"
+    },
+    "gen": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RawGen"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Files of typed request models to write for handlers, by language."
     },
     "mcp": {
       "anyOf": [

@@ -146,6 +146,27 @@ they answer a little sooner when the server is nearly idle (see the
 [benchmarks](../../docs/benchmarks.md#handler-calls)).
 Inside a runtime of your own, call `unsworn_sdk::serve(handlers).await`.
 
+### Types from the config
+
+`unsworn gen` writes a `serde` struct for each part of a route's
+contract:
+
+```toml
+[gen]
+rust = "src/unsworn_gen.rs"
+```
+
+```rust
+mod unsworn_gen;             // in main.rs
+use unsworn_gen::GetUserParams;
+
+let p: GetUserParams = req.params()?;
+```
+
+It needs `serde` (with `derive`) and `serde_json` in your `Cargo.toml`.
+`unsworn dev` rewrites the file before it rebuilds the worker. See
+[`docs/types.md`](../../docs/types.md).
+
 ## Logging
 
 The worker sends `tracing` events, and `log` records, to Unsworn, tagged with

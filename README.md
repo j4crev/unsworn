@@ -162,6 +162,9 @@ extensions = [".ts"]
 command    = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
 protocol   = "framed"
 
+[gen]
+ts = "src/unsworn.gen.ts"                # types for handlers, from the routes
+
 [[route]]
 path    = "/api/users/{id}"
 method  = "GET"
@@ -173,14 +176,14 @@ handler = "src/users.ts#getUser"
 
 ```ts
 // src/users.ts
-import type { Handler } from "@unswornjs/sdk";
+import type { GetUser } from "./unsworn.gen";   // written by `unsworn gen` from the route above
 
-export const getUser = (async (req, ctx) => {
-  // req.params.id is already validated as an integer >= 1,
-  // and ctx.auth holds the verified JWT claims.
+export const getUser: GetUser = async (req, ctx) => {
+  // req.params.id is already validated as an integer >= 1, and typed as a
+  // number. ctx.auth holds the verified JWT claims.
   const user = await db.users.find(req.params.id);
   return { status: 200, json: user };
-}) satisfies Handler<{ params: { id: number } }>;
+};
 ```
 
 `/api/users/{id}` is more specific than the catch-all, so it now goes to the
@@ -228,6 +231,10 @@ All of this is configured in `unsworn.toml`, with no code:
 - **Handlers are plain functions.** Language SDKs give each one a typed
   request and hide everything else. The same handler code runs on a server,
   at the edge and in serverless functions.
+- **The contract reaches the code.** [`unsworn gen`](docs/types.md) writes
+  each route's params, query and body as types in the handler's language,
+  and `unsworn dev` keeps them current. Change a rule and the handlers it
+  breaks stop compiling.
 - **Any language can join.** The universal protocol is JSON lines over
   stdin/stdout, so a language with no SDK, even one that doesn't exist yet,
   works on day one. Official SDKs also speak a framed protocol over a Unix
@@ -243,7 +250,8 @@ All of this is configured in `unsworn.toml`, with no code:
   what a change does to them.
 
 Details: [architecture](docs/architecture.md), [config](docs/config.md),
-[plan and diff](docs/plan.md), [protocol](docs/protocol.md),
+[plan and diff](docs/plan.md), [generated types](docs/types.md),
+[protocol](docs/protocol.md),
 [conformance](docs/conformance.md), [MCP](docs/mcp.md),
 [benchmarks](docs/benchmarks.md) and [roadmap](docs/roadmap.md).
 
@@ -316,6 +324,7 @@ unsworn dev         # serves it, reloads on changes, verifies handler names
 | `unsworn routes` | Print the route table and each route's source, including MCP tools; `--policies` shows merged policies and each tool's arguments |
 | `unsworn plan` | Write what every route and tool enforces to `unsworn.plan`, to commit with the config; `--check` fails when it's out of date |
 | `unsworn diff` | Show what changed in the rules since a git revision (or another directory), marking what got looser; `--fail-on looser` for CI |
+| `unsworn gen` | Write typed request models for handlers (TypeScript, Python, Go, Rust) from each route's schemas; `--check` fails when one is out of date |
 | `unsworn openapi` | Print the OpenAPI document for what Unsworn serves |
 | `unsworn build` | Bundle the project for a deployment target: `--target cloudflare` makes a Cloudflare Worker, and `vercel`, `netlify` and `lambda` make a function for each |
 | `unsworn conformance` | Test a runtime's workers against the protocol |

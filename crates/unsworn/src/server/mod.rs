@@ -154,6 +154,9 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         // which are for this machine, not the network it's on.
         project.server.listen = unsworn_core::config::DEFAULT_DEV_LISTEN.into();
     }
+    if opts.dev {
+        write_types(&opts.root, &project);
+    }
     let sockets = SocketDir::create().map_err(|e| format!("can't create socket directory: {e}"))?;
     let keys = Arc::new(KeyCache::default());
     let generation = make_generation(
@@ -435,6 +438,19 @@ async fn shutdown_signal() {
     }
 }
 
+/// Dev mode: brings the files `[gen]` lists up to date, before workers are
+/// built, so a compiled worker is built against its new types.
+fn write_types(root: &std::path::Path, project: &unsworn_core::Project) {
+    match crate::codegen::write_all(root, project) {
+        Ok(written) => {
+            for file in written {
+                eprintln!("↻ wrote {file}");
+            }
+        }
+        Err(e) => tracing::warn!("couldn't write generated types: {e}"),
+    }
+}
+
 /// Reloads the project. Keeps the current one if the new one has errors.
 async fn reload(shared: &Arc<Shared>, config: &str) {
     let compiled = load::load(&shared.root, config);
@@ -443,6 +459,9 @@ async fn reload(shared: &Arc<Shared>, config: &str) {
         tracing::error!("reload failed with {errors} error(s); still serving the previous version");
         return;
     };
+    if shared.dev {
+        write_types(&shared.root, &project);
+    }
     let current = shared.generation.load_full();
     project.server.listen = current.project.server.listen.clone();
     let n = shared.generations.fetch_add(1, Ordering::Relaxed);
@@ -509,12 +528,15 @@ fn spawn_reload_on_hup(shared: Arc<Shared>, config: String) {
     });
 }
 
-/// Dev mode: reload when project files change.
-fn spawn_watcher(shared: Arc<Shared>, config: String) {
-    use notify::{RecursiveMode, Watcher};
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-    let root = shared.root.clone();
-    let ignored = [
+/// Whether a change to `path` means the project should be loaded again.
+/// Not for a dependency or build directory, and not for a file of
+/// generated types, which changes because a reload wrote it.
+fn worth_a_reload(
+    path: &std::path::Path,
+    root: &std::path::Path,
+    generated: &[unsworn_core::project::Generated],
+) -> bool {
+    const IGNORED: [&str; 6] = [
         "node_modules",
         ".git",
         "target",
@@ -522,16 +544,29 @@ fn spawn_watcher(shared: Arc<Shared>, config: String) {
         "__pycache__",
         ".venv",
     ];
+    let skipped = path
+        .components()
+        .any(|c| IGNORED.contains(&c.as_os_str().to_string_lossy().as_ref()));
+    !skipped && !generated.iter().any(|g| root.join(&g.file) == path)
+}
+
+/// Dev mode: reload when project files change.
+fn spawn_watcher(shared: Arc<Shared>, config: String) {
+    use notify::{RecursiveMode, Watcher};
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let root = shared.root.clone();
+    let watched = shared.clone();
     let mut watcher =
         match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             let Ok(event) = res else { return };
             if matches!(event.kind, notify::EventKind::Access(_)) {
                 return;
             }
-            let relevant = event.paths.iter().any(|p| {
-                !p.components()
-                    .any(|c| ignored.contains(&c.as_os_str().to_string_lossy().as_ref()))
-            });
+            let generation = watched.generation.load();
+            let relevant = event
+                .paths
+                .iter()
+                .any(|p| worth_a_reload(p, &watched.root, &generation.project.generated));
             if relevant {
                 let _ = tx.send(());
             }
@@ -635,4 +670,55 @@ fn tls_acceptor(cert: &Path, key: &Path) -> Result<tokio_rustls::TlsAcceptor, St
         .map_err(|e| format!("invalid certificate or key: {e}"))?;
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(tokio_rustls::TlsAcceptor::from(Arc::new(config)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use unsworn_core::codegen::{Lang, Options};
+    use unsworn_core::project::Generated;
+
+    use super::worth_a_reload;
+
+    #[test]
+    fn a_reload_isnt_set_off_by_what_a_reload_writes() {
+        let root = Path::new("/app");
+        let generated = [Generated {
+            lang: Lang::TypeScript,
+            file: "src/unsworn.gen.ts".into(),
+            options: Options::default(),
+        }];
+        assert!(worth_a_reload(
+            Path::new("/app/src/users.ts"),
+            root,
+            &generated
+        ));
+        assert!(worth_a_reload(
+            Path::new("/app/unsworn.toml"),
+            root,
+            &generated
+        ));
+        assert!(!worth_a_reload(
+            Path::new("/app/src/unsworn.gen.ts"),
+            root,
+            &generated
+        ));
+        assert!(!worth_a_reload(
+            Path::new("/app/node_modules/x/index.js"),
+            root,
+            &generated
+        ));
+        assert!(!worth_a_reload(
+            Path::new("/app/.unsworn/go-worker"),
+            root,
+            &generated
+        ));
+        // The same name somewhere else is an ordinary file.
+        assert!(worth_a_reload(
+            Path::new("/app/other/unsworn.gen.ts"),
+            root,
+            &generated
+        ));
+    }
 }

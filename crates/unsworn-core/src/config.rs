@@ -26,6 +26,9 @@ pub struct RawConfig {
     #[serde(default)]
     pub auth: BTreeMap<String, RawAuthScheme>,
     pub store: Option<RawStore>,
+    /// Files of typed request models to write for handlers, by language.
+    #[serde(rename = "gen")]
+    pub types: Option<RawGen>,
     #[serde(default)]
     pub defaults: RawPolicies,
     #[serde(default)]
@@ -119,6 +122,37 @@ pub struct RawTls {
 #[serde(deny_unknown_fields)]
 pub struct RawRoutesDir {
     pub dir: String,
+}
+
+/// `[gen]`: where `unsworn gen` and `unsworn dev` write each language's
+/// types, relative to the project directory.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawGen {
+    /// TypeScript, such as "src/unsworn.gen.ts".
+    pub ts: Option<String>,
+    /// Python, such as "unsworn_gen.py".
+    pub python: Option<String>,
+    /// Go: a path, or `{ file = "...", package = "..." }` when the file
+    /// isn't in package `main`.
+    pub go: Option<RawGenGo>,
+    /// Rust, such as "src/unsworn_gen.rs".
+    pub rust: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum RawGenGo {
+    File(String),
+    Full(RawGenGoFile),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawGenGoFile {
+    pub file: String,
+    /// The file's Go package. Default: "main".
+    pub package: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]

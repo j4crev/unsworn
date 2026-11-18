@@ -470,6 +470,15 @@ impl StoreConfig {
     }
 }
 
+/// One file of typed request models to write; see [`crate::codegen`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Generated {
+    pub lang: crate::codegen::Lang,
+    /// Relative to the project directory.
+    pub file: String,
+    pub options: crate::codegen::Options,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct OpenApiMeta {
     pub title: Option<String>,
@@ -499,6 +508,8 @@ pub struct Project {
     pub openapi: OpenApiMeta,
     /// The MCP endpoint, when `[mcp]` is set.
     pub mcp: Option<McpEndpoint>,
+    /// The files of generated types `[gen]` asks for.
+    pub generated: Vec<Generated>,
     /// Files read while loading, for watching in dev mode.
     pub files: Vec<String>,
     pub routes_dir: Option<String>,
@@ -1193,6 +1204,7 @@ impl<'h> Compiler<'h> {
             path_entries,
             openapi: openapi_meta,
             mcp,
+            generated: self.generated(&raw),
             files: std::mem::take(&mut self.files),
             routes_dir,
             secret_env: std::mem::take(&mut self.secret_env).into_iter().collect(),
@@ -1206,6 +1218,56 @@ impl<'h> Compiler<'h> {
     /// compile leaves there. Checks of the value's form don't apply to it.
     fn unresolved(&self, value: &str) -> bool {
         self.symbolic && value.contains("{env.")
+    }
+
+    fn generated(&mut self, raw: &RawConfig) -> Vec<Generated> {
+        use crate::codegen::{Lang, Options};
+        let Some(g) = &raw.types else {
+            return Vec::new();
+        };
+        let go = g.go.as_ref().map(|go| match go {
+            config::RawGenGo::File(file) => (file.clone(), None),
+            config::RawGenGo::Full(f) => (f.file.clone(), f.package.clone()),
+        });
+        let (go_file, go_package) = go.unzip();
+        let wanted = [
+            (Lang::TypeScript, g.ts.clone(), None),
+            (Lang::Python, g.python.clone(), None),
+            (Lang::Go, go_file, go_package.flatten()),
+            (Lang::Rust, g.rust.clone(), None),
+        ];
+        let mut out = Vec::new();
+        for (lang, file, go_package) in wanted {
+            let Some(file) = file else { continue };
+            let loc = format!("[gen].{}", lang.name());
+            // Somewhere inside the project: `unsworn dev` writes these
+            // files without being asked each time.
+            let inside = !file.is_empty()
+                && !file.starts_with('/')
+                && !file.split('/').any(|part| part == "..");
+            if !inside {
+                self.diags.push(
+                    Diagnostic::error(&loc, format!("\"{file}\" isn't a path inside the project"))
+                        .hint("write it relative to the project directory, such as \"src/unsworn.gen.ts\""),
+                );
+                continue;
+            }
+            if let Some(p) = &go_package
+                && !p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                self.diags.error(
+                    format!("{loc}.package"),
+                    format!("\"{p}\" isn't a Go package name"),
+                );
+                continue;
+            }
+            out.push(Generated {
+                lang,
+                file,
+                options: Options { go_package },
+            });
+        }
+        out
     }
 
     fn subst(&mut self, value: &str, loc: &str) -> String {
