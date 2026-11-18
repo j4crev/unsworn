@@ -37,6 +37,12 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
             .hint("on this target, import the other handler and call it, or keep the function on a server"),
         );
     }
+    if let Some(route) = project.routes.iter().find(|r| r.shadow.is_some()) {
+        out.push(Diagnostic::warning(
+            format!("{}.shadow", route.source.loc()),
+            format!("`shadow` handlers only run on the server, so this one is ignored on {target}"),
+        ));
+    }
     if let Some(name) = project.outbound.keys().next() {
         out.push(
             Diagnostic::error(

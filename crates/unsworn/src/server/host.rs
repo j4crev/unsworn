@@ -6,6 +6,7 @@
 //! request ids, `/_unsworn/health`, metrics and the access log.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,7 @@ use hyper::body::{Frame, Incoming};
 use serde_json::json;
 use tokio_stream::wrappers::ReceiverStream;
 use unsworn_core::MaybeSend;
+use unsworn_core::pipeline::shadow::{Answer, ShadowCall, compare};
 use unsworn_core::pipeline::{
     self as core, CallError, Deadline, FetchError, Host, Problem, ProxyRequest, Reply,
     StaticRequest,
@@ -68,10 +70,16 @@ async fn handle_inner(
     let client_ip = generation.client_ip.resolve(peer.ip(), req.headers());
     let trusted_peer = generation.client_ip.trusts(peer.ip());
 
+    let mut in_handlers = Duration::ZERO;
+    let mut runtime = None;
     let (mut resp, route_label) = if path == "/_unsworn/health" {
         // Anyone can ask here, so outside dev mode the answer is only
         // whether the instance is healthy. The admin listener says why.
         (health(&shared, &generation, shared.dev), path.to_string())
+    } else if path == "/_unsworn/stats" && shared.dev {
+        // What `unsworn top` reads. Outside dev mode it's on the admin
+        // listener only.
+        (stats(&shared).await, path.to_string())
     } else {
         let host = ServerHost {
             shared: shared.clone(),
@@ -80,17 +88,26 @@ async fn handle_inner(
             request_id: request_id.clone(),
             tls,
             trusted_peer,
+            in_handlers: AtomicU64::new(0),
+            runtime: std::sync::OnceLock::new(),
         };
         let req = req.map(|b| b.map_err(BoxError::from).boxed_unsync());
         let handled = generation.router.handle(&host, req, client_ip).await;
+        in_handlers = Duration::from_nanos(host.in_handlers.load(Ordering::Relaxed));
+        runtime = host.runtime.into_inner();
         (into_http(handled.response), handled.route)
     };
     resp.headers_mut().insert(&X_REQUEST_ID, request_id.clone());
     let status = resp.status().as_u16();
     let elapsed = start.elapsed();
-    shared
-        .metrics
-        .record(method.as_str(), &route_label, status, elapsed);
+    shared.metrics.record(
+        method.as_str(),
+        &route_label,
+        status,
+        elapsed,
+        in_handlers,
+        runtime.as_ref(),
+    );
     access::log(&access::Entry {
         method: method.as_str(),
         path,
@@ -170,6 +187,10 @@ struct ServerHost {
     tls: bool,
     /// The connection came from one of `[server].trusted_proxies`.
     trusted_peer: bool,
+    /// How long this request has waited for handlers, in nanoseconds, and
+    /// the runtime that ran the route's own. For `unsworn top`.
+    in_handlers: AtomicU64,
+    runtime: std::sync::OnceLock<Arc<str>>,
 }
 
 impl Host for ServerHost {
@@ -264,6 +285,8 @@ impl Host for ServerHost {
             core::Body::Bytes(b) => CallBody::Bytes(b),
             core::Body::Host(b) => CallBody::Stream(b),
         };
+        let began = Instant::now();
+        let handles = request.phase == unsworn_proto::Phase::Handle;
         let reply = pool
             .call(
                 request,
@@ -271,7 +294,15 @@ impl Host for ServerHost {
                 instant(deadline),
                 self.request_id.to_str().unwrap_or_default().to_string(),
             )
-            .await?;
+            .await;
+        // Up to the handler's answer. A streamed body is the handler's
+        // too, but by then the response is on its way.
+        self.in_handlers
+            .fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        if handles {
+            let _ = self.runtime.set(pool.name());
+        }
+        let reply = reply?;
         Ok(match reply {
             workers::Reply::Continue(context) => Reply::Continue(context),
             workers::Reply::Response { response, body } => Reply::Response {
@@ -285,6 +316,67 @@ impl Host for ServerHost {
                 },
             },
         })
+    }
+
+    fn shadow(&self, call: ShadowCall) {
+        let Some(pool) = self.generation.pools.get(&call.handler.runtime).cloned() else {
+            return;
+        };
+        let shared = self.shared.clone();
+        let request_id = self.request_id.to_str().unwrap_or_default().to_string();
+        let deadline = instant(call.deadline);
+        // The client already has its answer on the way: this runs beside it.
+        tokio::spawn(async move {
+            let began = Instant::now();
+            let reply = pool
+                .call(call.request, call.body.into(), deadline, request_id.clone())
+                .await;
+            let took = began.elapsed();
+            let outcome = match reply {
+                Ok(workers::Reply::Response { response, body }) => {
+                    let answer = Answer {
+                        status: response.status,
+                        body: match body {
+                            ReplyBody::Empty => Some(Bytes::new()),
+                            ReplyBody::Bytes(bytes) => Some(bytes),
+                            ReplyBody::Stream(_) => None,
+                        },
+                    };
+                    Ok(compare(&call.primary, &answer))
+                }
+                Ok(workers::Reply::Continue(_)) => {
+                    Err("it answered `continue`, which only before handlers may send".to_string())
+                }
+                Err(e) => Err(e.to_string()),
+            };
+            let (counted, what) = match &outcome {
+                Ok(Ok(())) => (Some(Ok(())), None),
+                Ok(Err(difference)) => (Some(Err(difference.as_str())), Some(difference.clone())),
+                Err(failure) => (None, Some(format!("the shadow gave no answer: {failure}"))),
+            };
+            let wrong = shared.shadows.record(
+                &call.method,
+                &call.route,
+                &call.handler.raw,
+                &call.handler.runtime,
+                counted,
+                call.primary_time,
+                took,
+            );
+            // The first few, then now and then: a shadow that's wrong for
+            // every request shouldn't fill the log.
+            if let (Some(n), Some(what)) = (wrong, what)
+                && (n <= 10 || n.is_multiple_of(100))
+            {
+                tracing::warn!(
+                    target: "shadow",
+                    route = %call.route,
+                    shadow = %call.handler.raw,
+                    id = %request_id,
+                    "{what}"
+                );
+            }
+        });
     }
 
     async fn proxy(&self, request: ProxyRequest<Body>) -> core::Response<Body> {
@@ -367,6 +459,29 @@ impl Host for ServerHost {
             tokio::spawn(future);
         }
     }
+}
+
+/// What `unsworn top` shows, as JSON: every route's requests so far, and
+/// what each runtime and Unsworn itself have used.
+pub async fn stats(shared: &Arc<Shared>) -> Response<Body> {
+    let pools = shared.generation.load().pools.clone();
+    // Reading `/proc` is file I/O.
+    let usage = tokio::task::spawn_blocking(move || (pools.usage(), crate::scale::own_usage()))
+        .await
+        .unwrap_or_default();
+    let (runtimes, own) = usage;
+    let body = json!({
+        "version": unsworn_core::VERSION,
+        "uptime_seconds": shared.started.elapsed().as_secs_f64(),
+        "unsworn": { "cpu_seconds": own.cpu_seconds, "memory_kb": own.memory_kb },
+        "runtimes": runtimes,
+        "routes": shared.metrics.routes(),
+        "shadows": shared.shadows.all(),
+        "bucket_bounds_ms": (0..crate::server::support::BUCKETS)
+            .map(crate::server::support::bucket_bound_ms)
+            .collect::<Vec<_>>(),
+    });
+    json_response(StatusCode::OK, &body)
 }
 
 /// The health report: `200` when healthy, `503` when degraded. With

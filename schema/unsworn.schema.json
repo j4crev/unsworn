@@ -1564,6 +1564,17 @@
             "null"
           ]
         },
+        "shadow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawShadow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A second handler that gets a copy of each request, to compare with\nthe route's own: a handler reference, or `{ handler, runtime, sample }`.\nClients only ever get the route's own answer."
+        },
         "static": {
           "anyOf": [
             {
@@ -1821,6 +1832,44 @@
           "type": "array"
         }
       },
+      "type": "object"
+    },
+    "RawShadow": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/RawShadowFull"
+        }
+      ],
+      "description": "`shadow` on a `[[route]]`."
+    },
+    "RawShadowFull": {
+      "additionalProperties": false,
+      "properties": {
+        "handler": {
+          "type": "string"
+        },
+        "runtime": {
+          "description": "The runtime, when the handler file's extension doesn't say.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sample": {
+          "description": "The share of requests to copy, from 0 to 1. Default: 1, all of them.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "handler"
+      ],
       "type": "object"
     },
     "RawStatic": {

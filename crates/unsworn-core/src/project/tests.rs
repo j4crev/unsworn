@@ -1600,3 +1600,46 @@ fn an_outbound_services_header_variables_are_kept_from_workers() {
     assert_eq!(p.secret_env, ["S_KEY"]);
     assert_eq!(p.outbound["s"].url, "https://s.example");
 }
+
+#[test]
+fn a_shadow_can_be_set_on_the_route_or_on_an_entry_for_it() {
+    let cfg = format!(
+        r#"{RUNTIMES}
+[routes]
+dir = "routes"
+
+[[route]]
+path = "/search"
+method = "GET"
+handler = "src/search.ts#search"
+shadow = {{ handler = "src/search.go#Search", sample = 0.2 }}
+
+# For a route that comes from a file.
+[[route]]
+path = "/users/{{id}}"
+method = "GET"
+shadow = "src/users.go#Get"
+"#
+    );
+    let p = project(&[
+        ("unsworn.toml", &cfg),
+        ("src/search.ts", ""),
+        ("src/search.go", ""),
+        ("src/users.go", ""),
+        ("routes/users.[id].get.ts", ""),
+    ]);
+    let search = found(&p, "GET", "/search").route.shadow.clone().unwrap();
+    assert_eq!(
+        (search.handler.raw.as_str(), search.handler.runtime.as_str()),
+        ("src/search.go#Search", "go")
+    );
+    assert_eq!(search.every, 5);
+    // One request in five is taken.
+    let taken = (0..20).filter(|_| search.take()).count();
+    assert_eq!(taken, 4);
+    let users = found(&p, "GET", "/users/7").route.shadow.clone().unwrap();
+    assert_eq!(users.handler.raw, "src/users.go#Get");
+    assert_eq!(users.every, 1);
+    // Workers are asked whether the shadow handlers exist, like any other.
+    assert!(p.handlers_by_runtime()["go"].contains(&"src/users.go#Get".to_string()));
+}

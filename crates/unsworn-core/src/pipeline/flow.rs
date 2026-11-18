@@ -765,12 +765,43 @@ async fn run_action<H: Host>(
             request.handler = h.raw.clone();
             request.phase = Phase::Handle;
             request.context = context;
+            // A copy for the route's shadow handler, if this is a request
+            // to copy. A streamed body can only be read once.
+            let shadow = route
+                .shadow
+                .as_ref()
+                .filter(|s| !stream_body && s.take())
+                .map(|s| {
+                    let mut copy = request.clone();
+                    copy.handler = s.handler.raw.clone();
+                    (s.handler.clone(), copy, raw_body.clone())
+                });
+            let began = ctx.host.monotonic();
             let body = match streaming_body {
                 Some(stream) if stream_body => Body::Host(stream),
                 _ => Body::bytes(raw_body),
             };
             match ctx.host.call(h, request, body, deadline).await {
                 Ok(Reply::Response { response, body }) => {
+                    if let Some((handler, request, raw_body)) = shadow {
+                        ctx.host.shadow(super::shadow::ShadowCall {
+                            route: route.path.clone(),
+                            method: request.method.clone(),
+                            handler,
+                            request,
+                            body: raw_body,
+                            deadline,
+                            primary: super::shadow::Answer {
+                                status: response.status,
+                                body: match &body {
+                                    Body::Empty => Some(Bytes::new()),
+                                    Body::Bytes(bytes) => Some(bytes.clone()),
+                                    Body::Host(_) => None,
+                                },
+                            },
+                            primary_time: ctx.host.monotonic().saturating_sub(began),
+                        });
+                    }
                     let mode = ctx.project.server.response_validation;
                     let rule = route.validation.response.as_ref();
                     if mode != ResponseValidation::Off

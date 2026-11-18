@@ -181,22 +181,21 @@ pub fn idle_ticks() -> Option<u64> {
     Some(stat_idle(&stat, &cpu_list(allowed)))
 }
 
-/// The CPU time a process and its descendants have used, in ticks.
+/// A process and its descendants.
 ///
 /// A runtime's command runs through `sh -c`. The shell usually replaces
 /// itself with the worker, but not for a command such as `cd x && node
 /// worker.js`, where the worker is the shell's child.
-pub fn tree_ticks(pid: u32) -> Option<u64> {
-    fn walk(pid: u32, depth: usize, total: &mut u64) -> Option<()> {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        *total += stat_ticks(&stat)?;
+fn tree(pid: u32) -> Vec<u32> {
+    fn walk(pid: u32, depth: usize, out: &mut Vec<u32>) {
+        out.push(pid);
         if depth == 0 {
-            return Some(());
+            return;
         }
         // Each thread lists the children it started. A kernel built
         // without this file reports the process alone.
         let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
-            return Some(());
+            return;
         };
         for task in tasks.flatten() {
             let Ok(children) = std::fs::read_to_string(task.path().join("children")) else {
@@ -204,15 +203,69 @@ pub fn tree_ticks(pid: u32) -> Option<u64> {
             };
             for child in children.split_ascii_whitespace() {
                 if let Ok(child) = child.parse() {
-                    walk(child, depth - 1, total);
+                    walk(child, depth - 1, out);
                 }
             }
         }
-        Some(())
     }
-    let mut total = 0;
-    walk(pid, 4, &mut total)?;
-    Some(total)
+    let mut out = Vec::new();
+    walk(pid, 4, &mut out);
+    out
+}
+
+/// The CPU time a process and its descendants have used, in ticks. `None`
+/// when the process is gone.
+pub fn tree_ticks(pid: u32) -> Option<u64> {
+    let mut total = None;
+    for pid in tree(pid) {
+        let ticks = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| stat_ticks(&stat));
+        if let Some(ticks) = ticks {
+            total = Some(total.unwrap_or(0) + ticks);
+        }
+    }
+    total
+}
+
+/// The resident memory in a `/proc/<pid>/status`, in kilobytes.
+fn status_rss_kb(status: &str) -> Option<u64> {
+    let line = status.lines().find_map(|l| l.strip_prefix("VmRSS:"))?;
+    line.split_ascii_whitespace().next()?.parse().ok()
+}
+
+/// The memory a process and its descendants hold, in kilobytes.
+pub fn tree_memory_kb(pid: u32) -> u64 {
+    tree(pid)
+        .into_iter()
+        .filter_map(|pid| std::fs::read_to_string(format!("/proc/{pid}/status")).ok())
+        .filter_map(|status| status_rss_kb(&status))
+        .sum()
+}
+
+/// CPU ticks as seconds.
+pub fn seconds(ticks: u64) -> f64 {
+    ticks as f64 / TICKS_PER_SECOND
+}
+
+/// What a process has used so far.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct Usage {
+    pub cpu_seconds: f64,
+    pub memory_kb: u64,
+}
+
+/// What this process has used, without its workers.
+pub fn own_usage() -> Usage {
+    let read = |file: &str| std::fs::read_to_string(format!("/proc/self/{file}")).ok();
+    Usage {
+        cpu_seconds: read("stat")
+            .and_then(|stat| stat_ticks(&stat))
+            .map_or(0.0, seconds),
+        memory_kb: read("status")
+            .and_then(|status| status_rss_kb(&status))
+            .unwrap_or(0),
+    }
 }
 
 #[cfg(test)]
@@ -433,5 +486,13 @@ mod tests {
         let after = tree_ticks(std::process::id()).unwrap();
         assert!(after > before, "{before} -> {after}");
         assert_eq!(tree_ticks(u32::MAX - 1), None);
+        // And its memory.
+        assert!(tree_memory_kb(std::process::id()) > 1000);
+        let own = own_usage();
+        assert!(own.cpu_seconds > 0.0 && own.memory_kb > 1000, "{own:?}");
+        assert_eq!(
+            status_rss_kb("Name:\tx\nVmRSS:\t   12345 kB\nThreads:\t4\n"),
+            Some(12345)
+        );
     }
 }

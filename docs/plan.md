@@ -85,7 +85,8 @@ What's in it:
   that decide who gets in and what runs: body and time limits, where each
   scheme's keys come from, each runtime's command.
 - **One block per route and method,** with what the route does, every
-  policy that applies to it and every check on its input. Methods of one
+  policy that applies to it and every check on its input, and its
+  [`shadow`](shadow.md) handler if it has one. Methods of one
   route with the same rules share a block (`GET, DELETE /users/{id}`), and
   `*` is a route for every method. Routes are in path order, so moving one
   in the config changes nothing.

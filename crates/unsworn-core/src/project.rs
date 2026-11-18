@@ -335,6 +335,25 @@ pub struct OpInfo {
     pub tags: Vec<String>,
 }
 
+/// A second handler that gets a copy of a route's requests, to compare
+/// its answers with the route's own. See `docs/shadow.md`.
+#[derive(Debug, Clone)]
+pub struct Shadow {
+    pub handler: HandlerRef,
+    /// One request in this many is copied.
+    pub every: u64,
+    seen: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Shadow {
+    /// Whether this request is one to copy.
+    pub fn take(&self) -> bool {
+        self.seen
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .is_multiple_of(self.every)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Route {
     pub id: usize,
@@ -354,6 +373,7 @@ pub struct Route {
     pub param_names: Vec<String>,
     pub catch_all: Option<String>,
     pub op: Option<OpInfo>,
+    pub shadow: Option<Shadow>,
 }
 
 impl Route {
@@ -874,6 +894,9 @@ impl Project {
             if let Some(h) = r.handler() {
                 add(h);
             }
+            if let Some(s) = &r.shadow {
+                add(&s.handler);
+            }
             for layer in [&r.low, &r.high] {
                 if let Some(OrOff::On(list)) = &layer.before {
                     list.iter().for_each(&mut add);
@@ -1022,6 +1045,8 @@ struct ExactEntry {
     used: bool,
     /// `mcp = {...}`: offer the route this entry matches as a tool.
     mcp: Option<RawRouteTool>,
+    /// `shadow`, for the route this entry matches.
+    shadow: Option<config::RawShadow>,
 }
 
 #[derive(Default, Clone)]
@@ -1070,6 +1095,8 @@ struct Draft {
     /// `mcp = {...}` on the route's own `[[route]]` entry, or an OpenAPI
     /// operation picked by `[openapi] mcp_tools` (the flag).
     mcp: Option<(RawRouteTool, bool)>,
+    /// `shadow` on the route's own `[[route]]` entry.
+    shadow: Option<config::RawShadow>,
 }
 
 /// The OpenAPI operations `[openapi] mcp_tools` offers as tools.
@@ -2507,6 +2534,7 @@ impl<'h> Compiler<'h> {
                 source,
                 used: false,
                 mcp: r.mcp.clone(),
+                shadow: r.shadow.clone(),
             }),
             1 => {
                 let action = self.action(r, &loc);
@@ -2524,6 +2552,7 @@ impl<'h> Compiler<'h> {
                         folder_layers: Vec::new(),
                         op: None,
                         mcp: r.mcp.clone().map(|m| (m, false)),
+                        shadow: r.shadow.clone(),
                     });
                 }
             }
@@ -2720,6 +2749,7 @@ impl<'h> Compiler<'h> {
             folder_layers: Vec::new(),
             op: None,
             mcp: None,
+            shadow: None,
         });
 
         let mut tools = Vec::new();
@@ -2895,6 +2925,7 @@ impl<'h> Compiler<'h> {
             folder_layers: Vec::new(),
             op: None,
             mcp: None,
+            shadow: None,
         });
         Some(McpTool {
             name: t.name.clone(),
@@ -3336,6 +3367,7 @@ impl<'h> Compiler<'h> {
                 folder_layers: layers,
                 op: None,
                 mcp: None,
+                shadow: None,
             });
         }
     }
@@ -3532,6 +3564,7 @@ impl<'h> Compiler<'h> {
                 folder_layers: Vec::new(),
                 op: Some(info),
                 mcp: tool.map(|t| (t, true)),
+                shadow: None,
             });
         }
         if pick.is_some() && picked == 0 {
@@ -3582,6 +3615,7 @@ impl<'h> Compiler<'h> {
         }
         let mut raw_validation = d.validation.clone();
         let mut tool = d.mcp.clone().map(|(m, bulk)| (m, loc.clone(), bulk));
+        let mut shadow = d.shadow.clone().map(|s| (s, loc.clone()));
         let norm = normalize(&d.path);
         for e in exacts.iter_mut() {
             if e.norm != norm {
@@ -3598,6 +3632,9 @@ impl<'h> Compiler<'h> {
             high.merge_from(&e.layer);
             high_layers.push((e.source.to_string(), e.layer.clone()));
             raw_validation.overlay(&e.validation);
+            if let Some(s) = &e.shadow {
+                shadow = Some((s.clone(), e.source.loc()));
+            }
             if let Some(m) = &e.mcp {
                 match &tool {
                     // An explicit `mcp` replaces a bulk pick.
@@ -3674,6 +3711,49 @@ impl<'h> Compiler<'h> {
             ));
         }
 
+        let shadow = shadow.and_then(|(raw, at)| {
+            let at = format!("{at}.shadow");
+            let (handler, runtime, sample) = match &raw {
+                config::RawShadow::Handler(h) => (h.as_str(), None, 1.0),
+                config::RawShadow::Full(f) => (
+                    f.handler.as_str(),
+                    f.runtime.as_deref(),
+                    f.sample.unwrap_or(1.0),
+                ),
+            };
+            let Action::Handler(own) = &d.action else {
+                self.diags.error(
+                    &at,
+                    "`shadow` compares with a route's handler, and this route has none",
+                );
+                return None;
+            };
+            if !(sample > 0.0 && sample <= 1.0) {
+                self.diags.error(
+                    format!("{at}.sample"),
+                    "sample is a share of requests: more than 0, and 1 at most",
+                );
+                return None;
+            }
+            let handler = self.handler_ref(handler, runtime, &at)?;
+            if handler == *own {
+                self.diags
+                    .error(&at, "the shadow is the route's own handler");
+                return None;
+            }
+            if !self.host.exists(&handler.file) {
+                self.diags.push(
+                    Diagnostic::error(&at, format!("handler file \"{}\" not found", handler.file))
+                        .hint("handler paths are relative to the project root"),
+                );
+            }
+            Some(Shadow {
+                handler,
+                every: (1.0 / sample).round().max(1.0) as u64,
+                seen: Arc::default(),
+            })
+        });
+
         Some(Route {
             id,
             methods: d.methods,
@@ -3688,6 +3768,7 @@ impl<'h> Compiler<'h> {
             param_names,
             catch_all,
             op: d.op,
+            shadow,
         })
     }
 
@@ -3756,6 +3837,41 @@ impl<'h> Compiler<'h> {
             }
             layer.merge_from(&r.high);
             let eff = layer.finalize(Duration::from_secs(30), 0);
+            if let Some(shadow) = &r.shadow {
+                if eff.stream_body {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!("{}", r.source),
+                            format!(
+                                "{} {} sets both `shadow` and `stream_body`, but a streamed body can only be read once",
+                                r.method_label(),
+                                r.path
+                            ),
+                        )
+                        .hint("remove `shadow`, or let Unsworn read the body first"),
+                    );
+                }
+                // Whatever the shadow writes, it writes on top of what the
+                // route's own handler wrote.
+                let writes = r
+                    .methods
+                    .as_ref()
+                    .is_none_or(|m| m.iter().any(|m| !matches!(m.as_str(), "GET" | "HEAD")));
+                if writes {
+                    self.diags.push(
+                        Diagnostic::warning(
+                            format!("{}.shadow", r.source.loc()),
+                            format!(
+                                "{} runs for every {} {} as well as the route's handler: anything it writes or sends is done twice",
+                                shadow.handler.raw,
+                                r.method_label(),
+                                r.path
+                            ),
+                        )
+                        .hint("shadow a route that only reads, or make sure the shadow handler changes nothing"),
+                    );
+                }
+            }
             if eff.stream_body && r.validation.body.is_some() {
                 self.diags.push(
                     Diagnostic::error(
