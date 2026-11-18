@@ -93,8 +93,13 @@ in review.
 
 ## Limits
 
-- **Servers and containers only.** Edge and serverless targets ignore
-  `shadow`.
+- **On Cloudflare and serverless targets, differences are logged and not
+  counted.** A shadow gets its copy there too, after the response, and a
+  different answer is logged as on a server: the first ten for a route,
+  then every hundredth, counted by each instance on its own. There are no
+  figures, since `unsworn top` reads a running server. Both handlers have
+  to be JavaScript or TypeScript there, so it suits trying a rewrite of a
+  handler, not a move to another language.
 - **Not with `stream_body`:** a streamed request body can only be read
   once.
 - **MCP tools aren't shadowed.**

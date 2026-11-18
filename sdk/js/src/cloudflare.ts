@@ -79,10 +79,11 @@ function bridge(
   origin: string,
   dev: boolean,
   upgraded: Upgraded,
+  project: Unsworn,
 ): Bridge {
   const cache = () => (globalThis as unknown as { caches: { default: Cache } }).caches.default;
   return {
-    ...baseBridge(bundle, dev, () => [env, ctx]),
+    ...baseBridge(bundle, dev, () => [env, ctx], project),
 
     async proxy(request) {
       const res = await fetch(request.url, {
@@ -160,7 +161,7 @@ export function createWorker(bundle: Bundle) {
             ip: request.headers.get("cf-connecting-ip") ?? "0.0.0.0",
             requestId,
           },
-          bridge(bundle, env, ctx, url.origin, dev, upgraded),
+          bridge(bundle, env, ctx, url.origin, dev, upgraded, app),
         ),
       );
       if (handled.status === 101 && upgraded.webSocket) {

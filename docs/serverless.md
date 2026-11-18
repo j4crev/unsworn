@@ -178,6 +178,10 @@ handler. Only JavaScript and TypeScript handlers run in a function;
 `unsworn check --target <name>` reports any others. For other languages,
 run the server in a container.
 
+`ctx.call` reaches a [function](functions.md) and `ctx.fetch` an
+[outbound service](outbound.md), with the checks the server makes. A
+route's [`shadow`](shadow.md) handler gets its copy after the response.
+
 All of Node's APIs are available, and environment variables are in
 `process.env`. esbuild bundles every dependency into `index.mjs`, so a
 package that loads native code or reads its own files from disk at runtime

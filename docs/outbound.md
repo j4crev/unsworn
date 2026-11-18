@@ -125,7 +125,10 @@ compile error.
 - **It's for request and response, not streams.** The whole body is sent
   and the whole answer read, up to `max_response`. A handler that streams
   from a model's API needs to hold that key itself for now.
-- **Servers and containers only.** On Cloudflare and serverless targets
-  handlers share a process with the core, so there's nothing to keep the
-  key from. `unsworn check --target` reports a project's outbound
-  services there.
+- **On Cloudflare and serverless targets, the key isn't kept from the
+  handler.** `ctx.fetch` works there as it does on a server: Unsworn adds
+  the service's headers, checks the method and path, and doesn't follow
+  redirects. But handlers share a process with the core there, so a
+  handler can read the variable the key comes from. `unsworn check
+  --target` says so for a project with such a service. To keep a key out
+  of handler code altogether, run the server.

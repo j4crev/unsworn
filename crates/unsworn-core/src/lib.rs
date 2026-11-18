@@ -13,12 +13,14 @@
 //! calls that would compile there but panic, such as `Instant::now`.
 
 pub mod auth;
+pub mod calls;
 pub mod codegen;
 pub mod config;
 pub mod diag;
 pub mod export;
 pub mod mcp;
 pub mod openapi;
+pub mod outbound;
 pub mod pipeline;
 pub mod plan;
 pub mod policy;

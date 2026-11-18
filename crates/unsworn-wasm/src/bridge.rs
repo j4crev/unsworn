@@ -27,6 +27,8 @@ export interface HttpRequestValue {
   url: string;
   headers: HeaderPairs;
   body: BodyValue;
+  /** `"manual"`: a redirect is the answer, and isn't followed. */
+  redirect?: "manual";
 }
 
 export interface HttpResponseValue {
@@ -56,6 +58,24 @@ export type CallResult =
   | { type: "timeout" }
   | { type: "body"; error: "too_large" | "idle" | "read" };
 
+/** How a function a handler called ended: `Unsworn.callFunction`. The call succeeded when `status` is below 400. */
+export interface FunctionResult {
+  status: number;
+  /** What the function answered with. For a `422`, the input's errors. */
+  json?: unknown;
+  /** What went wrong, when the function couldn't be run or failed. */
+  error?: string;
+}
+
+/** A service's answer to a handler's request: `Unsworn.fetchService`. With `error`, why there isn't one. */
+export interface ServiceResponse {
+  status: number;
+  /** Lowercase names. */
+  headers: Record<string, string>;
+  body: Uint8Array | null;
+  error?: string;
+}
+
 /** `[store]` as configured. `token` goes with a Redis REST API `url`. */
 export interface StoreSettings {
   backend: "memory" | "redis";
@@ -65,8 +85,11 @@ export interface StoreSettings {
 }
 /** The I/O a JavaScript host does for the core. */
 export interface Bridge {
-  /** Calls a handler. `request` is a protocol `request` message as JSON. Must settle within `timeoutMs`, resolving `{ type: "timeout" }` if the handler doesn't. */
-  call(request: string, body: BodyValue, timeoutMs: number): Promise<CallResult>;
+  /**
+   * Calls a handler. `request` is a protocol `request` message as JSON. Must settle within `timeoutMs`, resolving `{ type: "timeout" }` if the handler doesn't.
+   * `caller` is the core's record of this call, which `Unsworn.callFunction` and `Unsworn.fetchService` take when the handler calls a function or a service. It's absent in a project that declares neither.
+   */
+  call(request: string, body: BodyValue, timeoutMs: number, caller?: string): Promise<CallResult>;
   /** Reads a stream whole. Resolves `null` past `max` bytes; rejects when it can't be read. */
   readBody(body: ReadableStream<Uint8Array>, max: number): Promise<Uint8Array | null>;
   /** A stream that errors once more than `max` bytes pass through. */
@@ -101,6 +124,7 @@ extern "C" {
         request: &str,
         body: &JsValue,
         timeout_ms: f64,
+        caller: &JsValue,
     ) -> Result<Promise, JsValue>;
     #[wasm_bindgen(method, catch, js_name = readBody)]
     pub fn read_body(this: &Bridge, body: &JsValue, max: f64) -> Result<Promise, JsValue>;

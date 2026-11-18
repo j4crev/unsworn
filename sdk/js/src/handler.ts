@@ -1,6 +1,8 @@
 // Calling a handler, the same way wherever it runs: as a worker process
 // (worker.ts) or in the same isolate as the core (cloudflare.ts).
 
+import type { Fetched, FetchInit } from "./index.ts";
+
 export type Callable = (req: unknown, ctx: unknown) => unknown;
 
 /** A web app with a `fetch(Request)` method: Hono, Elysia, itty-router... */
@@ -241,4 +243,38 @@ export async function outcome(result: unknown): Promise<Outcome> {
     return { type: "response", response, stream: body };
   }
   throw new Error("`body` must be a string, bytes, a ReadableStream or an async iterable");
+}
+
+// ---------------------------------------------------------------------------
+// `ctx.fetch`, the same wherever the handler runs
+
+/** What a `ctx.fetch` sends, from its `init`: lowercase header names, and a JSON or raw body as bytes. */
+export function outboundRequest(init: FetchInit = {}): {
+  method: string;
+  headers: Record<string, string>;
+  body: Uint8Array | undefined;
+} {
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(init.headers ?? {})) headers[name.toLowerCase()] = String(value);
+  let body: Uint8Array | undefined;
+  if (init.json !== undefined) {
+    body = encoder.encode(JSON.stringify(init.json));
+    headers["content-type"] ??= "application/json";
+  } else if (init.body !== undefined) {
+    body = typeof init.body === "string" ? encoder.encode(init.body) : init.body;
+  }
+  const method = (init.method ?? (body ? "POST" : "GET")).toUpperCase();
+  return { method, headers, body: body?.length ? body : undefined };
+}
+
+/** A service's answer, as `ctx.fetch` gives it to a handler. */
+export function fetchedValue(status: number, headers: Record<string, string>, bytes: Uint8Array): Fetched {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers,
+    body: bytes,
+    text: () => decoder.decode(bytes),
+    json: <T>() => JSON.parse(decoder.decode(bytes)) as T,
+  };
 }

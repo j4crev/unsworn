@@ -6,21 +6,53 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { type Bridge, type CallResult, type HttpResponseValue, initSync, Unsworn } from "../wasm/unsworn.js";
-import { handlerRequest, outcome, pickHandler, type RequestFields, splitRef, toBytes } from "./handler.ts";
-import { CallError, FetchError } from "./index.ts";
+import {
+  fetchedValue,
+  handlerRequest,
+  outboundRequest,
+  outcome,
+  pickHandler,
+  type RequestFields,
+  splitRef,
+  toBytes,
+} from "./handler.ts";
+import { CallError, FetchError, type FetchInit } from "./index.ts";
 
-/** `ctx.fetch` where handlers run in the core's own process. */
-function noFetch(): Promise<never> {
-  return Promise.reject(
-    new FetchError(501, "outbound services (`ctx.fetch`) work on the server only; `unsworn check --target` reports them"),
-  );
-}
-
-/** `ctx.call` where handlers run in the core's own process. */
-function noCalls(): Promise<never> {
-  return Promise.reject(
-    new CallError(501, "functions (`ctx.call`) run on the server only; `unsworn check --target` reports them"),
-  );
+/**
+ * `ctx.call` and `ctx.fetch` for a handler that runs in the core's own
+ * process. The core checks each one and runs it, as the server does:
+ * `caller` is its record of the call to the handler, and the function or
+ * the request goes back out through `bridge`.
+ */
+function calls(project: Unsworn | undefined, bridge: Bridge, caller: string | undefined) {
+  const none = "this project has no functions or outbound services";
+  // A handler may start one and not wait for it. Its failure then has
+  // nowhere to go, which shouldn't count as an unhandled rejection.
+  const quiet = <T>(answer: Promise<T>) => {
+    answer.catch(() => {});
+    return answer;
+  };
+  return {
+    call: (name: string, input?: unknown) =>
+      quiet(
+        (async () => {
+          if (!project || caller === undefined) throw new CallError(404, none);
+          const r = await project.callFunction(caller, name, JSON.stringify(input ?? null), bridge);
+          if (r.status < 400) return r.json ?? null;
+          throw new CallError(r.status, r.error ?? `the function answered ${r.status}`, r.json);
+        })(),
+      ),
+    fetch: (service: string, path: string, init?: FetchInit) =>
+      quiet(
+        (async () => {
+          if (!project || caller === undefined) throw new FetchError(404, none);
+          const { method, headers, body } = outboundRequest(init);
+          const r = await project.fetchService(caller, service, method, path, headers, body ?? null, bridge);
+          if (r.error !== undefined) throw new FetchError(r.status, r.error);
+          return fetchedValue(r.status, r.headers, r.body ?? new Uint8Array(0));
+        })(),
+      ),
+  };
 }
 
 /** What `unsworn build` bundles. */
@@ -170,11 +202,20 @@ export type BaseBridge = Pick<Bridge, "call" | "readBody" | "limitBody" | "colle
 
 /**
  * `fetchArgs` adds arguments to the `fetch` call of a handler that's an app
- * (Hono and the like), such as a Worker's `env` and `ctx`.
+ * (Hono and the like), such as a Worker's `env` and `ctx`. `project` is the
+ * loaded project, which runs the functions and outbound requests a handler
+ * asks for; without it, `ctx.call` and `ctx.fetch` fail.
  */
-export function baseBridge(bundle: Bundle, dev: boolean, fetchArgs?: () => unknown[]): BaseBridge {
+export function baseBridge(
+  bundle: Bundle,
+  dev: boolean,
+  fetchArgs?: () => unknown[],
+  project?: Unsworn,
+): BaseBridge {
   return {
-    async call(request: string, body, timeoutMs): Promise<CallResult> {
+    // Called as a method of the whole bridge, which is what a function or
+    // an outbound request a handler asks for goes back out through.
+    async call(this: Bridge, request: string, body, timeoutMs, caller): Promise<CallResult> {
       const msg = JSON.parse(request) as RequestFields;
       const [file] = splitRef(msg.handler);
       let fn;
@@ -197,8 +238,10 @@ export function baseBridge(bundle: Bundle, dev: boolean, fetchArgs?: () => unkno
         timer = setTimeout(() => resolve("timeout"), Math.max(0, timeoutMs));
       });
       const ctx = msg.context ?? {};
-      Object.defineProperty(ctx, "call", { value: noCalls });
-      Object.defineProperty(ctx, "fetch", { value: noFetch });
+      // Not enumerable, so the context still reads (and prints) as plain data.
+      const asks = calls(project, this, caller);
+      Object.defineProperty(ctx, "call", { value: asks.call });
+      Object.defineProperty(ctx, "fetch", { value: asks.fetch });
       const run = (async () => outcome(await fn(req, ctx)))();
       try {
         const out = await Promise.race([run, timeout]);
@@ -253,7 +296,9 @@ export function baseBridge(bundle: Bundle, dev: boolean, fetchArgs?: () => unkno
           method: request.method,
           headers: request.headers,
           body: (request.body ?? undefined) as BodyInit | undefined,
-          signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
+          redirect: request.redirect,
+          // Whole milliseconds, which is all `AbortSignal.timeout` takes.
+          signal: AbortSignal.timeout(Math.max(1, Math.floor(timeoutMs))),
         });
       } catch (err) {
         const name = (err as Error)?.name;

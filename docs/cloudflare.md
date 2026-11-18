@@ -68,6 +68,10 @@ Handlers have the same shape as on the server (see
 handler. Only JavaScript and TypeScript handlers run in a Worker; `unsworn
 check --target cloudflare` reports any others.
 
+`ctx.call` reaches a [function](functions.md) and `ctx.fetch` an
+[outbound service](outbound.md), with the checks the server makes. A
+route's [`shadow`](shadow.md) handler gets its copy after the response.
+
 Read bindings and variables through `cloudflare:workers`:
 
 ```ts

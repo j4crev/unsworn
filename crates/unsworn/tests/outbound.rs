@@ -453,5 +453,10 @@ fn services_are_planned_without_their_secrets() {
         .output()
         .unwrap();
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(err.contains("only work on the server"), "{err}");
+    // Services work there too. What a function can't promise is said.
+    assert!(
+        err.contains("[outbound.billing]: on lambda, handlers run in the same process as Unsworn"),
+        "{err}"
+    );
+    assert!(!err.contains("[outbound.open]"), "{err}");
 }

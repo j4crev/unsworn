@@ -5,18 +5,25 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::collections::BTreeMap;
+
+use bytes::Bytes;
 use http::{HeaderValue, Method, StatusCode, Uri, header};
 use js_sys::{Object, Promise};
-use unsworn_core::pipeline::{KeyCache, Problem, Router, problem_response};
+use serde_json::Value;
+use unsworn_core::calls::{self, Failure};
+use unsworn_core::pipeline::{
+    Body, Deadline, FetchError, Host, KeyCache, Problem, Reply, Router, problem_response,
+};
 use unsworn_core::store::{Bucket, take_token as core_take_token};
 use unsworn_core::validate::Build;
-use unsworn_core::{Level, compile_with};
+use unsworn_core::{Level, Project, compile_with, outbound};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
-use crate::bridge::{Bridge, JsBody, get, headers_from_js, response_to_js, set};
+use crate::bridge::{Bridge, JsBody, bytes_to_js, get, headers_from_js, response_to_js, set};
 use crate::files::Files;
-use crate::host::{WasmHost, WasmStore};
+use crate::host::{Caller, WasmHost, WasmStore};
 use crate::log;
 
 /// A loaded project, ready to handle requests. Build one per isolate.
@@ -147,15 +154,7 @@ impl Unsworn {
                     return Ok(out.into());
                 }
             };
-            let host = WasmHost {
-                store: WasmStore {
-                    bridge: bridge.clone(),
-                },
-                bridge,
-                dev,
-                request_id: request_id.clone(),
-                tls,
-            };
+            let host = host(router.project(), bridge, dev, request_id.clone(), tls);
             let mut handled = router.handle(&host, req, client_ip).await;
             if let Ok(v) = HeaderValue::from_str(&request_id) {
                 handled.response.headers_mut().insert("x-request-id", v);
@@ -164,6 +163,250 @@ impl Unsworn {
             set(&out, "route", &JsValue::from_str(&handled.route));
             Ok(out.into())
         })
+    }
+}
+
+#[wasm_bindgen]
+impl Unsworn {
+    /// Runs a function for a handler: its `ctx.call`. `caller` is what the
+    /// bridge's `call` was given for the handler, and `input` is JSON
+    /// text. Resolves a `FunctionResult`, and never rejects.
+    #[wasm_bindgen(js_name = callFunction, unchecked_return_type = "Promise<FunctionResult>")]
+    pub fn call_function(&self, caller: &str, name: &str, input: &str, bridge: Bridge) -> Promise {
+        let project = self.router.project().clone();
+        let dev = self.dev;
+        let caller = Caller::decode(caller);
+        let (name, input) = (name.to_string(), serde_json::from_str::<Value>(input));
+        future_to_promise(async move {
+            let outcome = match (caller, input) {
+                (Some(caller), Ok(input)) => {
+                    run_function(&project, caller, &name, &input, bridge, dev).await
+                }
+                (None, _) => Err(no_caller()),
+                (_, Err(e)) => Err(Failure::new(400, format!("the input isn't JSON: {e}"))),
+            };
+            let out = Object::new();
+            let (status, json, error) = match outcome {
+                Ok((status, json)) => (status, json, None),
+                Err(failure) => (failure.status, failure.json, Some(failure.error)),
+            };
+            set(&out, "status", &JsValue::from(status));
+            if !json.is_null()
+                && let Ok(value) = js_sys::JSON::parse(&json.to_string())
+            {
+                set(&out, "json", &value);
+            }
+            if let Some(error) = error {
+                set(&out, "error", &JsValue::from_str(&error));
+            }
+            Ok(out.into())
+        })
+    }
+
+    /// Makes a handler's request to an outbound service: its `ctx.fetch`.
+    /// `headers` is an object of the handler's headers, and `body` a
+    /// `Uint8Array` or `null`. Resolves a `ServiceResponse`, and never
+    /// rejects.
+    #[wasm_bindgen(js_name = fetchService, unchecked_return_type = "Promise<ServiceResponse>")]
+    pub fn fetch_service(
+        &self,
+        caller: &str,
+        service: &str,
+        method: &str,
+        path: &str,
+        headers: &JsValue,
+        body: JsValue,
+        bridge: Bridge,
+    ) -> Promise {
+        let project = self.router.project().clone();
+        let dev = self.dev;
+        let caller = Caller::decode(caller);
+        let (service, method, path) = (service.to_string(), method.to_string(), path.to_string());
+        let sent: BTreeMap<String, String> = string_entries(headers)
+            .into_iter()
+            .filter_map(|(name, value)| Some((name, value?)))
+            .collect();
+        let body = body
+            .dyn_ref::<js_sys::Uint8Array>()
+            .map(|bytes| Bytes::from(bytes.to_vec()))
+            .unwrap_or_default();
+        future_to_promise(async move {
+            let asked = Asked {
+                service: &service,
+                method: &method,
+                path: &path,
+                headers: &sent,
+                body,
+            };
+            let outcome = match caller {
+                Some(caller) => fetch_service(&project, caller, asked, bridge, dev).await,
+                None => {
+                    let failure = no_caller();
+                    Err((failure.status, failure.error))
+                }
+            };
+            let out = Object::new();
+            let headers = Object::new();
+            match outcome {
+                Ok(response) => {
+                    set(&out, "status", &JsValue::from(response.status().as_u16()));
+                    for (name, value) in outbound::response_headers(response.headers()) {
+                        // `fetch` decoded the body, so these no longer
+                        // describe it.
+                        if name != "content-encoding" && name != "content-length" {
+                            set(&headers, &name, &JsValue::from_str(&value));
+                        }
+                    }
+                    let body = response.into_body();
+                    let body = match body.is_empty() {
+                        true => JsValue::NULL,
+                        false => bytes_to_js(&body).into(),
+                    };
+                    set(&out, "body", &body);
+                }
+                Err((status, error)) => {
+                    set(&out, "status", &JsValue::from(status));
+                    set(&out, "body", &JsValue::NULL);
+                    set(&out, "error", &JsValue::from_str(&error));
+                }
+            }
+            set(&out, "headers", &headers);
+            Ok(out.into())
+        })
+    }
+}
+
+fn host(project: &Project, bridge: Bridge, dev: bool, request_id: String, tls: bool) -> WasmHost {
+    WasmHost {
+        store: WasmStore {
+            bridge: bridge.clone(),
+        },
+        bridge,
+        dev,
+        request_id,
+        tls,
+        calls: !project.functions.is_empty() || !project.outbound.is_empty(),
+    }
+}
+
+/// A `ctx.call` or `ctx.fetch` that came without the record of the call
+/// it was made from.
+fn no_caller() -> Failure {
+    Failure::new(
+        409,
+        "a call is made for a request in flight, and this one has no record of its request",
+    )
+}
+
+/// Runs a function as the server does (see `unsworn_core::calls`), with
+/// the function's handler called in this isolate.
+async fn run_function(
+    project: &Project,
+    caller: Caller,
+    name: &str,
+    input: &Value,
+    bridge: Bridge,
+    dev: bool,
+) -> Result<(u16, Value), Failure> {
+    let (function, request) = calls::prepare(&project.functions, name, input, caller.call)?;
+    let host = host(project, bridge, dev, caller.request_id, false);
+    // The function has its own time limit, and no more time than the
+    // request it's called for.
+    let deadline = caller
+        .deadline
+        .min(Deadline(host.monotonic() + function.timeout));
+    let reply = host
+        .call(&function.handler, request, Body::Empty, deadline)
+        .await;
+    let (response, body) = match reply {
+        Ok(Reply::Response { response, body }) => (response, body),
+        Ok(Reply::Continue(_)) => return Err(calls::continued()),
+        Err(e) => return Err(calls::failed(e)),
+    };
+    let answer = match body {
+        Body::Empty => calls::Answer::Empty,
+        Body::Bytes(bytes) => calls::Answer::Bytes(bytes),
+        // Bytes and nothing arrive as such: what's left is a stream.
+        Body::Host(_) => calls::Answer::Stream,
+    };
+    calls::finish(
+        &function,
+        project.server.response_validation,
+        response,
+        answer,
+    )
+}
+
+/// What a handler's `ctx.fetch` asked for.
+struct Asked<'a> {
+    service: &'a str,
+    method: &'a str,
+    path: &'a str,
+    headers: &'a BTreeMap<String, String>,
+    body: Bytes,
+}
+
+/// Makes a handler's request to a service as the server does (see
+/// `unsworn_core::outbound`), with the request sent by the bridge. `Err`
+/// is the status and reason there's no answer.
+async fn fetch_service(
+    project: &Project,
+    caller: Caller,
+    asked: Asked<'_>,
+    bridge: Bridge,
+    dev: bool,
+) -> Result<http::Response<Bytes>, (u16, String)> {
+    let service = outbound::service(&project.outbound, asked.service)?;
+    let planned = outbound::plan(
+        service,
+        asked.method,
+        asked.path,
+        asked.headers,
+        caller.call.trace.as_ref(),
+    )?;
+    let mut request = http::Request::builder()
+        .method(planned.method.as_str())
+        .uri(planned.url);
+    for (name, value) in &planned.headers {
+        request = request.header(name, value);
+    }
+    let request = request
+        .body(asked.body)
+        .map_err(|e| (400, format!("the request can't be made: {e}")))?;
+
+    let host = host(project, bridge, dev, caller.request_id, false);
+    let started = host.monotonic();
+    // The service's time limit, and no more than the handler's own request
+    // has left.
+    let timeout = service
+        .timeout
+        .min(caller.deadline.0.saturating_sub(started));
+    let limit = usize::try_from(service.max_response).unwrap_or(usize::MAX);
+    let outcome = host.send(request, timeout, limit, true).await;
+    // What a handler reached, and when: the query is left out, since
+    // that's where a token may be.
+    let path = asked.path.split('?').next().unwrap_or_default();
+    let (name, method, id) = (&service.name, &planned.method, &host.request_id);
+    let failed = |status: u16, error: String| {
+        tracing::warn!("outbound service={name} method={method} path={path} id={id}: {error}");
+        (status, error)
+    };
+    match outcome {
+        Ok(response) => {
+            let ms = host.monotonic().saturating_sub(started).as_secs_f64() * 1000.0;
+            let status = response.status().as_u16();
+            tracing::info!(
+                "outbound service={name} method={method} path={path} status={status} ms={ms:.0} id={id}"
+            );
+            Ok(response)
+        }
+        Err(FetchError::Timeout) => Err(failed(504, "the service took too long to answer".into())),
+        Err(FetchError::Connect(e)) => Err(failed(502, format!("couldn't reach the service: {e}"))),
+        // The bridge reads up to the limit, and says so when there's more.
+        Err(FetchError::Read(e)) if e.contains("is larger than") => {
+            Err(failed(502, outbound::too_large(service)))
+        }
+        Err(FetchError::Read(e)) => Err(failed(502, format!("the response couldn't be read: {e}"))),
     }
 }
 

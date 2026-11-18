@@ -21,7 +21,8 @@ use unsworn_core::Project;
 use unsworn_core::config::Protocol;
 use unsworn_core::config::ResponseValidation;
 use unsworn_core::project::{Function, Outbound, Runtime};
-use unsworn_core::trace::{self, TraceContext};
+use unsworn_core::trace::TraceContext;
+use unsworn_core::{calls, outbound};
 use unsworn_proto::{
     self as proto, Cancel, Chunk, DecodeError, End, Frame, Json, LogLevel, Message,
     PROTOCOL_VERSION, Request, Response, Verify,
@@ -98,10 +99,6 @@ struct Caller {
     /// requests join.
     trace: Option<TraceContext>,
 }
-
-/// How deep calls may nest: a function calling a function, and so on. A
-/// handler that calls itself would otherwise only stop at its timeout.
-const MAX_CALL_DEPTH: u64 = 16;
 
 /// How long a finished request stays in its worker's `CallLog`, since
 /// stderr is read separately and can lag behind the response.
@@ -487,175 +484,62 @@ impl Pools {
 
 impl Pools {
     /// Runs a function for a handler that called it, and says how it went.
+    /// What a call is checked against and turned into is the core's
+    /// (`unsworn_core::calls`), the same as on every other host.
     async fn call_function(&self, call: proto::Call, caller: Caller) -> proto::CallResult {
-        let result = |status: u16, json: Value, error: Option<String>| proto::CallResult {
-            id: call.id.clone(),
+        let outcome = self.run_function(&call, caller).await;
+        let (status, json, error) = match outcome {
+            Ok((status, json)) => (status, json, None),
+            Err(failure) => (failure.status, failure.json, Some(failure.error)),
+        };
+        proto::CallResult {
+            id: call.id,
             status,
             json,
             error,
-        };
-        let fail = |status: u16, error: String| result(status, Value::Null, Some(error));
-        let Some(function) = self.functions.get(&call.function) else {
-            // Name the table to add, as for an unknown outbound service.
-            let known: Vec<&str> = self.functions.keys().map(String::as_str).collect();
-            let declared = match known.as_slice() {
-                [] => "it declares none".to_string(),
-                _ => format!("it declares: {}", known.join(", ")),
-            };
-            return fail(
-                404,
-                format!(
-                    "no [[function]] named \"{}\" in the config ({declared})",
-                    call.function
-                ),
-            );
-        };
-        let depth = caller
-            .context
-            .get("caller")
-            .and_then(|c| c["depth"].as_u64());
-        let depth = depth.unwrap_or(0) + 1;
-        if depth > MAX_CALL_DEPTH {
-            return fail(
-                508,
-                format!(
-                    "calls are nested more than {MAX_CALL_DEPTH} deep: does a function call itself?"
-                ),
-            );
         }
-        if let Some(rule) = &function.input
-            && let Err(errors) = rule.check(&call.json, "input")
-        {
-            let errors: Vec<Value> = errors
-                .iter()
-                .map(|e| serde_json::json!({ "location": e.location, "message": e.message }))
-                .collect();
-            return result(
-                422,
-                serde_json::json!({ "errors": errors }),
-                Some(format!(
-                    "the input doesn't match the schema of the function \"{}\"",
-                    function.name
-                )),
-            );
-        }
+    }
+
+    async fn run_function(
+        &self,
+        call: &proto::Call,
+        caller: Caller,
+    ) -> Result<(u16, Value), calls::Failure> {
+        let (function, request) = calls::prepare(
+            &self.functions,
+            &call.function,
+            &call.json,
+            calls::Caller {
+                handler: caller.handler,
+                context: caller.context,
+                trace: caller.trace,
+            },
+        )?;
         let Some(pool) = self.pools.get(&function.handler.runtime) else {
-            return fail(503, format!("no runtime \"{}\"", function.handler.runtime));
+            return Err(calls::Failure::new(
+                503,
+                format!("no runtime \"{}\"", function.handler.runtime),
+            ));
         };
         // The function has its own time limit, and no more time than the
         // request it's called for.
         let deadline = caller.deadline.min(Instant::now() + function.timeout);
-        let mut context = caller.context;
-        context.insert(
-            "caller".into(),
-            serde_json::json!({
-                "function": function.name,
-                "from": caller.handler,
-                "depth": depth,
-            }),
-        );
-        let name = format!("fn:{}", function.name);
-        let input = serde_json::to_vec(&call.json).unwrap_or_else(|_| b"null".to_vec());
-        let request = Request {
-            handler: function.handler.raw.clone(),
-            route: name.clone(),
-            method: "POST".into(),
-            path: name,
-            context,
-            // A function has no HTTP request of its own. These are the
-            // calling request's, so the function's spans join its trace,
-            // and so do those of whatever the function calls in turn.
-            headers: caller
-                .trace
-                .iter()
-                .flat_map(TraceContext::headers)
-                .map(|(name, value)| (name.to_string(), value.to_string()))
-                .collect(),
-            json: Some(Json::raw(Bytes::from(input))),
-            ..Request::default()
-        };
         let reply = pool
             .call(request, CallBody::Empty, deadline, caller.request_id)
             .await;
         let (response, body) = match reply {
             Ok(Reply::Response { response, body }) => (response, body),
-            Ok(Reply::Continue(_)) => {
-                return fail(
-                    502,
-                    "the function answered `continue`, which is for `before` handlers".into(),
-                );
-            }
-            Err(CallError::Timeout) => return fail(504, "the function timed out".into()),
-            Err(CallError::Unavailable(m)) => {
-                return fail(503, format!("runtime unavailable: {m}"));
-            }
-            Err(e @ (CallError::WorkerFailed(_) | CallError::MissingHandler(_))) => {
-                return fail(502, e.to_string());
-            }
-            Err(CallError::Handler(message)) => return fail(500, message),
-            Err(e) => return fail(500, e.to_string()),
+            Ok(Reply::Continue(_)) => return Err(calls::continued()),
+            Err(e) => return Err(calls::failed(e)),
         };
-        let json = match body {
-            ReplyBody::Empty => Value::Null,
-            ReplyBody::Bytes(bytes) if response.json.is_some() => {
-                match serde_json::from_slice(&bytes) {
-                    Ok(value) => value,
-                    Err(e) => return fail(502, format!("the function's JSON can't be read: {e}")),
-                }
-            }
-            ReplyBody::Bytes(_) if response.text.is_some() => {
-                Value::String(response.text.unwrap_or_default())
-            }
-            ReplyBody::Bytes(_) | ReplyBody::Stream(_) => {
-                return fail(
-                    502,
-                    "a function answers with JSON, and this one sent raw bytes or a stream".into(),
-                );
-            }
+        let answer = match body {
+            ReplyBody::Empty => calls::Answer::Empty,
+            ReplyBody::Bytes(bytes) => calls::Answer::Bytes(bytes),
+            ReplyBody::Stream(_) => calls::Answer::Stream,
         };
-        if response.status < 400
-            && let Some(rule) = &function.output
-            && self.response_validation != ResponseValidation::Off
-            && let Err(errors) = rule.check(&json, "output")
-        {
-            let detail: Vec<String> = errors
-                .iter()
-                .map(|e| format!("{}: {}", e.location, e.message))
-                .collect();
-            tracing::warn!(
-                function = %function.name,
-                "the function's output doesn't match its schema: {}",
-                detail.join("; ")
-            );
-            if self.response_validation == ResponseValidation::Enforce {
-                return fail(
-                    502,
-                    format!(
-                        "the output of the function \"{}\" doesn't match its schema",
-                        function.name
-                    ),
-                );
-            }
-        }
-        result(response.status, json, None)
+        calls::finish(&function, self.response_validation, response, answer)
     }
 }
-
-/// Headers that belong to one connection, or that the request is given
-/// anyway, which a handler's `fetch` doesn't get to set.
-const NOT_FORWARDED: &[&str] = &[
-    "connection",
-    "content-length",
-    "host",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "proxy-connection",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-];
 
 impl Pools {
     /// Makes a handler's request to an outbound service, with the
@@ -670,57 +554,25 @@ impl Pools {
                 ..Default::default()
             }))
         };
-        let Some(service) = self.outbound.get(&fetch.service) else {
-            // Name the table to add, since a handler's `fetch` doesn't say
-            // where its services come from.
-            let known: Vec<&str> = self.outbound.keys().map(String::as_str).collect();
-            let declared = match known.as_slice() {
-                [] => "it declares none".to_string(),
-                _ => format!("it declares: {}", known.join(", ")),
-            };
-            return fail(
-                404,
-                format!("no [outbound.{}] in the config ({declared})", fetch.service),
-            );
+        let service = match outbound::service(&self.outbound, &fetch.service) {
+            Ok(service) => service,
+            Err((status, error)) => return fail(status, error),
         };
-        let method = fetch.method.to_ascii_uppercase();
-        if let Err(why) = service.allows(&method, &fetch.path) {
-            return fail(403, why);
-        }
+        let planned = match outbound::plan(
+            service,
+            &fetch.method,
+            &fetch.path,
+            &fetch.headers,
+            caller.trace.as_ref(),
+        ) {
+            Ok(planned) => planned,
+            Err((status, why)) => return fail(status, why),
+        };
+        let method = planned.method;
         let mut request = http::Request::builder()
             .method(method.as_str())
-            .uri(format!("{}{}", service.url, fetch.path));
-        // The request's trace, unless the handler sent its own position in
-        // it (its span), or the service's headers set one.
-        let has_trace = fetch
-            .headers
-            .keys()
-            .any(|name| name.eq_ignore_ascii_case(trace::TRACEPARENT))
-            || service
-                .headers
-                .iter()
-                .any(|(own, _)| own == trace::TRACEPARENT);
-        let traced = caller.trace.as_ref().filter(|_| !has_trace);
-        // The handler's headers, then the service's over them: a handler
-        // can't replace the credential, or see it.
-        let sent = fetch.headers.iter().filter(|(name, _)| {
-            let name = name.to_ascii_lowercase();
-            !NOT_FORWARDED.contains(&name.as_str())
-                && !service.headers.iter().any(|(own, _)| *own == name)
-                // A `tracestate` belongs to the `traceparent` it came with.
-                && !(traced.is_some() && name == trace::TRACESTATE)
-        });
-        for (name, value) in traced
-            .iter()
-            .flat_map(|t| t.headers())
-            .chain(sent.map(|(n, v)| (n.as_str(), v.as_str())))
-            .chain(
-                service
-                    .headers
-                    .iter()
-                    .map(|(n, v)| (n.as_str(), v.as_str())),
-            )
-        {
+            .uri(planned.url);
+        for (name, value) in &planned.headers {
             request = request.header(name, value);
         }
         let request = match request.body(crate::server::support::full(body.unwrap_or_default())) {
@@ -745,10 +597,7 @@ impl Pools {
                 .await
                 .map_err(|e| {
                     if e.is::<http_body_util::LengthLimitError>() {
-                        format!(
-                            "the response is larger than [outbound.{}].max_response",
-                            service.name
-                        )
+                        outbound::too_large(service)
                     } else {
                         format!("the response couldn't be read: {e}")
                     }
@@ -781,17 +630,7 @@ impl Pools {
             ms = format_args!("{ms:.3}"),
             id = %caller.request_id,
         );
-        let mut headers: BTreeMap<String, String> = BTreeMap::new();
-        for (name, value) in &parts.headers {
-            let Ok(value) = value.to_str() else { continue };
-            headers
-                .entry(name.as_str().to_string())
-                .and_modify(|all| {
-                    all.push_str(", ");
-                    all.push_str(value);
-                })
-                .or_insert_with(|| value.to_string());
-        }
+        let headers = outbound::response_headers(&parts.headers);
         let fetched = Message::Fetched(proto::Fetched {
             id: id.clone(),
             status: parts.status.as_u16(),

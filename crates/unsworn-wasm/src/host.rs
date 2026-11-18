@@ -8,21 +8,29 @@ use futures_util::future::{Either, select};
 use http::{HeaderValue, StatusCode, header};
 use js_sys::{JSON, Uint8Array};
 use serde_json::{Map, Value};
-use unsworn_core::MaybeSend;
 use unsworn_core::pipeline::proxy::{ForwardInfo, response_headers, rewrite};
+use unsworn_core::pipeline::shadow::{Answer, ShadowCall, compare};
 use unsworn_core::pipeline::{
     self as core, BodyError, CallError, Deadline, FetchError, Host, Problem, ProxyRequest, Reply,
     StaticRequest, problem_response,
 };
 use unsworn_core::policy::HandlerRef;
 use unsworn_core::store::{CachedResponse, RateLimiter, ResponseCache, StoreError};
+use unsworn_core::trace::TraceContext;
+use unsworn_core::{MaybeSend, calls};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
 use crate::bridge::{
     Bridge, JsBody, body_from_js, body_to_js, bytes_to_js, error_text, get, headers_from_js,
-    headers_to_js, request_to_js, resolve, response_from_js,
+    headers_to_js, request_to_js, resolve, response_from_js, set,
 };
+
+thread_local! {
+    /// How often each route's shadow has answered differently, or not at
+    /// all, in this isolate.
+    static WRONG: std::cell::RefCell<std::collections::HashMap<String, u64>> = Default::default();
+}
 use crate::statics::candidates;
 
 /// How long a store operation may take before it counts as failed, as in
@@ -110,6 +118,7 @@ impl ResponseCache for WasmStore {
 }
 
 /// The I/O for one request.
+#[derive(Clone)]
 pub struct WasmHost {
     pub bridge: Bridge,
     pub store: WasmStore,
@@ -117,6 +126,71 @@ pub struct WasmHost {
     pub request_id: String,
     /// The client connected over HTTPS.
     pub tls: bool,
+    /// The project declares functions or outbound services, so a handler
+    /// may call one, and each call to a handler carries a [`Caller`].
+    pub calls: bool,
+}
+
+/// The core's record of a call to a handler, which the handler's
+/// `ctx.call` and `ctx.fetch` hand back: whose request it is, and how long
+/// it has. It crosses to JavaScript and back as JSON. Handlers share the
+/// isolate with the core, so this is bookkeeping, not a secret.
+pub struct Caller {
+    pub request_id: String,
+    pub call: calls::Caller,
+    pub deadline: Deadline,
+}
+
+impl Caller {
+    fn of(request: &unsworn_proto::Request, deadline: Deadline) -> Caller {
+        Caller {
+            request_id: request.id.clone(),
+            call: calls::Caller {
+                handler: request.handler.clone(),
+                context: request.context.clone(),
+                trace: TraceContext::from_headers(|name| {
+                    request.headers.get(name).map(String::as_str)
+                }),
+            },
+            deadline,
+        }
+    }
+
+    fn encode(&self) -> String {
+        let trace = self.call.trace.as_ref();
+        serde_json::json!({
+            "id": self.request_id,
+            "handler": self.call.handler,
+            "context": self.call.context,
+            "traceparent": trace.map(|t| &t.traceparent),
+            "tracestate": trace.and_then(|t| t.tracestate.as_ref()),
+            "deadline_ms": self.deadline.0.as_secs_f64() * 1000.0,
+        })
+        .to_string()
+    }
+
+    pub fn decode(text: &str) -> Option<Caller> {
+        let mut value: Value = serde_json::from_str(text).ok()?;
+        let text = |v: &Value| v.as_str().map(str::to_string);
+        let trace = text(&value["traceparent"]).map(|traceparent| TraceContext {
+            traceparent,
+            tracestate: text(&value["tracestate"]),
+        });
+        Some(Caller {
+            request_id: text(&value["id"])?,
+            deadline: Deadline(Duration::from_secs_f64(
+                value["deadline_ms"].as_f64()?.max(0.0) / 1000.0,
+            )),
+            call: calls::Caller {
+                handler: text(&value["handler"])?,
+                context: match value["context"].take() {
+                    Value::Object(map) => map,
+                    _ => Map::new(),
+                },
+                trace,
+            },
+        })
+    }
 }
 
 fn problem<B>(status: StatusCode, detail: impl Into<String>) -> core::Response<B> {
@@ -224,9 +298,16 @@ impl Host for WasmHost {
         let timeout = deadline.0.saturating_sub(self.monotonic());
         let message = serde_json::to_string(&request)
             .map_err(|e| CallError::WorkerFailed(format!("can't encode the request: {e}")))?;
-        let promise = self
-            .bridge
-            .call(&message, &body_to_js(body), timeout.as_secs_f64() * 1000.0);
+        let caller = match self.calls {
+            true => JsValue::from_str(&Caller::of(&request, deadline).encode()),
+            false => JsValue::UNDEFINED,
+        };
+        let promise = self.bridge.call(
+            &message,
+            &body_to_js(body),
+            timeout.as_secs_f64() * 1000.0,
+            &caller,
+        );
         let out = resolve(promise)
             .await
             .map_err(|e| CallError::WorkerFailed(error_text(&e)))?;
@@ -350,11 +431,85 @@ impl Host for WasmHost {
         )
     }
 
+    fn shadow(&self, call: ShadowCall) {
+        let host = self.clone();
+        // The client already has its answer on the way: this runs beside
+        // it, and the platform keeps the isolate until it's done.
+        let work = future_to_promise(async move {
+            let (route, shadow) = (call.route, call.handler.raw.clone());
+            let body = core::Body::bytes(call.body);
+            let reply = host
+                .call(&call.handler, call.request, body, call.deadline)
+                .await;
+            let what = match reply {
+                Ok(Reply::Response { response, body }) => {
+                    compare(&call.primary, &Answer::of(&response, &body)).err()
+                }
+                Ok(Reply::Continue(_)) => Some(
+                    "the shadow gave no answer: it answered `continue`, which only before handlers may send"
+                        .to_string(),
+                ),
+                Err(e) => Some(format!("the shadow gave no answer: {e}")),
+            };
+            // The first few, then now and then: a shadow that's wrong for
+            // every request shouldn't fill the log. Counted per isolate.
+            if let Some(what) = what {
+                let n = WRONG.with_borrow_mut(|wrong| {
+                    let n = wrong.entry(route.clone()).or_insert(0);
+                    *n += 1;
+                    *n
+                });
+                if n <= 10 || n.is_multiple_of(100) {
+                    tracing::warn!(
+                        "shadow route={route} shadow={shadow} id={}: {what}",
+                        host.request_id
+                    );
+                }
+            }
+            Ok(JsValue::UNDEFINED)
+        });
+        if self.bridge.wait_until(&work).is_err() {
+            tracing::warn!("the host couldn't keep a shadow call alive");
+        }
+    }
+
     async fn fetch(
         &self,
         request: http::Request<Bytes>,
         timeout: Duration,
         limit: usize,
+    ) -> Result<http::Response<Bytes>, FetchError> {
+        self.send(request, timeout, limit, false).await
+    }
+
+    async fn timeout<F>(&self, timeout: Duration, future: F) -> Option<F::Output>
+    where
+        F: Future + MaybeSend,
+        F::Output: MaybeSend,
+    {
+        timed(&self.bridge, timeout, future).await
+    }
+
+    async fn background(&self, future: impl Future<Output = ()> + MaybeSend + 'static) {
+        let promise = future_to_promise(async move {
+            future.await;
+            Ok(JsValue::UNDEFINED)
+        });
+        if self.bridge.wait_until(&promise).is_err() {
+            tracing::warn!("the host couldn't keep a background task alive");
+        }
+    }
+}
+
+impl WasmHost {
+    /// Sends a request and reads up to `limit` bytes of the answer. With
+    /// `manual_redirect`, a redirect is the answer and isn't followed.
+    pub async fn send(
+        &self,
+        request: http::Request<Bytes>,
+        timeout: Duration,
+        limit: usize,
+        manual_redirect: bool,
     ) -> Result<http::Response<Bytes>, FetchError> {
         let (parts, body) = request.into_parts();
         let body = if body.is_empty() {
@@ -363,6 +518,9 @@ impl Host for WasmHost {
             bytes_to_js(&body).into()
         };
         let js = request_to_js(&parts, body);
+        if manual_redirect {
+            set(&js, "redirect", &JsValue::from_str("manual"));
+        }
         let promise = self
             .bridge
             .fetch(&js, timeout.as_secs_f64() * 1000.0, limit as f64);
@@ -389,23 +547,5 @@ impl Host for WasmHost {
         *resp.status_mut() = status;
         *resp.headers_mut() = headers_from_js(&get(&v, "headers"));
         Ok(resp)
-    }
-
-    async fn timeout<F>(&self, timeout: Duration, future: F) -> Option<F::Output>
-    where
-        F: Future + MaybeSend,
-        F::Output: MaybeSend,
-    {
-        timed(&self.bridge, timeout, future).await
-    }
-
-    async fn background(&self, future: impl Future<Output = ()> + MaybeSend + 'static) {
-        let promise = future_to_promise(async move {
-            future.await;
-            Ok(JsValue::UNDEFINED)
-        });
-        if self.bridge.wait_until(&promise).is_err() {
-            tracing::warn!("the host couldn't keep a background task alive");
-        }
     }
 }

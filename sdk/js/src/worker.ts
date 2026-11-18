@@ -17,7 +17,9 @@ import { CallError, type Fetched, FetchError, type FetchInit } from "./index.ts"
 import {
   BadJson,
   type Callable,
+  fetchedValue,
   handlerRequest,
+  outboundRequest,
   outcome,
   pickHandler,
   splitRef,
@@ -194,27 +196,17 @@ interface PendingFetch {
 }
 
 const fetches = new Map<string, PendingFetch>();
-const decoder = new TextDecoder();
 
 /** `ctx.fetch`: asks Unsworn to send a request to an outbound service. */
 function fetchService(request: string, service: string, path: string, init: FetchInit = {}): Promise<Fetched> {
   if (!canFetch) {
     return Promise.reject(new FetchError(501, "this Unsworn doesn't make requests for handlers: update it"));
   }
-  const headers: Record<string, string> = {};
-  for (const [name, value] of Object.entries(init.headers ?? {})) headers[name.toLowerCase()] = String(value);
-  let body: Uint8Array | undefined;
-  if (init.json !== undefined) {
-    body = encoder.encode(JSON.stringify(init.json));
-    headers["content-type"] ??= "application/json";
-  } else if (init.body !== undefined) {
-    body = typeof init.body === "string" ? encoder.encode(init.body) : init.body;
-  }
-  const method = (init.method ?? (body ? "POST" : "GET")).toUpperCase();
+  const { method, headers, body } = outboundRequest(init);
   const answer = new Promise<Fetched>((resolve, reject) => {
     const id = `f-${++nextCall}`;
     fetches.set(id, { request, resolve, reject });
-    send({ type: "fetch", id, request, service, method, path, headers }, body?.length ? body : undefined);
+    send({ type: "fetch", id, request, service, method, path, headers }, body);
   });
   answer.catch(() => {});
   return answer;
@@ -228,15 +220,7 @@ function fetched(msg: FetchedMessage, body: Uint8Array | undefined) {
     pending.reject(new FetchError(msg.status, msg.error));
     return;
   }
-  const bytes = body ?? new Uint8Array(0);
-  pending.resolve({
-    status: msg.status,
-    ok: msg.status >= 200 && msg.status < 300,
-    headers: msg.headers ?? {},
-    body: bytes,
-    text: () => decoder.decode(bytes),
-    json: <T>() => JSON.parse(decoder.decode(bytes)) as T,
-  });
+  pending.resolve(fetchedValue(msg.status, msg.headers ?? {}, body ?? new Uint8Array(0)));
 }
 
 /** The handler's `ctx`: the request's context, plus `call` and `fetch`. */

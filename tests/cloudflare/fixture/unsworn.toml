@@ -81,3 +81,31 @@ name = "weather"
 description = "Weather for a city"
 input = { type = "object", required = ["city"], properties = { city = { type = "string" } } }
 handler = "src/tools.ts#weather"
+
+# Calls between handlers, and to a service whose credential Unsworn adds.
+[outbound.billing]
+url = "{env.UPSTREAM}/api"
+headers = { Authorization = "Bearer {env.BILLING_KEY}" }
+methods = ["GET", "POST"]
+paths = ["/charges"]
+
+[[function]]
+name = "count"
+handler = "src/calls.ts#count"
+input = { type = "object", required = ["text"], properties = { text = { type = "string" } } }
+
+[[function]]
+name = "whoami"
+handler = "src/calls.ts#whoami"
+
+[[route]]
+path = "/do/{what}"
+method = "GET"
+handler = "src/calls.ts#route"
+before = ["src/auth.ts#tenant"]
+
+[[route]]
+path = "/search"
+method = "GET"
+handler = "src/calls.ts#search"
+shadow = "src/calls.ts#searchV2"
