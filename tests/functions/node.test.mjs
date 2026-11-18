@@ -5,7 +5,9 @@
 //   node --test tests/functions/node.test.mjs
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
 
 import { createHandler } from "../../sdk/js/src/node.ts";
@@ -119,7 +121,7 @@ test("responses are cached in Redis", async () => {
   assert.ok(redis.keys().some((k) => k.startsWith("fixture:cache64:")));
 });
 
-test("static files, with index, fallback, ranges and dates", async () => {
+test("static files, with index, fallback, ranges and validators", async () => {
   const css = await get("/site/style.css");
   assert.equal(css.status, 200);
   assert.equal(css.headers.get("content-type"), "text/css; charset=utf-8");
@@ -135,27 +137,64 @@ test("static files, with index, fallback, ranges and dates", async () => {
   assert.equal(await part.text(), "body");
   assert.equal((await get("/site/style.css", { headers: { range: "bytes=99-" } })).status, 416);
 
-  const since = { "if-modified-since": css.headers.get("last-modified") };
-  assert.equal((await get("/site/style.css", { headers: since })).status, 304);
-  // An ETag, which outranks the date and decides whether a range applies.
+  // Validators come from the file's bytes. Platforms give every deployed
+  // file the same time, so a date would call a changed file unchanged.
+  assert.equal(css.headers.get("last-modified"), null);
+  const since = { "if-modified-since": new Date(Date.now() + 86_400_000).toUTCString() };
+  assert.equal((await get("/site/style.css", { headers: since })).status, 200);
+
   const etag = css.headers.get("etag");
-  assert.match(etag, /^"[0-9a-f]+-[0-9a-f]+"$/);
+  assert.match(etag, /^"[A-Za-z0-9_-]{27}"$/);
   const conditional = (headers) => get("/site/style.css", { headers });
   assert.equal((await conditional({ "if-none-match": `"x", W/${etag}` })).status, 304);
-  assert.equal((await conditional({ "if-none-match": '"stale"', ...since })).status, 200);
+  assert.equal((await conditional({ "if-none-match": '"stale"' })).status, 200);
   const ranged = async (ifRange) => {
     const r = await conditional({ range: "bytes=0-3", "if-range": ifRange });
     return [r.status, await r.text()];
   };
   assert.deepEqual(await ranged(etag), [206, "body"]);
-  assert.deepEqual(await ranged(css.headers.get("last-modified")), [206, "body"]);
-  assert.deepEqual(await ranged('"stale"'), [200, "body { color: red }\n"]);
+  assert.deepEqual(await ranged("Sat, 20 Oct 2018 01:46:40 GMT"), [200, "body { color: red }\n"]);
   assert.deepEqual(await ranged(`W/${etag}`), [200, "body { color: red }\n"]);
   const head = await get("/site/style.css", { method: "HEAD" });
   assert.equal(head.headers.get("content-length"), "20");
   assert.equal(await head.text(), "");
   // Nothing outside a route's directory, such as the config next to it.
   assert.equal((await get("/site/..%2Funsworn.toml")).status, 404);
+});
+
+test("a file that changes without changing its size or time gets a new ETag", async () => {
+  // What a redeploy does on a platform that stamps every file with one time.
+  const dir = mkdtempSync(join(tmpdir(), "unsworn-etag-"));
+  try {
+    mkdirSync(join(dir, "public"));
+    const file = join(dir, "public/style.css");
+    const stamp = new Date("2018-10-20T01:46:40Z");
+    const write = (text) => {
+      writeFileSync(file, text);
+      utimesSync(file, stamp, stamp);
+    };
+    const config = '[[route]]\npath = "/site/{*rest}"\nmethod = "GET"\nstatic = { dir = "public" }\n';
+    const bundle = { config: "unsworn.toml", files: { "unsworn.toml": config, public: null }, modules: {} };
+    // Each deployment's instances are new, so each gets a handler of its own.
+    const deploy = () => {
+      const site = createHandler(bundle, { assets: dir, env: {} });
+      return (headers) => site.fetch(new Request("https://api.example.com/site/style.css", { headers }), {});
+    };
+
+    write("body { color: red }\n");
+    let css = deploy();
+    const before = (await css()).headers.get("etag");
+    assert.equal((await css({ "if-none-match": before })).status, 304);
+
+    write("body { color: blu }\n");
+    css = deploy();
+    const changed = await css({ "if-none-match": before });
+    assert.equal(changed.status, 200);
+    assert.equal(await changed.text(), "body { color: blu }\n");
+    assert.notEqual(changed.headers.get("etag"), before);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("proxy routes forward with rewritten headers and bodies", async () => {
