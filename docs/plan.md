@@ -96,6 +96,8 @@ What's in it:
 - **`tool <name>`** for each `[[mcp.tool]]`, with its description, its
   policies and its input schema. A route offered as a tool has an
   `mcp_tool` line.
+- **`function <name>`** for each [`[[function]]`](functions.md), with its
+  handler and its input and output schemas.
 
 A route's `timeout` and `max_body` are written only when they differ from
 the server's.

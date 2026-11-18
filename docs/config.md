@@ -61,6 +61,7 @@ into a second programming language.
 [defaults]     # policies applied to every route unless overridden
 [policies.*]   # named policy sets that routes can `use`
 [[route]]      # explicit routes, and policies for routes from other sources
+[[function]]   # optional: handlers that other handlers call by name
 ```
 
 ### `[server]`
@@ -429,6 +430,21 @@ rust   = "src/unsworn_gen.rs"
 Where to write each language's types for handlers: one file per language,
 inside the project. `unsworn dev` keeps the files current and `unsworn gen`
 writes them. What's in them is described in [`types.md`](types.md).
+
+### `[[function]]`
+
+```toml
+[[function]]
+name    = "embed"
+handler = "src/embed.py#embed"
+input   = "schemas/embed-in.json"    # optional; checked before the function runs
+output  = "schemas/embed-out.json"   # optional
+timeout = "10s"                      # optional; default: [server].timeout
+```
+
+A handler that other handlers call with `ctx.call("embed", input)`, in
+any language. It has no path, so nothing outside reaches it. See
+[`functions.md`](functions.md).
 
 ### `{env.NAME}`
 

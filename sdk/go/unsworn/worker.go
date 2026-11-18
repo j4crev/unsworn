@@ -61,6 +61,12 @@ type worker struct {
 
 	mu       sync.Mutex
 	inFlight map[string]*call
+
+	// canCall is set under an Unsworn that answers `call` messages.
+	canCall bool
+	// calls holds where the answer to each call to a function goes.
+	calls    map[string]chan *inMessage
+	nextCall int
 }
 
 type call struct {
@@ -84,7 +90,9 @@ func run(c codec, out io.Writer) error {
 		out:      out,
 		dev:      os.Getenv("UNSWORN_DEV") == "1",
 		rawJSON:  os.Getenv("UNSWORN_RAW_JSON") == "1",
+		canCall:  os.Getenv("UNSWORN_CALLS") == "1",
 		inFlight: map[string]*call{},
+		calls:    map[string]chan *inMessage{},
 	}
 	maxInFlight := 64
 	if n, err := strconv.Atoi(os.Getenv("UNSWORN_MAX_IN_FLIGHT")); err == nil && n > 0 {
@@ -97,6 +105,7 @@ func run(c codec, out io.Writer) error {
 		Verify:      true,
 		StreamBody:  true,
 		RawJSON:     w.rawJSON,
+		Calls:       w.canCall,
 		SDK:         "unsworn-go/" + Version,
 	}, nil); err != nil {
 		return err
@@ -134,6 +143,14 @@ func run(c codec, out io.Writer) error {
 			w.cancel(m.ID)
 		case "verify":
 			w.verify(m)
+		case "result":
+			w.mu.Lock()
+			answer := w.calls[m.ID]
+			delete(w.calls, m.ID)
+			w.mu.Unlock()
+			if answer != nil {
+				answer <- m
+			}
 		}
 	}
 }
@@ -151,6 +168,44 @@ func (w *worker) send(message any, body []byte) error {
 		w.buf = nil
 	}
 	return err
+}
+
+// callFunction asks Unsworn to run a function for a request, and waits for
+// the answer or for the request to end.
+func (w *worker) callFunction(req *Request, name string, input any) (json.RawMessage, error) {
+	if !w.canCall {
+		return nil, &CallError{Status: 501, Message: "this Unsworn doesn't run functions for handlers: update it"}
+	}
+	data, err := marshal(input)
+	if err != nil {
+		return nil, fmt.Errorf("unsworn: can't encode the input for %q: %w", name, err)
+	}
+	answer := make(chan *inMessage, 1)
+	w.mu.Lock()
+	w.nextCall++
+	id := "c-" + strconv.Itoa(w.nextCall)
+	w.calls[id] = answer
+	w.mu.Unlock()
+	if err := w.send(callMessage{Type: "call", ID: id, Request: req.ID, Function: name, JSON: data}, nil); err != nil {
+		return nil, err
+	}
+	select {
+	case m := <-answer:
+		if m.Status >= 400 {
+			message := m.Error
+			if message == "" {
+				message = fmt.Sprintf("the function answered %d", m.Status)
+			}
+			return nil, &CallError{Status: m.Status, Message: message, JSON: m.JSON}
+		}
+		return m.JSON, nil
+	case <-req.Context().Done():
+		// Unsworn drops a request's calls when the request ends.
+		w.mu.Lock()
+		delete(w.calls, id)
+		w.mu.Unlock()
+		return nil, req.Context().Err()
+	}
 }
 
 func (w *worker) verify(m *inMessage) {
@@ -213,6 +268,7 @@ func (w *worker) start(m *inMessage, body []byte) {
 		JSON:     m.JSON,
 		Body:     body,
 		ctx:      ctx,
+		w:        w,
 	}
 	if m.BodyJSON && body != nil {
 		// The JSON body, as the bytes after the message. Nothing may

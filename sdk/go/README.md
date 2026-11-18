@@ -151,6 +151,27 @@ if err := req.BindParams(&p); err != nil {
 `unsworn dev` rewrites the file before it rebuilds the worker. See
 [`docs/types.md`](../../docs/types.md).
 
+## Calling other handlers
+
+`req.Call` calls a [function](../../docs/functions.md): a handler declared
+as `[[function]]` in the config, in any language.
+
+```go
+var vector []float32
+err := req.Call("embed", map[string]any{"text": text}, &vector)   // a Python handler
+var failed *unsworn.CallError
+if errors.As(err, &failed) && failed.Status == 422 {
+	return unsworn.JSON(failed.JSON).WithStatus(400), nil
+}
+if err != nil {
+	return unsworn.Reply{}, err
+}
+```
+
+Unsworn checks the input against the function's schema, and the function
+gets this request's context and what is left of its time. `Call` returns
+the request's context error if the request ends first.
+
 ## Logging
 
 The worker makes `slog`'s default logger send records to Unsworn, unless the

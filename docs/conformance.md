@@ -48,6 +48,19 @@ Each handler is called by name (`<file>#<name>`). Every request arrives with
 | `content` | handle | Respond `200` with the JSON body `{ "ok": true }` and `mcp_content` set to `[{ "type": "text", "text": "hi" }]` (in an SDK: its MCP content helper). |
 | `mcp` | handle | Respond `200` with the JSON body `{ "tool", "protocol_version", "client" }`, read from `context.mcp`, where `client` is the client's `name`. In an SDK with a typed accessor for `context.mcp`, use it. |
 
+One more handler is only called when the worker's `ready` has
+`calls: true`, and isn't in the `verify` request:
+
+| Name | Phase | Must |
+|---|---|---|
+| `relay` | handle | Call the function named by `query.fn` with the request's JSON body as input (in an SDK: its `call`). Respond `200` with `{ "answer": <what the function answered> }`, or with `{ "failed": <the status> }` when the call fails. |
+
+The suite calls it with a name that isn't a function, and expects
+`{ "failed": 404 }`. If the worker takes more than one request at a time,
+it also calls it with `conformance.echo`, a function the suite defines as
+the worker's own `echo` handler, and expects the input back in
+`answer.json` and the call in `answer.context.caller`.
+
 `does_not_exist` is listed in the `verify` request but must not exist, so
 the worker reports it as missing. Workers that don't support `verify` skip
 that check.

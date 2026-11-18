@@ -212,6 +212,16 @@ workers    = 2
   their input, which asks them to exit, and kills any that haven't after
   two seconds.
 
+### Calls between handlers
+
+A handler can call a `[[function]]`: another handler, in any runtime. The
+worker sends a `call` message on the connection it already has, the pool
+that reads it finds the function's pool through `Pools`, and the function
+runs as a normal request there with the calling request's context and
+deadline. The answer goes back as a `result`. Input and output schemas are
+checked by Unsworn on the way. See [`functions.md`](functions.md) and
+[`protocol.md`](protocol.md#calling-a-function-call-and-result).
+
 ## Protocol tiers
 
 | Tier | Transport | Encoding | SDK required | Purpose |

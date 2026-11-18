@@ -158,6 +158,76 @@ impl Out {
     }
 }
 
+/// Calls to functions that Unsworn hasn't answered yet, and how to make
+/// one. Each request holds a copy.
+#[derive(Clone)]
+pub(crate) struct Calls {
+    out: Out,
+    /// Set under an Unsworn that answers `call` messages.
+    enabled: bool,
+    next: Arc<std::sync::atomic::AtomicU64>,
+    waiting: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<unsworn_proto::CallResult>>>>,
+}
+
+impl std::fmt::Debug for Calls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Calls")
+    }
+}
+
+impl Calls {
+    pub(crate) async fn call(
+        &self,
+        request: &str,
+        function: &str,
+        json: serde_json::Value,
+    ) -> Result<serde_json::Value, crate::CallError> {
+        let fail = |status, message: &str| crate::CallError {
+            status,
+            message: message.into(),
+            json: serde_json::Value::Null,
+        };
+        if !self.enabled {
+            return Err(fail(
+                501,
+                "this Unsworn doesn't run functions for handlers: update it",
+            ));
+        }
+        let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = format!("c-{n}");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.waiting.lock().unwrap().insert(id.clone(), tx);
+        // A request that is cancelled drops this future, and with it the
+        // place its answer would have gone.
+        struct Forget<'a>(&'a Calls, &'a str);
+        impl Drop for Forget<'_> {
+            fn drop(&mut self) {
+                self.0.waiting.lock().unwrap().remove(self.1);
+            }
+        }
+        let _forget = Forget(self, &id);
+        self.out.send(Frame::new(Message::Call(unsworn_proto::Call {
+            id: id.clone(),
+            request: request.to_string(),
+            function: function.to_string(),
+            json,
+        })));
+        let result = rx
+            .await
+            .map_err(|_| fail(499, "the request ended before the call did"))?;
+        if result.status >= 400 {
+            return Err(crate::CallError {
+                status: result.status,
+                message: result
+                    .error
+                    .unwrap_or_else(|| format!("the function answered {}", result.status)),
+                json: result.json,
+            });
+        }
+        Ok(result.json)
+    }
+}
+
 type InFlight = Arc<Mutex<HashMap<String, (AbortHandle, Cancel)>>>;
 /// Senders for streamed request bodies, by request id.
 type Bodies = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<crate::Result<Bytes>>>>>;
@@ -192,15 +262,24 @@ where
         .and_then(|v| v.parse().ok())
         .filter(|n| *n > 0)
         .unwrap_or(64);
+    // Set by an Unsworn that answers `call` messages.
+    let can_call = std::env::var("UNSWORN_CALLS").is_ok_and(|v| v == "1");
     out.send(Frame::new(Message::Ready(Ready {
         protocol: PROTOCOL_VERSION,
         max_in_flight: Some(max_in_flight),
         verify: true,
         stream_body: true,
         raw_json,
+        calls: can_call,
         sdk: Some(format!("unsworn-rust/{}", crate::VERSION)),
     })));
     crate::logging::install(&out);
+    let calls = Calls {
+        out: out.clone(),
+        enabled: can_call,
+        next: Arc::default(),
+        waiting: Arc::default(),
+    };
 
     let handlers = Arc::new(handlers);
     let in_flight: InFlight = Arc::default();
@@ -229,7 +308,14 @@ where
             Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
         };
         match frame.message {
-            Message::Request(req) => start(&handlers, &in_flight, &bodies, &out, req, frame.body),
+            Message::Request(req) => start(
+                &handlers, &in_flight, &bodies, &out, &calls, req, frame.body,
+            ),
+            Message::Result(result) => {
+                if let Some(tx) = calls.waiting.lock().unwrap().remove(&result.id) {
+                    let _ = tx.send(result);
+                }
+            }
             Message::Chunk(chunk) => {
                 let data = frame.body.or_else(|| chunk.text.map(Bytes::from));
                 if let (Some(tx), Some(data)) = (bodies.lock().unwrap().get(&chunk.id), data) {
@@ -281,6 +367,7 @@ fn start(
     in_flight: &InFlight,
     bodies: &Bodies,
     out: &Out,
+    calls: &Calls,
     msg: unsworn_proto::Request,
     body: Option<Bytes>,
 ) {
@@ -319,6 +406,7 @@ fn start(
         body,
         stream,
         cancel: cancel.clone(),
+        calls: Some(calls.clone()),
     };
     let handlers = handlers.clone();
     let out = out.clone();

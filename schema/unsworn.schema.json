@@ -392,6 +392,64 @@
         }
       ]
     },
+    "RawFunction": {
+      "additionalProperties": false,
+      "description": "A `[[function]]`: a handler other handlers call with `ctx.call`.",
+      "properties": {
+        "handler": {
+          "type": "string"
+        },
+        "input": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchemaRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A JSON Schema for the input: a file path or an inline table. The\ninput is checked against it before the function runs."
+        },
+        "name": {
+          "description": "What callers call it by: letters, digits, `_`, `-` and `.`.",
+          "type": "string"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchemaRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A JSON Schema for what it answers with."
+        },
+        "runtime": {
+          "description": "The runtime, when the handler file's extension doesn't say.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The longest a call may take. Default: `[server].timeout`. A call\nalso ends when the request it's made for runs out of time."
+        }
+      },
+      "required": [
+        "name",
+        "handler"
+      ],
+      "type": "object"
+    },
     "RawGen": {
       "additionalProperties": false,
       "description": "`[gen]`: where `unsworn gen` and `unsworn dev` write each language's\ntypes, relative to the project directory.",
@@ -1964,6 +2022,13 @@
     },
     "defaults": {
       "$ref": "#/$defs/RawPolicies"
+    },
+    "function": {
+      "description": "Handlers that other handlers call by name. Nothing outside reaches\nthem.",
+      "items": {
+        "$ref": "#/$defs/RawFunction"
+      },
+      "type": "array"
     },
     "gen": {
       "anyOf": [

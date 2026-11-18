@@ -39,7 +39,16 @@ export interface VerifyMessage {
   handlers: string[];
 }
 
-export type Incoming = RequestMessage | CancelMessage | VerifyMessage | { type: string; id?: string };
+/** How a call to a function ended. */
+export interface ResultMessage {
+  type: "result";
+  id: string;
+  status: number;
+  json?: unknown;
+  error?: string;
+}
+
+export type Incoming = RequestMessage | CancelMessage | VerifyMessage | ResultMessage | { type: string; id?: string };
 
 export type Outgoing = Record<string, unknown> & { type: string };
 

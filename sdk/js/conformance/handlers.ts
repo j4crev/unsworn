@@ -1,6 +1,6 @@
 // Conformance handlers for the JS/TS SDK. See docs/conformance.md.
 
-import { type Before, type Handler, content as contentReply, log, next } from "../src/index.ts";
+import { type Before, CallError, type Handler, content as contentReply, log, next } from "../src/index.ts";
 
 export const echo: Handler = (req, ctx) => ({
   json: {
@@ -61,6 +61,15 @@ export const upload: Handler = async (req) => ({
 });
 
 export const content: Handler = () => contentReply([{ type: "text", text: "hi" }], { ok: true });
+
+export const relay: Handler = async (req, ctx) => {
+  try {
+    return { json: { answer: await ctx.call(String(req.query.fn), req.json) } };
+  } catch (err) {
+    if (err instanceof CallError) return { json: { failed: err.status } };
+    throw err;
+  }
+};
 
 export const mcp: Handler = (_req, ctx) => ({
   json: {

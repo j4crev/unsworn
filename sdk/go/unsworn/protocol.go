@@ -34,6 +34,17 @@ type inMessage struct {
 	Stream     bool              `json:"stream"`
 	DeadlineMs *int64            `json:"deadline_ms"`
 	Handlers   []string          `json:"handlers"`
+	// Status and Error are a `result`'s: how a call to a function ended.
+	Status int    `json:"status"`
+	Error  string `json:"error"`
+}
+
+type callMessage struct {
+	Type     string          `json:"type"`
+	ID       string          `json:"id"`
+	Request  string          `json:"request"`
+	Function string          `json:"function"`
+	JSON     json.RawMessage `json:"json"`
 }
 
 type readyMessage struct {
@@ -43,6 +54,7 @@ type readyMessage struct {
 	Verify      bool   `json:"verify"`
 	StreamBody  bool   `json:"stream_body"`
 	RawJSON     bool   `json:"raw_json,omitempty"`
+	Calls       bool   `json:"calls,omitempty"`
 	SDK         string `json:"sdk"`
 }
 

@@ -126,7 +126,21 @@ other languages as a set of types per route, named for it
 (`ItemGETItemsIdParams`, `ItemPUTItemsIdBody`).
 
 An MCP tool's handler gets its `input` schema as the body and its `output`
-schema as the response.
+schema as the response. So does a [function](functions.md)'s.
+
+### Functions
+
+Every language's file also has each `[[function]]`'s input and output,
+since any handler may call it. In TypeScript they type `ctx.call` itself:
+
+```ts
+const vector = await ctx.call("embed", { text: "hello" });   // number[]
+await ctx.call("embed", { text: 5 });    // error: number isn't a string
+await ctx.call("embd", {});              // error: "embd" isn't a function
+```
+
+In Python, Go and Rust they are `EmbedInput` and `EmbedOutput`, named
+after the function.
 
 ## How schemas become types
 

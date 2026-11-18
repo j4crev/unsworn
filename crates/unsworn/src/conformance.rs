@@ -13,7 +13,12 @@ use tokio::sync::mpsc;
 use unsworn_proto::{Phase, Request};
 
 use crate::load;
-use crate::workers::{CallBody, CallError, Pool, PoolOptions, Reply, ReplyBody, SocketDir};
+use crate::workers::{CallBody, CallError, Pool, PoolOptions, Pools, Reply, ReplyBody, SocketDir};
+use unsworn_core::policy::HandlerRef;
+use unsworn_core::project::Function;
+
+/// The function the suite gives the `relay` handler to call.
+const ECHO_FUNCTION: &str = "conformance.echo";
 
 const HANDLERS: &[&str] = &[
     "echo", "text", "binary", "status", "stream", "fail", "slow", "crash", "allow", "deny",
@@ -127,6 +132,23 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
             log_tap: Some(log_tx),
             withheld_env: Vec::new(),
         },
+    );
+
+    // A function for the `relay` handler to call: the worker's own `echo`.
+    let functions = Pools::single(
+        pool.clone(),
+        vec![Function {
+            name: ECHO_FUNCTION.into(),
+            handler: HandlerRef {
+                raw: format!("{handlers}#echo"),
+                file: handlers.to_string(),
+                name: Some("echo".into()),
+                runtime: runtime.to_string(),
+            },
+            input: None,
+            output: None,
+            timeout: Duration::from_secs(5),
+        }],
     );
 
     println!("conformance: [runtimes.{runtime}] ({:?})", rt.protocol);
@@ -285,6 +307,66 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
         }
     });
     s.report("raw binary bodies in both directions", res);
+
+    // calls to functions
+    if pool.calls_supported() {
+        let relay = |function: &str| {
+            let mut req = Request {
+                handler: format!("{handlers}#relay"),
+                route: "/conformance".into(),
+                method: "POST".into(),
+                path: "/conformance".into(),
+                ..Default::default()
+            };
+            req.query.insert("fn".into(), json!(function));
+            req.json = Some(unsworn_proto::Json::unchecked(Bytes::from_static(
+                br#"{"n": 1}"#,
+            )));
+            pool.call(
+                req,
+                CallBody::Empty,
+                Instant::now() + Duration::from_secs(5),
+                "conformance".into(),
+            )
+        };
+        let answer = |reply| {
+            expect_response(reply).and_then(|(resp, body)| {
+                let text = match resp.json {
+                    Some(j) => j.to_bytes(),
+                    None => body_bytes(body),
+                };
+                serde_json::from_slice::<Value>(&text).map_err(|e| format!("not JSON: {e}"))
+            })
+        };
+        let res = answer(relay("no.such.function").await).and_then(|v| {
+            if v == json!({ "failed": 404 }) {
+                Ok(())
+            } else {
+                Err(format!("got {v}, want {{\"failed\":404}}"))
+            }
+        });
+        s.report("a call that fails reaches the handler with its status", res);
+        // The function is another handler of this worker, so the worker
+        // has to take its request while it waits for the answer.
+        if pool.max_in_flight() > 1 {
+            let res = answer(relay(ECHO_FUNCTION).await).and_then(|v| {
+                let got = &v["answer"];
+                if got["json"] != json!({ "n": 1 }) {
+                    Err(format!("got {v}, want the input back as answer.json"))
+                } else if got["context"]["caller"]["function"] != json!(ECHO_FUNCTION) {
+                    Err(format!("got {v}, want the call in the function's context"))
+                } else {
+                    Ok(())
+                }
+            });
+            s.report("a call to a function gives back its answer", res);
+        } else {
+            println!("  - calling a function: max_in_flight is 1, so only a failing call is tried");
+        }
+    } else {
+        println!("  - calls to functions: not supported by this worker (optional)");
+    }
+    drop(functions);
 
     // streamed request body, larger than the credit window
     if pool.stream_body_supported() {

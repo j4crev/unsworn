@@ -102,6 +102,14 @@ share one router, one auth config, one API contract and one deploy. The same
 goes for a Go endpoint that needs Go's concurrency, or a Rust endpoint that
 needs raw speed.
 
+And they can call each other. A handler declared as a
+[function](docs/functions.md) is called by name from any other handler,
+with its input checked on the way and no service in between:
+
+```ts
+const vector = await ctx.call("embed", { text: req.query.q });   // embed is Python
+```
+
 ### Speed where it matters
 
 - **Declarative endpoints run entirely in Rust.** Static responses,
@@ -252,6 +260,7 @@ All of this is configured in `unsworn.toml`, with no code:
 
 Details: [architecture](docs/architecture.md), [config](docs/config.md),
 [plan and diff](docs/plan.md), [generated types](docs/types.md),
+[functions](docs/functions.md),
 [protocol](docs/protocol.md),
 [conformance](docs/conformance.md), [MCP](docs/mcp.md),
 [benchmarks](docs/benchmarks.md) and [roadmap](docs/roadmap.md).

@@ -25,6 +25,7 @@ variables:
 | `UNSWORN_DEV` | `1` | Set only under `unsworn dev` and `unsworn check --deep`. SDKs then include stack traces in `error` messages |
 | `UNSWORN_RAW_JSON` | `1` | This Unsworn takes a JSON body as raw bytes, marked [`body_json`](#json-as-the-raw-body-raw_json-and-body_json), in both directions |
 | `UNSWORN_LOG_LEVEL` | `info` | The most verbose [`log`](#log-worker--unsworn) level Unsworn keeps: `error`, `warn`, `info`, `debug`, `trace` or `off` |
+| `UNSWORN_CALLS` | `1` | Set when Unsworn answers [`call`](#calling-a-function-call-and-result) messages |
 
 The worker also inherits Unsworn's own environment, without the variables
 the config reads credentials from (see
@@ -55,6 +56,10 @@ string chosen by Unsworn that is unique per worker connection.
 - `stream_body`: optional, default `false`. Whether the worker accepts
   [streamed request bodies](#streamed-request-bodies-chunk-end-and-ack).
   Handlers on `stream_body` routes are reported missing otherwise.
+- `calls`: optional, default `false`. Whether the worker's handlers can
+  [call functions](#calling-a-function-call-and-result). Unsworn answers
+  `call` either way; the conformance suite reads this to decide whether to
+  test it.
 - `raw_json`: optional, default `false`. Whether the worker reads a JSON
   request body from the raw bytes after the message. See
   [JSON as the raw body](#json-as-the-raw-body-raw_json-and-body_json).
@@ -182,6 +187,47 @@ a worker streams a response, and the worker acknowledges what it has read:
   stops sending it.
 - If the body passes `max_body`, stalls for 30 seconds or the client goes
   away, Unsworn sends `cancel`, and the client gets `413` or `408`.
+
+### Calling a function: `call` and `result`
+
+A handler calls a [function](functions.md), which is another handler,
+through Unsworn. The worker sends `call`:
+
+```json
+{"type":"call","id":"c-7","request":"r-81","function":"embed","json":{"text":"hello"}}
+```
+
+- `id`: chosen by the worker, unique among its calls in flight.
+- `request`: the `id` of the request the call is made for, which must be
+  in flight on this worker. The function gets that request's context and
+  what is left of its time.
+- `function`: the function's name.
+- `json`: the input. Default `null`.
+
+Unsworn runs the function as a normal `request` to a worker of its
+runtime (`route` and `path` are `fn:<name>`, `method` is `POST`, `json` is
+the input, and `context` is the calling request's plus `caller`), then
+answers with `result`:
+
+```json
+{"type":"result","id":"c-7","status":200,"json":[0.12,0.98]}
+{"type":"result","id":"c-8","status":404,"error":"no function named \"embd\" (there is: embed)"}
+```
+
+- `status`: the function's own, or the one for what went wrong (see
+  [`functions.md`](functions.md#calling)). The call succeeded when it's
+  below `400`.
+- `json`: what the function answered with. For a `422`, the input's
+  errors.
+- `error`: what went wrong, when Unsworn or the function's worker failed.
+
+When the request a call was made for ends first, Unsworn cancels the call
+and sends no `result` for it. A worker should stop waiting for a
+request's calls when the request is cancelled or answered.
+
+Unsworn sets `UNSWORN_CALLS=1` for workers when it answers `call`. Under
+an older Unsworn the variable isn't set and a `call` would be ignored, so
+SDKs fail the call themselves.
 
 ### `cancel` (Unsworn → worker)
 

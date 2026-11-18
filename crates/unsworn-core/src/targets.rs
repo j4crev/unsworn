@@ -21,11 +21,22 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
                 .hint(format!("known targets: {}", known.join(", "))),
         ];
     }
-    match target {
-        "server" => Vec::new(),
+    let mut out = match target {
+        "server" => return Vec::new(),
         "cloudflare" => cloudflare(project),
         _ => functions(project, target),
+    };
+    // Calls between handlers go through the server's worker connections.
+    if let Some(name) = project.functions.keys().next() {
+        out.push(
+            Diagnostic::error(
+                format!("[[function]] \"{name}\""),
+                format!("functions that handlers call (`ctx.call`) only run on the server, not on {target}"),
+            )
+            .hint("on this target, import the other handler and call it, or keep the function on a server"),
+        );
     }
+    out
 }
 
 /// File extensions a JS host can import as a handler module.

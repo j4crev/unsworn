@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 
-from unsworn import body, content as content_reply, json, next
+from unsworn import CallError, body, content as content_reply, json, next
 from unsworn import text as text_reply
 
 
@@ -74,6 +74,13 @@ def upload(req, ctx):
 
 def content(req, ctx):
     return content_reply([{"type": "text", "text": "hi"}], json={"ok": True})
+
+
+def relay(req, ctx):
+    try:
+        return json({"answer": ctx.call(req.query["fn"], req.json)})
+    except CallError as e:
+        return json({"failed": e.status})
 
 
 def mcp(req, ctx):

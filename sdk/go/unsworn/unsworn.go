@@ -86,6 +86,41 @@ type Request struct {
 	BodyReader io.Reader
 
 	ctx context.Context
+	w   *worker
+}
+
+// CallError is what [Request.Call] returns when a function answers with an
+// error status, or can't be called.
+type CallError struct {
+	// Status is the function's own, or 404 for no such function, 422 for
+	// input its schema refuses and 504 for a timeout.
+	Status  int
+	Message string
+	// JSON is what the function answered with, if anything.
+	JSON json.RawMessage
+}
+
+func (e *CallError) Error() string { return "unsworn: " + e.Message }
+
+// Call calls a function: a handler in any language, declared in the config
+// as [[function]]. Unsworn checks input against the function's schema, runs
+// it with this request's context and what is left of its time, and decodes
+// the JSON it answered with into out, a pointer (or nil to ignore it).
+//
+// It returns a [*CallError] when the function answers 400 or above or
+// can't be called, and the context's error when the request ends first.
+func (r *Request) Call(name string, input any, out any) error {
+	if r.w == nil {
+		return &CallError{Status: 501, Message: "Call works in a handler that Unsworn is running"}
+	}
+	data, err := r.w.callFunction(r, name, input)
+	if err != nil || out == nil || len(data) == 0 {
+		return err
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("unsworn: the answer from %q doesn't fit: %w", name, err)
+	}
+	return nil
 }
 
 // Context is cancelled when Unsworn cancels the request: the client went

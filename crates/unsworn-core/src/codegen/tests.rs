@@ -407,3 +407,73 @@ fn names() {
     assert_eq!(snake("x-labels"), "x_labels");
     assert_eq!(snake("type"), "type");
 }
+
+const FUNCTIONS: &str = r#"
+[runtimes.ts]
+extensions = [".ts"]
+command = "bun"
+
+[runtimes.py]
+extensions = [".py"]
+command = "python3"
+
+[runtimes.go]
+extensions = [".go"]
+command = "./worker"
+
+[runtimes.rs]
+extensions = [".rs"]
+command = "./worker"
+
+[[function]]
+name = "embed"
+handler = "fn/embed.py#embed"
+input = { type = "object", required = ["text"], properties = { text = { type = "string" } } }
+output = { type = "array", items = { type = "number" } }
+
+[[function]]
+name = "audit.log"
+handler = "fn/audit.ts#write"
+"#;
+
+#[test]
+fn functions_are_typed_for_callers_in_every_language() {
+    let p = project_with(FUNCTIONS, &[("fn/embed.py", ""), ("fn/audit.ts", "")]);
+    let out = generate(&p, Lang::TypeScript, &Options::default());
+    assert!(
+        out.contains(
+            "declare module \"@unswornjs/sdk\" {\n  interface Functions {\n    \"audit.log\": {\n      input: unknown;\n      output: unknown;\n    };\n    embed: {\n      input: {\n        text: string;\n      };\n      output: number[];\n    };\n  }\n}\n"
+        ),
+        "{out}"
+    );
+    // The function's own handler is typed like any other.
+    assert!(
+        out.contains("/** the function audit.log */\nexport type Write = Handler;"),
+        "{out}"
+    );
+
+    let out = generate(&p, Lang::Python, &Options::default());
+    assert!(
+        out.contains("class EmbedInput(TypedDict):\n    text: str\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("#: What the function embed answers with.\nEmbedOutput = list[float]\n"),
+        "{out}"
+    );
+    assert!(out.contains("#: the function embed\nEmbedRequest = Request[dict[str, Any], dict[str, Any], EmbedBody]\n"), "{out}");
+
+    let out = generate(&p, Lang::Go, &Options::default());
+    assert!(
+        out.contains("// EmbedInput is what the function embed takes. Pass it to req.Call.\ntype EmbedInput struct {\n\tText string `json:\"text\"`\n}\n"),
+        "{out}"
+    );
+    assert!(out.contains("type EmbedOutput = []float64\n"), "{out}");
+
+    let out = generate(&p, Lang::Rust, &Options::default());
+    assert!(
+        out.contains("pub struct EmbedInput {\n    pub text: String,\n}\n"),
+        "{out}"
+    );
+    assert!(out.contains("pub type EmbedOutput = Vec<f64>;\n"), "{out}");
+}

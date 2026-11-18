@@ -512,6 +512,20 @@ impl StoreConfig {
     }
 }
 
+/// A handler that other handlers call by name, from any runtime. It has
+/// no path, so nothing outside reaches it.
+#[derive(Debug, Clone)]
+pub struct Function {
+    pub name: String,
+    pub handler: HandlerRef,
+    /// Checked before the function runs.
+    pub input: Option<BodyRule>,
+    /// Checked against what it answers with, as `response_validation` says.
+    pub output: Option<BodyRule>,
+    /// The longest a call may take.
+    pub timeout: Duration,
+}
+
 /// One file of typed request models to write; see [`crate::codegen`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Generated {
@@ -550,6 +564,8 @@ pub struct Project {
     pub openapi: OpenApiMeta,
     /// The MCP endpoint, when `[mcp]` is set.
     pub mcp: Option<McpEndpoint>,
+    /// `[[function]]` entries, by name.
+    pub functions: BTreeMap<String, Arc<Function>>,
     /// The files of generated types `[gen]` asks for.
     pub generated: Vec<Generated>,
     /// Files read while loading, for watching in dev mode.
@@ -787,6 +803,9 @@ impl Project {
             if let Some(OrOff::On(list)) = &p.layer.before {
                 list.iter().for_each(&mut add);
             }
+        }
+        for f in self.functions.values() {
+            add(&f.handler);
         }
         out
     }
@@ -1060,6 +1079,7 @@ impl<'h> Compiler<'h> {
         };
 
         let server = self.server(&raw);
+        let server_timeout = server.timeout;
         self.runtimes(&raw);
         self.schemes(&raw);
         let store = self.store(&raw);
@@ -1246,6 +1266,7 @@ impl<'h> Compiler<'h> {
             path_entries,
             openapi: openapi_meta,
             mcp,
+            functions: self.functions(&raw, server_timeout),
             generated: self.generated(&raw),
             files: std::mem::take(&mut self.files),
             routes_dir,
@@ -1260,6 +1281,78 @@ impl<'h> Compiler<'h> {
     /// compile leaves there. Checks of the value's form don't apply to it.
     fn unresolved(&self, value: &str) -> bool {
         self.symbolic && value.contains("{env.")
+    }
+
+    fn functions(
+        &mut self,
+        raw: &RawConfig,
+        default_timeout: Duration,
+    ) -> BTreeMap<String, Arc<Function>> {
+        let mut out: BTreeMap<String, Arc<Function>> = BTreeMap::new();
+        for (i, f) in raw.function.iter().enumerate() {
+            let loc = format!("{} function[{i}] \"{}\"", self.config_file, f.name);
+            let valid = !f.name.is_empty()
+                && f.name.len() <= 128
+                && f.name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+            if !valid {
+                self.diags.error(
+                    format!("{loc}.name"),
+                    "a function name is 1 to 128 letters, digits, `_`, `-` and `.`",
+                );
+                continue;
+            }
+            if out.contains_key(&f.name) {
+                self.diags.error(
+                    format!("{loc}.name"),
+                    format!("there is already a function named \"{}\"", f.name),
+                );
+                continue;
+            }
+            let Some(handler) =
+                self.handler_ref(&f.handler, f.runtime.as_deref(), &format!("{loc}.handler"))
+            else {
+                continue;
+            };
+            if !self.host.exists(&handler.file) {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!("{loc}.handler"),
+                        format!("handler file \"{}\" not found", handler.file),
+                    )
+                    .hint("handler paths are relative to the project root"),
+                );
+            }
+            let rule = |c: &mut Self, schema: &Option<SchemaRef>, key: &str| {
+                let at = format!("{loc}.{key}");
+                let schema = c.schema(schema.as_ref()?, &at)?;
+                match BodyRule::new(schema, true, c.schemas) {
+                    Ok(rule) => Some(rule),
+                    Err(e) => {
+                        c.diags.error(at, e);
+                        None
+                    }
+                }
+            };
+            let input = rule(self, &f.input, "input");
+            let output = rule(self, &f.output, "output");
+            if f.timeout.is_some_and(|t| t.0.is_zero()) {
+                self.diags
+                    .error(format!("{loc}.timeout"), "timeout must be longer than 0");
+            }
+            out.insert(
+                f.name.clone(),
+                Arc::new(Function {
+                    name: f.name.clone(),
+                    handler,
+                    input,
+                    output,
+                    timeout: f.timeout.map_or(default_timeout, |t| t.0),
+                }),
+            );
+        }
+        out
     }
 
     fn generated(&mut self, raw: &RawConfig) -> Vec<Generated> {

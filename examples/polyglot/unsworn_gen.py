@@ -8,9 +8,29 @@ from typing import Any, Literal, TypedDict  # noqa: F401
 from unsworn import Request  # noqa: F401
 
 
+class InitialsInput(TypedDict):
+    name: str
+
+
+#: What the function initials answers with.
+InitialsOutput = str
+
+
 class ApiSummarizePostBody(TypedDict):
     text: str
 
 
 #: POST /api/summarize
 ApiSummarizePostRequest = Request[dict[str, Any], dict[str, Any], ApiSummarizePostBody]
+
+
+class InitialsBody(TypedDict):
+    name: str
+
+
+#: What the function initials answers with.
+InitialsResponse = str
+
+
+#: the function initials
+InitialsRequest = Request[dict[str, Any], dict[str, Any], InitialsBody]

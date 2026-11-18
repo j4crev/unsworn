@@ -7,6 +7,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import { type Bridge, type CallResult, type HttpResponseValue, initSync, Unsworn } from "../wasm/unsworn.js";
 import { handlerRequest, outcome, pickHandler, type RequestFields, splitRef, toBytes } from "./handler.ts";
+import { CallError } from "./index.ts";
+
+/** `ctx.call` where handlers run in the core's own process. */
+function noCalls(): Promise<never> {
+  return Promise.reject(
+    new CallError(501, "functions (`ctx.call`) run on the server only; `unsworn check --target` reports them"),
+  );
+}
 
 /** What `unsworn build` bundles. */
 export interface Bundle {
@@ -181,7 +189,9 @@ export function baseBridge(bundle: Bundle, dev: boolean, fetchArgs?: () => unkno
       const timeout = new Promise<"timeout">((resolve) => {
         timer = setTimeout(() => resolve("timeout"), Math.max(0, timeoutMs));
       });
-      const run = (async () => outcome(await fn(req, msg.context ?? {})))();
+      const ctx = msg.context ?? {};
+      Object.defineProperty(ctx, "call", { value: noCalls });
+      const run = (async () => outcome(await fn(req, ctx)))();
       try {
         const out = await Promise.race([run, timeout]);
         if (out === "timeout") {

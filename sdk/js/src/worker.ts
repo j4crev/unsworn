@@ -13,6 +13,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { connect } from "node:net";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { CallError } from "./index.ts";
 import {
   BadJson,
   type Callable,
@@ -30,6 +31,7 @@ import {
   type Outgoing,
   PROTOCOL_VERSION,
   type RequestMessage,
+  type ResultMessage,
   type VerifyMessage,
 } from "./protocol.ts";
 
@@ -40,6 +42,8 @@ const dev = process.env.UNSWORN_DEV === "1";
 // Set by Unsworn versions that take a JSON body as the raw bytes after a
 // message (`body_json`), in both directions.
 const rawJson = process.env.UNSWORN_RAW_JSON === "1";
+// Set by Unsworn versions that answer `call` messages, for `ctx.call`.
+const canCall = process.env.UNSWORN_CALLS === "1";
 // Set by Unsworn versions that accept `log` messages. Without it, logs go to stderr.
 const logLevel = process.env.UNSWORN_LOG_LEVEL;
 
@@ -124,6 +128,62 @@ function load(file: string): Promise<Record<string, unknown>> {
 async function resolveHandler(ref: string): Promise<Callable> {
   const [file] = splitRef(ref);
   return pickHandler(await load(file), ref);
+}
+
+// ---------------------------------------------------------------------------
+// Calls to functions
+
+interface PendingCall {
+  request: string;
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+}
+
+const calls = new Map<string, PendingCall>();
+let nextCall = 0;
+
+/** `ctx.call`: asks Unsworn to run a function for the request `request`. */
+function call(request: string, name: string, input: unknown): Promise<unknown> {
+  if (!canCall) {
+    return Promise.reject(new CallError(501, "this Unsworn doesn't run functions for handlers: update it"));
+  }
+  const answer = new Promise((resolve, reject) => {
+    const id = `c-${++nextCall}`;
+    calls.set(id, { request, resolve, reject });
+    send({ type: "call", id, request, function: name, json: input ?? null });
+  });
+  // A handler may start a call and not wait for it. Its failure then has
+  // nowhere to go, which shouldn't count as an unhandled rejection: that
+  // would stop the worker.
+  answer.catch(() => {});
+  return answer;
+}
+
+function result(msg: ResultMessage) {
+  const pending = calls.get(msg.id);
+  if (!pending) return;
+  calls.delete(msg.id);
+  if (msg.status < 400) pending.resolve(msg.json ?? null);
+  else pending.reject(new CallError(msg.status, msg.error ?? `the function answered ${msg.status}`, msg.json));
+}
+
+/** Unsworn drops a request's calls when the request ends, so nothing will answer them. */
+function dropCalls(request: string, reason: string) {
+  for (const [id, pending] of calls) {
+    if (pending.request !== request) continue;
+    calls.delete(id);
+    pending.reject(new CallError(499, reason));
+  }
+}
+
+/** The handler's `ctx`: the request's context, plus `call`. */
+function context(msg: RequestMessage): Record<string, unknown> {
+  const ctx = msg.context ?? {};
+  // Not enumerable, so the context still reads (and prints) as plain data.
+  Object.defineProperty(ctx, "call", {
+    value: (name: string, input?: unknown) => call(msg.id, name, input),
+  });
+  return ctx;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +287,7 @@ async function handle(msg: RequestMessage, body: Uint8Array | undefined) {
       signal: controller.signal,
       log: logger(() => msg.id),
     });
-    const result = await currentId.run(msg.id, () => fn(req, msg.context ?? {}));
+    const result = await currentId.run(msg.id, () => fn(req, context(msg)));
     await reply(msg.id, result, controller.signal);
   } catch (err) {
     if (controller.signal.aborted) {
@@ -255,6 +315,7 @@ async function handle(msg: RequestMessage, body: Uint8Array | undefined) {
   } finally {
     inFlight.delete(msg.id);
     bodies.delete(msg.id);
+    if (calls.size) dropCalls(msg.id, "the request ended before the call did");
   }
 }
 
@@ -292,6 +353,9 @@ function dispatch(frame: Frame) {
     case "verify":
       void verify(msg as VerifyMessage);
       break;
+    case "result":
+      result(msg as ResultMessage);
+      break;
     default:
       break; // unknown messages are ignored
   }
@@ -308,6 +372,7 @@ function ready() {
     verify: true,
     stream_body: true,
     raw_json: rawJson,
+    calls: canCall,
     sdk: "unsworn-js/0.3.1",
   });
 }

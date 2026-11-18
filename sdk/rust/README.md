@@ -168,6 +168,23 @@ It needs `serde` (with `derive`) and `serde_json` in your `Cargo.toml`.
 `unsworn dev` rewrites the file before it rebuilds the worker. See
 [`docs/types.md`](../../docs/types.md).
 
+## Calling other handlers
+
+`req.call` calls a [function](../../docs/functions.md): a handler declared
+as `[[function]]` in the config, in any language.
+
+```rust
+let vector: Vec<f32> = match req.call("embed", json!({ "text": text })).await {   // a Python handler
+    Ok(vector) => vector,
+    Err(e) if e.status == 422 => return Ok(Reply::json(e.json).with_status(400)),
+    Err(e) => return Err(e.into()),
+};
+```
+
+Unsworn checks the input against the function's schema, and the function
+gets this request's context and what is left of its time. The answer is
+decoded into the type you ask for.
+
 ## Logging
 
 The worker sends `tracing` events, and `log` records, to Unsworn, tagged with
