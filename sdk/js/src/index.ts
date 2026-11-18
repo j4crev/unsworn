@@ -100,8 +100,8 @@ type Output<K> = K extends keyof Functions ? (Functions[K] extends { output: inf
 /** A function answered with an error status, or couldn't be called. */
 export class CallError extends Error {
   /**
-   * The function's status, or `404` for no such function, `422` for
-   * input its schema refuses, `504` for a timeout.
+   * The function's status, or `404` for a name with no `[[function]]`,
+   * `422` for input its schema refuses, `504` for a timeout.
    */
   status: number;
   /** What the function answered with, if anything. */

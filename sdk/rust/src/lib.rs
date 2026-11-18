@@ -129,8 +129,9 @@ pub struct Request {
 /// [`Request::call`].
 #[derive(Debug, Clone)]
 pub struct CallError {
-    /// The function's own status, or `404` for no such function, `422`
-    /// for input its schema refuses and `504` for a timeout.
+    /// The function's own status, or `404` for a name with no
+    /// `[[function]]`, `422` for input its schema refuses and `504` for a
+    /// timeout.
     pub status: u16,
     pub message: String,
     /// What the function answered with, if anything.

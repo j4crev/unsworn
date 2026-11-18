@@ -81,9 +81,9 @@ _UNSET: Any = object()
 class CallError(Exception):
     """A function answered with an error status, or couldn't be called.
 
-    ``status`` is the function's own, or 404 for no such function, 422 for
-    input its schema refuses and 504 for a timeout. ``json`` is what the
-    function answered with, if anything.
+    ``status`` is the function's own, or 404 for a name with no
+    ``[[function]]``, 422 for input its schema refuses and 504 for a
+    timeout. ``json`` is what the function answered with, if anything.
     """
 
     def __init__(self, status: int, message: str, json: Any = None) -> None:  # noqa: A002

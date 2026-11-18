@@ -71,7 +71,7 @@ function answers `400` or above, or when it can't be run:
 | Status | Why |
 |---|---|
 | the function's own (`400`–`599`) | it answered with that status; `json` is its body |
-| `404` | no function has that name |
+| `404` | the config has no `[[function]]` with that name |
 | `422` | the input doesn't match `input`; `json.errors` lists why |
 | `500` | the function failed: it threw, or sent `error` |
 | `502` | its worker stopped, it answered with something other than JSON, or its output doesn't match `output` under `enforce` |
