@@ -214,7 +214,7 @@ answers with `result`:
 
 ```json
 {"type":"result","id":"c-7","status":200,"json":[0.12,0.98]}
-{"type":"result","id":"c-8","status":404,"error":"no function named \"embd\" (there is: embed)"}
+{"type":"result","id":"c-8","status":404,"error":"no [[function]] named \"embd\" in the config (it declares: embed)"}
 ```
 
 - `status`: the function's own, or the one for what went wrong (see

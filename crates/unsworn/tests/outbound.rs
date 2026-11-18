@@ -314,7 +314,7 @@ fn only_what_the_config_allows_is_sent() {
         got["message"]
             .as_str()
             .unwrap()
-            .contains("there is: billing, open"),
+            .contains("no [outbound.nope] in the config (it declares: billing, open)"),
         "{got}"
     );
 

@@ -81,9 +81,9 @@ _UNSET: Any = object()
 class CallError(Exception):
     """A function answered with an error status, or couldn't be called.
 
-    ``status`` is the function's own, or 404 for no such function, 422 for
-    input its schema refuses and 504 for a timeout. ``json`` is what the
-    function answered with, if anything.
+    ``status`` is the function's own, or 404 for a name with no
+    ``[[function]]``, 422 for input its schema refuses and 504 for a
+    timeout. ``json`` is what the function answered with, if anything.
     """
 
     def __init__(self, status: int, message: str, json: Any = None) -> None:  # noqa: A002
@@ -95,9 +95,9 @@ class CallError(Exception):
 class FetchError(Exception):
     """``ctx.fetch`` couldn't make the request, or got no answer.
 
-    ``status`` is 404 for no such service, 403 for a method or path the
-    config doesn't allow, 502 for a service that couldn't be reached and
-    504 for one that took too long.
+    ``status`` is 404 for a name with no ``[outbound.<name>]``, 403 for a
+    method or path the config doesn't allow, 502 for a service that couldn't
+    be reached and 504 for one that took too long.
     """
 
     def __init__(self, status: int, message: str) -> None:

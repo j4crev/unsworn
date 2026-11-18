@@ -241,7 +241,7 @@ fn failures_reach_the_caller_as_errors_with_a_status() {
         missing["message"]
             .as_str()
             .unwrap()
-            .contains("no function named \"nope\""),
+            .contains("no [[function]] named \"nope\" in the config (it declares: count, lies, loop, refuse, relay, shout, sleepy, whoami)"),
         "{missing}"
     );
 

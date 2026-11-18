@@ -492,13 +492,17 @@ impl Pools {
         };
         let fail = |status: u16, error: String| result(status, Value::Null, Some(error));
         let Some(function) = self.functions.get(&call.function) else {
+            // Name the table to add, as for an unknown outbound service.
             let known: Vec<&str> = self.functions.keys().map(String::as_str).collect();
+            let declared = match known.as_slice() {
+                [] => "it declares none".to_string(),
+                _ => format!("it declares: {}", known.join(", ")),
+            };
             return fail(
                 404,
                 format!(
-                    "no function named \"{}\" (there is: {})",
-                    call.function,
-                    known.join(", ")
+                    "no [[function]] named \"{}\" in the config ({declared})",
+                    call.function
                 ),
             );
         };
@@ -654,14 +658,16 @@ impl Pools {
             }))
         };
         let Some(service) = self.outbound.get(&fetch.service) else {
+            // Name the table to add, since a handler's `fetch` doesn't say
+            // where its services come from.
             let known: Vec<&str> = self.outbound.keys().map(String::as_str).collect();
+            let declared = match known.as_slice() {
+                [] => "it declares none".to_string(),
+                _ => format!("it declares: {}", known.join(", ")),
+            };
             return fail(
                 404,
-                format!(
-                    "no outbound service named \"{}\" (there is: {})",
-                    fetch.service,
-                    known.join(", ")
-                ),
+                format!("no [outbound.{}] in the config ({declared})", fetch.service),
             );
         };
         let method = fetch.method.to_ascii_uppercase();

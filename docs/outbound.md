@@ -86,7 +86,7 @@ wasn't made or got no answer:
 | Status | Why |
 |---|---|
 | `403` | the method or path isn't allowed for the service |
-| `404` | no outbound service has that name |
+| `404` | the config has no `[outbound.<name>]` with that name |
 | `502` | the service couldn't be reached, or its answer is larger than `max_response` |
 | `504` | it took longer than `timeout`, or than the handler's request had left |
 
