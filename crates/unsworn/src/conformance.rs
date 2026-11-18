@@ -15,7 +15,7 @@ use unsworn_proto::{Phase, Request};
 use crate::load;
 use crate::workers::{CallBody, CallError, Pool, PoolOptions, Pools, Reply, ReplyBody, SocketDir};
 use unsworn_core::policy::HandlerRef;
-use unsworn_core::project::Function;
+use unsworn_core::project::{Function, Outbound};
 
 /// The function the suite gives the `relay` handler to call.
 const ECHO_FUNCTION: &str = "conformance.echo";
@@ -71,6 +71,57 @@ impl Suite {
             }
         }
     }
+}
+
+/// Answers `201` with what it was sent: the method, path, body and the
+/// `x-secret` and `x-from` headers.
+async fn echo(
+    req: hyper::Request<hyper::body::Incoming>,
+) -> Result<hyper::Response<http_body_util::Full<Bytes>>, std::convert::Infallible> {
+    use http_body_util::BodyExt;
+    let header = |name: &str| {
+        req.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("-")
+            .to_string()
+    };
+    let head = format!(
+        "{} {}",
+        req.method(),
+        req.uri().path_and_query().map_or("", |p| p.as_str())
+    );
+    let tail = format!(" secret={} from={}", header("x-secret"), header("x-from"));
+    let body = match req.into_body().collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(_) => Bytes::new(),
+    };
+    let text = format!("{head} {}{tail}", String::from_utf8_lossy(&body));
+    let mut response = hyper::Response::new(http_body_util::Full::new(Bytes::from(text)));
+    *response.status_mut() = hyper::StatusCode::CREATED;
+    Ok(response)
+}
+
+/// A local HTTP service for the `outbound` handler to fetch from. See
+/// [`echo`].
+async fn echo_service() -> Result<std::net::SocketAddr, String> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("can't start the test service: {e}"))?;
+    let addr = listener.local_addr().map_err(|e| e.to_string())?;
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(
+                        hyper_util::rt::TokioIo::new(stream),
+                        hyper::service::service_fn(echo),
+                    )
+                    .await;
+            });
+        }
+    });
+    Ok(addr)
 }
 
 fn expect_response(
@@ -149,6 +200,16 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
             output: None,
             timeout: Duration::from_secs(5),
         }],
+        // And a service for the `outbound` handler to fetch from, which
+        // Unsworn adds a header to.
+        vec![Outbound::open(
+            "conformance",
+            &format!("http://{}", echo_service().await?),
+            vec![
+                ("x-secret".into(), "s3cret".into()),
+                ("x-from".into(), "unsworn".into()),
+            ],
+        )],
     );
 
     println!("conformance: [runtimes.{runtime}] ({:?})", rt.protocol);
@@ -365,6 +426,54 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
         }
     } else {
         println!("  - calls to functions: not supported by this worker (optional)");
+    }
+
+    // requests to outbound services
+    if pool.fetch_supported() {
+        let fetch = |path: &str| {
+            let mut req = Request {
+                handler: format!("{handlers}#outbound"),
+                route: "/conformance".into(),
+                method: "POST".into(),
+                path: "/conformance".into(),
+                ..Default::default()
+            };
+            req.query.insert("path".into(), json!(path));
+            pool.call(
+                req,
+                CallBody::Bytes(Bytes::from_static(b"ping")),
+                Instant::now() + Duration::from_secs(5),
+                "conformance".into(),
+            )
+        };
+        let res = expect_response(fetch("/echo/1?q=2").await).and_then(|(resp, body)| {
+            let status = resp.headers.get("x-status").and_then(|v| v.iter().next());
+            let got = String::from_utf8_lossy(&body_bytes(body)).into_owned();
+            // The service saw the header Unsworn adds, and Unsworn's
+            // value for the one the handler also set.
+            let want = "POST /echo/1?q=2 ping secret=s3cret from=unsworn";
+            if got != want {
+                Err(format!("the service's answer was {got:?}, want {want:?}"))
+            } else if status != Some("201") {
+                Err(format!("x-status is {status:?}, want the service's 201"))
+            } else {
+                Ok(())
+            }
+        });
+        s.report("a fetch reaches the service, both bodies intact", res);
+        let res = expect_response(fetch("/a/../b").await).and_then(|(resp, body)| {
+            let text = match resp.json {
+                Some(j) => j.to_bytes(),
+                None => body_bytes(body),
+            };
+            match serde_json::from_slice::<Value>(&text) {
+                Ok(v) if v == json!({ "failed": 403 }) => Ok(()),
+                other => Err(format!("got {other:?}, want {{\"failed\":403}}")),
+            }
+        });
+        s.report("a fetch that isn't allowed fails with its status", res);
+    } else {
+        println!("  - requests to outbound services: not supported by this worker (optional)");
     }
     drop(functions);
 

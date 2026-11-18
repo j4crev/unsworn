@@ -48,7 +48,22 @@ export interface ResultMessage {
   error?: string;
 }
 
-export type Incoming = RequestMessage | CancelMessage | VerifyMessage | ResultMessage | { type: string; id?: string };
+/** A service's answer to a `fetch`. Its body is the raw bytes that follow. */
+export interface FetchedMessage {
+  type: "fetched";
+  id: string;
+  status: number;
+  headers?: Record<string, string>;
+  error?: string;
+}
+
+export type Incoming =
+  | RequestMessage
+  | CancelMessage
+  | VerifyMessage
+  | ResultMessage
+  | FetchedMessage
+  | { type: string; id?: string };
 
 export type Outgoing = Record<string, unknown> & { type: string };
 

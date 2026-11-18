@@ -172,6 +172,25 @@ Unsworn checks the input against the function's schema, and the function
 gets this request's context and what is left of its time. `Call` returns
 the request's context error if the request ends first.
 
+## Reaching other services
+
+`req.Fetch` sends a request to an [outbound service](../../docs/outbound.md),
+declared as `[outbound.<name>]` in the config. Unsworn makes the request
+and adds the service's credential, so the handler never holds it:
+
+```go
+answer, err := req.Fetch("stripe", "/v1/charges", &unsworn.Outbound{
+	JSON: map[string]any{"amount": 1200, "currency": "usd"},
+})
+if err != nil {
+	return unsworn.Reply{}, err   // a *unsworn.FetchError: not allowed, or no answer
+}
+var charge struct{ ID string `json:"id"` }
+if err := answer.Bind(&charge); err != nil {
+	return unsworn.Reply{}, err
+}
+```
+
 ## Logging
 
 The worker makes `slog`'s default logger send records to Unsworn, unless the

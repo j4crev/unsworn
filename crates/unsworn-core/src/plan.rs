@@ -44,6 +44,8 @@ pub enum Kind {
     Tool,
     /// A handler other handlers call by name.
     Function,
+    /// A service Unsworn calls for handlers.
+    Outbound,
     /// Part of a route's paths with rules of its own.
     Inside,
 }
@@ -89,6 +91,7 @@ impl Entry {
             Kind::Route => format!("{methods} {}", self.name),
             Kind::Tool => format!("tool {}", self.name),
             Kind::Function => format!("function {}", self.name),
+            Kind::Outbound => format!("outbound {}", self.name),
             Kind::Inside if methods.is_empty() => format!("at {}", self.name),
             Kind::Inside => format!("at {methods} {}", self.name),
         }
@@ -274,6 +277,7 @@ impl Plan {
         entries.extend(routes);
         entries.extend(tools);
         entries.extend(project.functions.values().map(|f| function(project, f)));
+        entries.extend(project.outbound.values().map(|o| outbound(project, o)));
         Plan {
             config_file: project.config_file.clone(),
             entries,
@@ -964,6 +968,33 @@ fn function(project: &Project, f: &crate::project::Function) -> Entry {
     if let Some(output) = &f.output {
         e.plain("output", schema_text(&output.schema));
     }
+    e
+}
+
+fn outbound(project: &Project, o: &crate::project::Outbound) -> Entry {
+    let mut e = Entry::new(Kind::Outbound, &o.name);
+    e.plain("url", &o.url);
+    if !o.headers.is_empty() {
+        // Names only: the values are the credentials.
+        let names: Vec<&str> = o.headers.iter().map(|(name, _)| name.as_str()).collect();
+        e.plain("adds", names.join(", "));
+    }
+    // Leaving either out lets a handler use any.
+    if let Some(methods) = &o.methods {
+        e.push("methods", methods.join(", "), Weigh::Allow(methods.clone()));
+    }
+    if let Some(paths) = &o.paths {
+        e.push("paths", paths.join(", "), Weigh::Allow(paths.clone()));
+    }
+    e.plain("timeout", format_duration(o.timeout));
+    if let Some(fact) = e.facts.last_mut() {
+        fact.shown = o.timeout != project.server.timeout;
+    }
+    e.push(
+        "max_response",
+        format_size(o.max_response),
+        Weigh::Limit(o.max_response),
+    );
     e
 }
 

@@ -119,8 +119,12 @@ on the way out. In the order planned:
      `[[function]]` is a handler any other handler calls by name, in any
      language, over the worker's own connection. See
      [`functions.md`](functions.md). Servers and containers only so far.
-   - **Declared outbound services** that Unsworn calls for a handler,
-     attaching the credential, so the handler never holds it.
+   - ~~**Declared outbound services.**~~ Done: `ctx.fetch` reaches a
+     service under `[outbound.<name>]`, and Unsworn adds its credential,
+     so the handler never holds it. See [`outbound.md`](outbound.md).
+     Still open: keeping a handler from opening its own connections
+     (Landlock, a network namespace), which the platform has to do for
+     now, and streamed bodies.
 4. **Choosing a language by measurement.** Per-route latency and CPU,
    split between Unsworn and the handler (`unsworn top`), and a `shadow`
    handler that gets a copy of a route's traffic so a rewrite can be

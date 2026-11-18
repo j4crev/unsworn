@@ -526,6 +526,85 @@ pub struct Function {
     pub timeout: Duration,
 }
 
+/// A service that Unsworn calls for handlers (`[outbound.<name>]`), adding
+/// its credential, so a handler never holds it.
+#[derive(Debug, Clone)]
+pub struct Outbound {
+    pub name: String,
+    /// Without a trailing slash. A handler's path goes after it.
+    pub url: String,
+    /// Added to every request, over anything a handler sets by the same
+    /// name. Lowercase names. The values are secrets.
+    pub headers: Vec<(String, String)>,
+    /// Uppercase methods a handler may use, or `None` for any.
+    pub methods: Option<Vec<String>>,
+    /// Path patterns a handler may ask for, or `None` for any.
+    pub paths: Option<Vec<String>>,
+    path_segs: Vec<Vec<Seg>>,
+    pub timeout: Duration,
+    /// The largest response body, in bytes.
+    pub max_response: u64,
+}
+
+impl Outbound {
+    /// A service at `url` that any method and path may be sent to, with
+    /// these headers added.
+    pub fn open(name: &str, url: &str, headers: Vec<(String, String)>) -> Outbound {
+        Outbound {
+            name: name.to_string(),
+            url: url.trim_end_matches('/').to_string(),
+            headers,
+            methods: None,
+            paths: None,
+            path_segs: Vec::new(),
+            timeout: Duration::from_secs(30),
+            max_response: 10 * 1024 * 1024,
+        }
+    }
+
+    /// Whether a handler may send `method` to `path` (which may carry a
+    /// query). `Err` says why not.
+    pub fn allows(&self, method: &str, path: &str) -> Result<(), String> {
+        let path = path.split_once('?').map_or(path, |(path, _)| path);
+        if !path.starts_with('/') {
+            return Err(format!("the path \"{path}\" doesn't start with `/`"));
+        }
+        // `/v1/../admin` would step outside what `paths`, or a URL with a
+        // path of its own, allows. Encoded dots too, which a server may
+        // decode before it routes.
+        let dotted = path.split('/').any(|segment| {
+            let segment = segment.to_ascii_lowercase().replace("%2e", ".");
+            segment == "." || segment == ".."
+        });
+        if dotted || path.contains(['\\', '#']) || path.chars().any(char::is_control) {
+            return Err(format!(
+                "the path \"{path}\" has a `.` or `..` segment, a backslash or a `#`"
+            ));
+        }
+        if let Some(methods) = &self.methods
+            && !methods.iter().any(|m| m == method)
+        {
+            return Err(format!(
+                "[outbound.{}] doesn't allow {method} (it allows {})",
+                self.name,
+                methods.join(", ")
+            ));
+        }
+        if self.paths.is_some()
+            && !self
+                .path_segs
+                .iter()
+                .any(|segs| match_prefix(segs, path).is_some())
+        {
+            return Err(format!(
+                "[outbound.{}] doesn't allow the path {path}",
+                self.name
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// One file of typed request models to write; see [`crate::codegen`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Generated {
@@ -566,6 +645,8 @@ pub struct Project {
     pub mcp: Option<McpEndpoint>,
     /// `[[function]]` entries, by name.
     pub functions: BTreeMap<String, Arc<Function>>,
+    /// `[outbound.<name>]` entries.
+    pub outbound: BTreeMap<String, Arc<Outbound>>,
     /// The files of generated types `[gen]` asks for.
     pub generated: Vec<Generated>,
     /// Files read while loading, for watching in dev mode.
@@ -1267,6 +1348,7 @@ impl<'h> Compiler<'h> {
             openapi: openapi_meta,
             mcp,
             functions: self.functions(&raw, server_timeout),
+            outbound: self.outbound(&raw, server_timeout),
             generated: self.generated(&raw),
             files: std::mem::take(&mut self.files),
             routes_dir,
@@ -1349,6 +1431,80 @@ impl<'h> Compiler<'h> {
                     input,
                     output,
                     timeout: f.timeout.map_or(default_timeout, |t| t.0),
+                }),
+            );
+        }
+        out
+    }
+
+    fn outbound(
+        &mut self,
+        raw: &RawConfig,
+        default_timeout: Duration,
+    ) -> BTreeMap<String, Arc<Outbound>> {
+        let mut out = BTreeMap::new();
+        for (name, o) in &raw.outbound {
+            let loc = format!("[outbound.{name}]");
+            let named = !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+            if !named {
+                self.diags
+                    .error(&loc, "a service name is letters, digits, `_`, `-` and `.`");
+                continue;
+            }
+            let url = self.subst(&o.url, &format!("{loc}.url"));
+            let url = url.trim_end_matches('/').to_string();
+            self.check_url(&url, &format!("{loc}.url"));
+            if !o.headers.is_empty() {
+                self.warn_plain_http(
+                    &url,
+                    &format!("{loc}.url"),
+                    "the headers Unsworn adds can be read on the network path",
+                );
+            }
+            if url.contains(['?', '#']) {
+                self.diags.error(
+                    format!("{loc}.url"),
+                    "the URL can't have a query or a fragment: a handler's path goes after it",
+                );
+            }
+            let mut headers = Vec::new();
+            for (header, value) in &o.headers {
+                let at = format!("{loc}.headers.{header}");
+                let value = self.subst_secret(value, &at);
+                if !valid_header_name(header) {
+                    self.diags.error(&at, "not a valid header name");
+                } else if value.chars().any(|c| c.is_control() && c != '\t') {
+                    self.diags
+                        .error(&at, "header values can't contain line breaks");
+                } else {
+                    headers.push((header.to_ascii_lowercase(), value));
+                }
+            }
+            let methods = self.methods(o.methods.clone(), &loc);
+            let mut path_segs = Vec::new();
+            for path in o.paths.iter().flatten() {
+                if self.check_path(path, &loc) {
+                    path_segs.push(parse_pattern(path));
+                }
+            }
+            if o.timeout.is_some_and(|t| t.0.is_zero()) {
+                self.diags
+                    .error(format!("{loc}.timeout"), "timeout must be longer than 0");
+            }
+            out.insert(
+                name.clone(),
+                Arc::new(Outbound {
+                    name: name.clone(),
+                    url,
+                    headers,
+                    methods,
+                    paths: o.paths.clone(),
+                    path_segs,
+                    timeout: o.timeout.map_or(default_timeout, |t| t.0),
+                    max_response: o.max_response.map_or(10 * 1024 * 1024, |s| s.0),
                 }),
             );
         }

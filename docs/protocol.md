@@ -26,6 +26,7 @@ variables:
 | `UNSWORN_RAW_JSON` | `1` | This Unsworn takes a JSON body as raw bytes, marked [`body_json`](#json-as-the-raw-body-raw_json-and-body_json), in both directions |
 | `UNSWORN_LOG_LEVEL` | `info` | The most verbose [`log`](#log-worker--unsworn) level Unsworn keeps: `error`, `warn`, `info`, `debug`, `trace` or `off` |
 | `UNSWORN_CALLS` | `1` | Set when Unsworn answers [`call`](#calling-a-function-call-and-result) messages |
+| `UNSWORN_FETCH` | `1` | Set when Unsworn answers [`fetch`](#asking-for-a-request-to-a-service-fetch-and-fetched) messages |
 
 The worker also inherits Unsworn's own environment, without the variables
 the config reads credentials from (see
@@ -60,6 +61,8 @@ string chosen by Unsworn that is unique per worker connection.
   [call functions](#calling-a-function-call-and-result). Unsworn answers
   `call` either way; the conformance suite reads this to decide whether to
   test it.
+- `fetch`: optional, default `false`. The same for
+  [requests to outbound services](#asking-for-a-request-to-a-service-fetch-and-fetched).
 - `raw_json`: optional, default `false`. Whether the worker reads a JSON
   request body from the raw bytes after the message. See
   [JSON as the raw body](#json-as-the-raw-body-raw_json-and-body_json).
@@ -228,6 +231,44 @@ request's calls when the request is cancelled or answered.
 Unsworn sets `UNSWORN_CALLS=1` for workers when it answers `call`. Under
 an older Unsworn the variable isn't set and a `call` would be ignored, so
 SDKs fail the call themselves.
+
+### Asking for a request to a service: `fetch` and `fetched`
+
+A handler reaches an [outbound service](outbound.md) through Unsworn,
+which adds the service's credential. The worker sends `fetch`, with the
+request's body as raw bytes after the message:
+
+```json
+{"type":"fetch","id":"f-3","request":"r-81","service":"stripe","method":"POST","path":"/v1/charges?expand=customer","headers":{"content-type":"application/json"},"body_len":15}
+```
+
+- `id`: chosen by the worker, unique among its fetches in flight.
+- `request`: the `id` of the request the fetch is made for, which must be
+  in flight on this worker.
+- `service`: the name of an `[outbound.<name>]`.
+- `method`: default `GET`.
+- `path`: the path and query, which go after the service's URL. Starts
+  with `/`.
+- `headers`: optional. Unsworn drops the ones that belong to a connection
+  and any the service sets itself.
+
+Unsworn answers with `fetched`, and the response's body as raw bytes:
+
+```json
+{"type":"fetched","id":"f-3","status":200,"headers":{"content-type":"application/json"},"body_len":482}
+{"type":"fetched","id":"f-4","status":403,"error":"[outbound.stripe] doesn't allow DELETE (it allows GET, POST)"}
+```
+
+- `status`: the service's status. With `error`, the one for what went
+  wrong (see [`outbound.md`](outbound.md#fetching)).
+- `headers`: the response's, with lowercase names. A header sent more
+  than once has its values joined with `, `.
+- `error`: set when the request wasn't made or got no answer.
+
+As with `call`, a fetch ends without a `fetched` when the request it was
+made for ends first. Unsworn sets `UNSWORN_FETCH=1` for workers when it
+answers `fetch`, and a worker whose handlers can use it says `fetch: true`
+in `ready`.
 
 ### `cancel` (Unsworn → worker)
 

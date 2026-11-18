@@ -115,6 +115,55 @@ export class CallError extends Error {
   }
 }
 
+/**
+ * The services `ctx.fetch` can reach: each `[outbound.<name>]` in the
+ * config. `unsworn gen ts` fills this in, so a name that isn't one is a
+ * compile error.
+ */
+// biome-ignore lint/suspicious/noEmptyInterface: filled in by generated code
+export interface Services {}
+
+type ServiceName = keyof Services extends never ? string : keyof Services;
+
+/** A request for `ctx.fetch`. */
+export interface FetchInit {
+  /** Default: `GET`, or `POST` with a `json` or `body`. */
+  method?: string;
+  headers?: Record<string, string>;
+  /** Sent as the JSON body, with `content-type: application/json`. */
+  json?: unknown;
+  /** A text or raw body. */
+  body?: string | Uint8Array;
+}
+
+/** A service's answer to `ctx.fetch`. */
+export interface Fetched {
+  status: number;
+  /** Whether `status` is 200 to 299. */
+  ok: boolean;
+  /** Response headers, with lowercase names. */
+  headers: Record<string, string>;
+  body: Uint8Array;
+  text(): string;
+  json<T = unknown>(): T;
+}
+
+/** `ctx.fetch` couldn't make the request, or got no answer. */
+export class FetchError extends Error {
+  /**
+   * `404` for no such service, `403` for a method or path the config
+   * doesn't allow, `502` for a service that couldn't be reached, `504`
+   * for one that took too long.
+   */
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "FetchError";
+    this.status = status;
+  }
+}
+
 /** Who called a function, in the function's `ctx.caller`. */
 export interface Caller {
   /** The function's name. */
@@ -140,6 +189,15 @@ export interface Context {
    * function answers `400` or above, or can't be called.
    */
   call<K extends FunctionName>(name: K, input?: Input<K>): Promise<Output<K>>;
+  /**
+   * Sends a request to an outbound service: one the config declares under
+   * `[outbound.<name>]`. Unsworn makes the request and adds the service's
+   * own headers, such as its API key, so this handler never holds them.
+   * `path` goes after the service's URL and may carry a query. Resolves
+   * with the service's answer whatever its status, and throws a
+   * `FetchError` when the request couldn't be made or got no answer.
+   */
+  fetch(service: ServiceName, path: string, init?: FetchInit): Promise<Fetched>;
   [key: string]: unknown;
 }
 

@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	unsworn.Serve(echo, text, binary, status, stream, fail, slow, crash, allow, deny, noisy, log, upload, content, mcp, relay)
+	unsworn.Serve(echo, text, binary, status, stream, fail, slow, crash, allow, deny, noisy, log, upload, content, mcp, relay, outbound)
 }
 
 func echo(req *unsworn.Request) (unsworn.Reply, error) {
@@ -132,6 +132,22 @@ func relay(req *unsworn.Request) (unsworn.Reply, error) {
 		return unsworn.Reply{}, err
 	}
 	return unsworn.JSON(map[string]any{"answer": answer}), nil
+}
+
+func outbound(req *unsworn.Request) (unsworn.Reply, error) {
+	answer, err := req.Fetch("conformance", req.QueryValue("path"), &unsworn.Outbound{
+		Method:  "POST",
+		Headers: map[string]string{"x-from": "handler"},
+		Body:    req.Body,
+	})
+	var failed *unsworn.FetchError
+	if errors.As(err, &failed) {
+		return unsworn.JSON(map[string]any{"failed": failed.Status}), nil
+	}
+	if err != nil {
+		return unsworn.Reply{}, err
+	}
+	return unsworn.Bytes(answer.Body).WithHeader("x-status", fmt.Sprint(answer.Status)), nil
 }
 
 func mcp(req *unsworn.Request) (unsworn.Reply, error) {

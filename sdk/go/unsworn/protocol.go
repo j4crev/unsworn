@@ -39,6 +39,17 @@ type inMessage struct {
 	Error  string `json:"error"`
 }
 
+type fetchMessage struct {
+	Type    string            `json:"type"`
+	ID      string            `json:"id"`
+	Request string            `json:"request"`
+	Service string            `json:"service"`
+	Method  string            `json:"method"`
+	Path    string            `json:"path"`
+	Headers map[string]string `json:"headers,omitempty"`
+	BodyLen int               `json:"body_len,omitempty"`
+}
+
 type callMessage struct {
 	Type     string          `json:"type"`
 	ID       string          `json:"id"`
@@ -55,6 +66,7 @@ type readyMessage struct {
 	StreamBody  bool   `json:"stream_body"`
 	RawJSON     bool   `json:"raw_json,omitempty"`
 	Calls       bool   `json:"calls,omitempty"`
+	Fetch       bool   `json:"fetch,omitempty"`
 	SDK         string `json:"sdk"`
 }
 

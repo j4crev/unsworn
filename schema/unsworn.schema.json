@@ -951,6 +951,70 @@
         }
       ]
     },
+    "RawOutbound": {
+      "additionalProperties": false,
+      "description": "`[outbound.<name>]`: a service handlers reach with `ctx.fetch(name, ...)`.\nUnsworn makes the request and adds `headers`, so a handler never holds\nthe service's credential.",
+      "properties": {
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Headers added to every request, replacing any a handler sets by the\nsame name: `{ Authorization = \"Bearer {env.STRIPE_KEY}\" }`. The\nvariables read here aren't passed to workers.",
+          "type": "object"
+        },
+        "max_response": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Size"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The largest response body. Default: \"10MB\"."
+        },
+        "methods": {
+          "description": "Methods a handler may use. Default: any.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "paths": {
+          "description": "Paths a handler may ask for, as route patterns such as\n\"/v1/charges/{id}\" or \"/v1/customers/{*rest}\". Default: any.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The longest a request may take. Default: `[server].timeout`."
+        },
+        "url": {
+          "description": "Where the service is, such as \"https://api.stripe.com\". A handler's\npath goes after it. May use `{env.NAME}`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
     "RawParam": {
       "additionalProperties": false,
       "description": "One inline parameter rule: `{ type = \"integer\", min = 1 }`.",
@@ -2061,6 +2125,13 @@
           "type": "null"
         }
       ]
+    },
+    "outbound": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RawOutbound"
+      },
+      "description": "Services Unsworn calls for handlers, adding each one's credential.",
+      "type": "object"
     },
     "policies": {
       "additionalProperties": {

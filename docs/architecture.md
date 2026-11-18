@@ -222,6 +222,16 @@ deadline. The answer goes back as a `result`. Input and output schemas are
 checked by Unsworn on the way. See [`functions.md`](functions.md) and
 [`protocol.md`](protocol.md#calling-a-function-call-and-result).
 
+### Requests to outbound services
+
+A handler can ask Unsworn to make an HTTP request to a service declared
+under `[outbound.<name>]`, with a `fetch` message. `Pools` checks the
+method and path against the service's lists, adds the service's headers
+(its credential) and sends the request with the server's HTTP client. The
+answer goes back as `fetched`. The credential stays in Unsworn's process,
+and the variable it's read from is kept out of workers' environments. See
+[`outbound.md`](outbound.md).
+
 ## Protocol tiers
 
 | Tier | Transport | Encoding | SDK required | Purpose |

@@ -89,6 +89,59 @@ type Request struct {
 	w   *worker
 }
 
+// Outbound is a request for [Request.Fetch]. The zero value is a GET.
+type Outbound struct {
+	// Method defaults to GET, or POST with a JSON or Body.
+	Method  string
+	Headers map[string]string
+	// JSON is sent as the JSON body, with content-type application/json.
+	JSON any
+	// Body is a raw body, when JSON is nil.
+	Body []byte
+}
+
+// Fetched is a service's answer to [Request.Fetch].
+type Fetched struct {
+	Status int
+	// Headers has lowercase names.
+	Headers map[string]string
+	Body    []byte
+}
+
+// OK reports whether the status is 200 to 299.
+func (f *Fetched) OK() bool { return f.Status >= 200 && f.Status < 300 }
+
+// Bind decodes the JSON body into v.
+func (f *Fetched) Bind(v any) error { return json.Unmarshal(f.Body, v) }
+
+// FetchError is what [Request.Fetch] returns when the request couldn't be
+// made or got no answer.
+type FetchError struct {
+	// Status is 404 for no such service, 403 for a method or path the
+	// config doesn't allow, 502 for a service that couldn't be reached and
+	// 504 for one that took too long.
+	Status  int
+	Message string
+}
+
+func (e *FetchError) Error() string { return "unsworn: " + e.Message }
+
+// Fetch sends a request to an outbound service: one the config declares
+// under [outbound.<name>]. Unsworn makes the request and adds the service's
+// own headers, such as its API key, so this handler never holds them. path
+// goes after the service's URL and may carry a query; o may be nil for a
+// plain GET.
+//
+// It returns the service's answer whatever its status, a [*FetchError] when
+// the request couldn't be made or got no answer, and the context's error
+// when this request ends first.
+func (r *Request) Fetch(service, path string, o *Outbound) (*Fetched, error) {
+	if r.w == nil {
+		return nil, &FetchError{Status: 501, Message: "Fetch works in a handler that Unsworn is running"}
+	}
+	return r.w.fetch(r, service, path, o)
+}
+
 // CallError is what [Request.Call] returns when a function answers with an
 // error status, or can't be called.
 type CallError struct {

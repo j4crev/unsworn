@@ -39,6 +39,34 @@ pub struct RawConfig {
     /// them.
     #[serde(default, rename = "function")]
     pub function: Vec<RawFunction>,
+    /// Services Unsworn calls for handlers, adding each one's credential.
+    #[serde(default)]
+    pub outbound: BTreeMap<String, RawOutbound>,
+}
+
+/// `[outbound.<name>]`: a service handlers reach with `ctx.fetch(name, ...)`.
+/// Unsworn makes the request and adds `headers`, so a handler never holds
+/// the service's credential.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawOutbound {
+    /// Where the service is, such as "https://api.stripe.com". A handler's
+    /// path goes after it. May use `{env.NAME}`.
+    pub url: String,
+    /// Headers added to every request, replacing any a handler sets by the
+    /// same name: `{ Authorization = "Bearer {env.STRIPE_KEY}" }`. The
+    /// variables read here aren't passed to workers.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// Methods a handler may use. Default: any.
+    pub methods: Option<Vec<String>>,
+    /// Paths a handler may ask for, as route patterns such as
+    /// "/v1/charges/{id}" or "/v1/customers/{*rest}". Default: any.
+    pub paths: Option<Vec<String>>,
+    /// The longest a request may take. Default: `[server].timeout`.
+    pub timeout: Option<ConfigDuration>,
+    /// The largest response body. Default: "10MB".
+    pub max_response: Option<ConfigSize>,
 }
 
 /// A `[[function]]`: a handler other handlers call with `ctx.call`.

@@ -67,6 +67,15 @@ type worker struct {
 	// calls holds where the answer to each call to a function goes.
 	calls    map[string]chan *inMessage
 	nextCall int
+	// canFetch is set under an Unsworn that answers `fetch` messages.
+	canFetch bool
+	// fetches holds where each outbound service's answer goes.
+	fetches map[string]chan fetchAnswer
+}
+
+type fetchAnswer struct {
+	m    *inMessage
+	body []byte
 }
 
 type call struct {
@@ -93,6 +102,8 @@ func run(c codec, out io.Writer) error {
 		canCall:  os.Getenv("UNSWORN_CALLS") == "1",
 		inFlight: map[string]*call{},
 		calls:    map[string]chan *inMessage{},
+		canFetch: os.Getenv("UNSWORN_FETCH") == "1",
+		fetches:  map[string]chan fetchAnswer{},
 	}
 	maxInFlight := 64
 	if n, err := strconv.Atoi(os.Getenv("UNSWORN_MAX_IN_FLIGHT")); err == nil && n > 0 {
@@ -106,6 +117,7 @@ func run(c codec, out io.Writer) error {
 		StreamBody:  true,
 		RawJSON:     w.rawJSON,
 		Calls:       w.canCall,
+		Fetch:       w.canFetch,
 		SDK:         "unsworn-go/" + Version,
 	}, nil); err != nil {
 		return err
@@ -150,6 +162,14 @@ func run(c codec, out io.Writer) error {
 			w.mu.Unlock()
 			if answer != nil {
 				answer <- m
+			}
+		case "fetched":
+			w.mu.Lock()
+			answer := w.fetches[m.ID]
+			delete(w.fetches, m.ID)
+			w.mu.Unlock()
+			if answer != nil {
+				answer <- fetchAnswer{m: m, body: body}
 			}
 		}
 	}
@@ -203,6 +223,68 @@ func (w *worker) callFunction(req *Request, name string, input any) (json.RawMes
 		// Unsworn drops a request's calls when the request ends.
 		w.mu.Lock()
 		delete(w.calls, id)
+		w.mu.Unlock()
+		return nil, req.Context().Err()
+	}
+}
+
+// fetch asks Unsworn for a request to an outbound service, and waits for
+// the answer or for the handler's request to end.
+func (w *worker) fetch(req *Request, service, path string, o *Outbound) (*Fetched, error) {
+	if !w.canFetch {
+		return nil, &FetchError{Status: 501, Message: "this Unsworn doesn't make requests for handlers: update it"}
+	}
+	if o == nil {
+		o = &Outbound{}
+	}
+	headers := make(map[string]string, len(o.Headers)+1)
+	for k, v := range o.Headers {
+		headers[strings.ToLower(k)] = v
+	}
+	body := o.Body
+	if o.JSON != nil {
+		data, err := marshal(o.JSON)
+		if err != nil {
+			return nil, fmt.Errorf("unsworn: can't encode the body for %q: %w", service, err)
+		}
+		body = data
+		if _, ok := headers["content-type"]; !ok {
+			headers["content-type"] = "application/json"
+		}
+	}
+	method := strings.ToUpper(o.Method)
+	if method == "" {
+		method = "GET"
+		if len(body) > 0 {
+			method = "POST"
+		}
+	}
+	answer := make(chan fetchAnswer, 1)
+	w.mu.Lock()
+	w.nextCall++
+	id := "f-" + strconv.Itoa(w.nextCall)
+	w.fetches[id] = answer
+	w.mu.Unlock()
+	message := fetchMessage{
+		Type: "fetch", ID: id, Request: req.ID, Service: service,
+		Method: method, Path: path, Headers: headers, BodyLen: len(body),
+	}
+	if err := w.send(message, body); err != nil {
+		return nil, err
+	}
+	select {
+	case a := <-answer:
+		if a.m.Error != "" {
+			return nil, &FetchError{Status: a.m.Status, Message: a.m.Error}
+		}
+		headers := a.m.Headers
+		if headers == nil {
+			headers = map[string]string{}
+		}
+		return &Fetched{Status: a.m.Status, Headers: headers, Body: a.body}, nil
+	case <-req.Context().Done():
+		w.mu.Lock()
+		delete(w.fetches, id)
 		w.mu.Unlock()
 		return nil, req.Context().Err()
 	}

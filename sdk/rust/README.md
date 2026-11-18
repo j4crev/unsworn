@@ -185,6 +185,21 @@ Unsworn checks the input against the function's schema, and the function
 gets this request's context and what is left of its time. The answer is
 decoded into the type you ask for.
 
+## Reaching other services
+
+`req.fetch` sends a request to an [outbound service](../../docs/outbound.md),
+declared as `[outbound.<name>]` in the config. Unsworn makes the request
+and adds the service's credential, so the handler never holds it:
+
+```rust
+use unsworn_sdk::Outbound;
+
+let answer = req
+    .fetch("stripe", Outbound::post("/v1/charges").json(json!({ "amount": 1200 }))?)
+    .await?;                       // a FetchError: not allowed, or no answer
+let charge: Charge = answer.json()?;
+```
+
 ## Logging
 
 The worker sends `tracing` events, and `log` records, to Unsworn, tagged with

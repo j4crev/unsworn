@@ -71,6 +71,21 @@ Unsworn checks the input against the function's schema, and the function
 gets this request's context and what is left of its time. With
 `unsworn gen ts`, the name, the input and the result are typed.
 
+## Reaching other services
+
+`ctx.fetch` sends a request to an [outbound service](../../docs/outbound.md),
+declared as `[outbound.<name>]` in the config. Unsworn makes the request
+and adds the service's credential, so the handler never holds it:
+
+```ts
+const answer = await ctx.fetch("stripe", "/v1/charges", { json: { amount: 1200, currency: "usd" } });
+if (!answer.ok) return { status: 502, json: { error: "the charge failed" } };
+const charge = answer.json<{ id: string }>();
+```
+
+It resolves with the service's answer whatever its status, and throws a
+`FetchError` when the request isn't allowed or got no answer.
+
 ## Replies
 
 A handler returns an object or a web `Response`:

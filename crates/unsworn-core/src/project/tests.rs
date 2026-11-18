@@ -1509,3 +1509,94 @@ fn openapi_tool_errors() {
         );
     }
 }
+
+#[test]
+fn an_outbound_service_allows_only_its_methods_and_paths() {
+    let cfg = r#"
+[outbound.billing]
+url = "https://billing.example/api/"
+headers = { Authorization = "Bearer k" }
+methods = ["get", "POST"]
+paths = ["/charges", "/charges/{id}", "/public/{*rest}"]
+"#;
+    let p = project(&[("unsworn.toml", cfg)]);
+    let s = &p.outbound["billing"];
+    assert_eq!(s.url, "https://billing.example/api");
+    assert_eq!(
+        s.headers,
+        [("authorization".to_string(), "Bearer k".to_string())]
+    );
+    assert!(s.allows("GET", "/charges").is_ok());
+    assert!(s.allows("POST", "/charges/42?expand=x").is_ok());
+    assert!(s.allows("GET", "/public/a/b/c").is_ok());
+    assert!(
+        s.allows("DELETE", "/charges")
+            .unwrap_err()
+            .contains("doesn't allow DELETE")
+    );
+    assert!(
+        s.allows("GET", "/refunds")
+            .unwrap_err()
+            .contains("doesn't allow the path")
+    );
+    assert!(s.allows("GET", "/charges/42/refund").is_err());
+    // A path can't step out of an allowed one, or leave the service.
+    for path in [
+        "/public/../refunds",
+        "/public/%2e%2e/refunds",
+        "/public/%2E./refunds",
+        "/public/./x",
+        "/public/a\\b",
+        "/public/x#y",
+        "charges",
+        "",
+    ] {
+        assert!(s.allows("GET", path).is_err(), "{path}");
+    }
+    // Dots inside a name are fine.
+    assert!(s.allows("GET", "/public/v1.2/file..txt").is_ok());
+
+    // No lists: anything, but still nothing with a `..` in it.
+    let p = project(&[(
+        "unsworn.toml",
+        "[outbound.open]\nurl = \"http://127.0.0.1:9\"\n",
+    )]);
+    let s = &p.outbound["open"];
+    assert!(s.allows("PATCH", "/anything/at/all").is_ok());
+    assert!(s.allows("GET", "/a/../b").is_err());
+}
+
+#[test]
+fn outbound_services_are_checked() {
+    let e = errors(&[(
+        "unsworn.toml",
+        "[outbound.a]\nurl = \"ftp://x\"\n\n[outbound.b]\nurl = \"https://x/y?z=1\"\nheaders = { \"bad name\" = \"v\" }\npaths = [\"nope\"]\n",
+    )]);
+    assert!(
+        e.iter()
+            .any(|m| m.contains("[outbound.a].url") && m.contains("isn't an http")),
+        "{e:#?}"
+    );
+    assert!(e.iter().any(|m| m.contains("can't have a query")), "{e:#?}");
+    assert!(
+        e.iter().any(|m| m.contains("not a valid header name")),
+        "{e:#?}"
+    );
+    assert!(
+        e.iter().any(|m| m.contains("must start with `/`")),
+        "{e:#?}"
+    );
+}
+
+#[test]
+fn an_outbound_services_header_variables_are_kept_from_workers() {
+    let mut host = MemHost::with(&[(
+        "unsworn.toml",
+        "[outbound.s]\nurl = \"{env.S_URL}\"\nheaders = { Authorization = \"Bearer {env.S_KEY}\" }\n",
+    )]);
+    host.env.insert("S_URL".into(), "https://s.example".into());
+    host.env.insert("S_KEY".into(), "k".into());
+    let p = compile(&host, "unsworn.toml").project.unwrap();
+    assert_eq!(p.secret_env, ["S_KEY"]);
+    assert_eq!(p.outbound["s"].url, "https://s.example");
+}
