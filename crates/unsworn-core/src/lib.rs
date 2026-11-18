@@ -27,6 +27,7 @@ pub mod routefiles;
 pub mod rules;
 pub mod store;
 pub mod targets;
+pub mod trace;
 pub mod units;
 pub mod validate;
 

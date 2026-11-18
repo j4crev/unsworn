@@ -174,8 +174,11 @@ on the way out. In the order planned:
 - **Automatic TLS certificates (ACME).** Until then, run behind a platform
   load balancer, Caddy or Cloudflare.
 - **HTTP/3.**
-- **OpenTelemetry** traces and metrics, alongside the Prometheus endpoint,
-  with the trace carried through `ctx.call` and `ctx.fetch`.
+- **OpenTelemetry** traces and metrics, alongside the Prometheus endpoint.
+  A request's `traceparent` is already carried through `ctx.call` and
+  `ctx.fetch` ([`tracing.md`](tracing.md)). Still to do: spans for
+  Unsworn's own work, an exporter, and a way for a handler to give
+  `ctx.call` its own span as the parent.
 - **More MCP features:** resources and prompts, elicitation, progress and
   change notifications, tasks. See [`mcp.md`](mcp.md#later).
 

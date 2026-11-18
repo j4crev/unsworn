@@ -54,12 +54,16 @@ With an outbound service:
    `Connection` and the like), and any the service sets itself.
 3. **Adds the service's `headers`,** over anything the handler sent by
    the same name.
-4. **Sends it,** within the service's `timeout` and what is left of the
+4. **Adds the request's trace.** When the request the handler is serving
+   came with a `traceparent` header, the service gets it, and its
+   `tracestate`, unless the handler or the service's `headers` set one.
+   See [`tracing.md`](tracing.md).
+5. **Sends it,** within the service's `timeout` and what is left of the
    handler's own request. Redirects aren't followed: the answer goes back
    to the handler as it is.
-5. **Gives the handler the answer:** status, headers and body, up to
+6. **Gives the handler the answer:** status, headers and body, up to
    `max_response`.
-6. **Logs it:** `outbound service=stripe method=POST path=/v1/charges
+7. **Logs it:** `outbound service=stripe method=POST path=/v1/charges
    status=200 ms=212.4 id=<request id>`. The query string is left out,
    since that's where tokens end up.
 
