@@ -49,6 +49,8 @@ Cloudflare Workers first (`unsworn build --target cloudflare`). Work needed:
 Still open for the edge:
 
 - **WASM handlers** called directly, rather than through a JS wrapper.
+  Not planned for now; see item 5 under
+  [Beyond the front door](#beyond-the-front-door).
 - **More isolate platforms,** such as Deno Deploy and Fastly, each with its
   own bridge.
 
@@ -103,9 +105,17 @@ on the way out. In the order planned:
    - ~~**Typed request models (`unsworn gen`).**~~ Done: types for
      TypeScript, Python, Go and Rust handlers from each route's params,
      query, body and response schemas, kept current by `unsworn dev`. See
-     [`types.md`](types.md). Still open: a typed client for callers.
+     [`types.md`](types.md).
+   - **A typed client for callers,** generated from the same schemas, so
+     the code that calls an API is checked against it as its handlers are.
    - **A compiled plan the core runs,** so edge and serverless builds
-     ship the plan instead of the config files and the parsers for them.
+     ship the plan instead of the config files and the parsers for them
+     (TOML, YAML, OpenAPI), which should make the WebAssembly core
+     smaller and quicker to start. `unsworn.plan` is text for people
+     today; the core still reads the config itself. Compiling each
+     route's schema, about 5 ms a route at startup, only goes away if the
+     plan holds the validators too, which means a validator format of
+     Unsworn's own in place of the `jsonschema` crate.
 2. **A cheaper call into a handler.**
    - ~~**Worker pools that start small.**~~ Done: a runtime starts one
      worker and adds more when calls wait or its workers are busy and
@@ -113,18 +123,29 @@ on the way out. In the order planned:
    - **A worker connection per server thread,** so a call doesn't cross
      threads on its way to a worker and back. To be tried on its own
      first: the last attempt at one runtime per core made handler calls
-     slower, because worker I/O stayed on another thread.
+     slower, because worker I/O stayed on another thread. A shared-memory
+     ring in place of the socket is a further step and less certain:
+     kernel sends are about a third of a call's cost, and Node would need
+     a native addon to use one.
 3. **Calls between handlers and to other services.**
    - ~~**`ctx.call` from one handler to another.**~~ Done: a
      `[[function]]` is a handler any other handler calls by name, in any
      language, over the worker's own connection. See
-     [`functions.md`](functions.md). Servers and containers only so far.
+     [`functions.md`](functions.md).
    - ~~**Declared outbound services.**~~ Done: `ctx.fetch` reaches a
      service under `[outbound.<name>]`, and Unsworn adds its credential,
      so the handler never holds it. See [`outbound.md`](outbound.md).
-     Still open: keeping a handler from opening its own connections
-     (Landlock, a network namespace), which the platform has to do for
-     now, and streamed bodies.
+     Still open: streamed bodies.
+   - **Functions, outbound services and shadows on edge and serverless
+     targets.** All three work on servers and containers only. Elsewhere
+     `ctx.call` answers `501`, outbound services aren't offered, a
+     `shadow` is ignored, and `unsworn check --target` reports each.
+   - **Limits on what a worker can reach.** An outbound service keeps the
+     credential from a handler, but nothing stops the handler opening its
+     own connections, and a worker has whatever memory and CPU the
+     machine gives it. To add, for each runtime: the hosts it may connect
+     to (Landlock or a network namespace) and cgroup limits. The platform
+     has to do this for now.
 4. ~~**Choosing a language by measurement.**~~ Done: `unsworn top` shows
    each route's latency and its handler's share of time and CPU on a
    running server ([`top.md`](top.md)), and a route's `shadow` handler
@@ -152,7 +173,8 @@ on the way out. In the order planned:
 - **Automatic TLS certificates (ACME).** Until then, run behind a platform
   load balancer, Caddy or Cloudflare.
 - **HTTP/3.**
-- **OpenTelemetry** traces and metrics, alongside the Prometheus endpoint.
+- **OpenTelemetry** traces and metrics, alongside the Prometheus endpoint,
+  with the trace carried through `ctx.call` and `ctx.fetch`.
 - **More MCP features:** resources and prompts, elicitation, progress and
   change notifications, tasks. See [`mcp.md`](mcp.md#later).
 
@@ -164,3 +186,9 @@ Tracked where they apply:
   environment-specific overrides.
 - [Protocol](protocol.md#open-questions): handler-owned WebSockets,
   progress messages, elicitation.
+
+And one about how Unsworn is described: on a server, handlers run in
+other processes and can't change the rules. On edge and serverless
+targets they share an isolate or a process with the core, so that holds
+there only as far as the platform makes it. The README and the target
+pages should say which is which.
