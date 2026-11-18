@@ -110,7 +110,7 @@ pub async fn get_user(req: Request) -> Result {
 
 The Rust file needs `serde` (with its `derive` feature) and `serde_json`
 in your `Cargo.toml`, and `mod unsworn_gen;` in your `main.rs`. The Python
-types need an SDK newer than 0.3.2, where `Request` takes type arguments.
+types need SDK 0.4.0 or newer, where `Request` takes type arguments.
 
 ### Names
 
