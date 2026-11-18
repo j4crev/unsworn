@@ -117,9 +117,9 @@ func (f *Fetched) Bind(v any) error { return json.Unmarshal(f.Body, v) }
 // FetchError is what [Request.Fetch] returns when the request couldn't be
 // made or got no answer.
 type FetchError struct {
-	// Status is 404 for no such service, 403 for a method or path the
-	// config doesn't allow, 502 for a service that couldn't be reached and
-	// 504 for one that took too long.
+	// Status is 404 for a name with no [outbound.<name>], 403 for a method
+	// or path the config doesn't allow, 502 for a service that couldn't be
+	// reached and 504 for one that took too long.
 	Status  int
 	Message string
 }

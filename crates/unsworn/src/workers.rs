@@ -654,14 +654,16 @@ impl Pools {
             }))
         };
         let Some(service) = self.outbound.get(&fetch.service) else {
+            // Name the table to add, since a handler's `fetch` doesn't say
+            // where its services come from.
             let known: Vec<&str> = self.outbound.keys().map(String::as_str).collect();
+            let declared = match known.as_slice() {
+                [] => "it declares none".to_string(),
+                _ => format!("it declares: {}", known.join(", ")),
+            };
             return fail(
                 404,
-                format!(
-                    "no outbound service named \"{}\" (there is: {})",
-                    fetch.service,
-                    known.join(", ")
-                ),
+                format!("no [outbound.{}] in the config ({declared})", fetch.service),
             );
         };
         let method = fetch.method.to_ascii_uppercase();

@@ -95,9 +95,9 @@ class CallError(Exception):
 class FetchError(Exception):
     """``ctx.fetch`` couldn't make the request, or got no answer.
 
-    ``status`` is 404 for no such service, 403 for a method or path the
-    config doesn't allow, 502 for a service that couldn't be reached and
-    504 for one that took too long.
+    ``status`` is 404 for a name with no ``[outbound.<name>]``, 403 for a
+    method or path the config doesn't allow, 502 for a service that couldn't
+    be reached and 504 for one that took too long.
     """
 
     def __init__(self, status: int, message: str) -> None:

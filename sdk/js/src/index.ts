@@ -151,9 +151,9 @@ export interface Fetched {
 /** `ctx.fetch` couldn't make the request, or got no answer. */
 export class FetchError extends Error {
   /**
-   * `404` for no such service, `403` for a method or path the config
-   * doesn't allow, `502` for a service that couldn't be reached, `504`
-   * for one that took too long.
+   * `404` for a name with no `[outbound.<name>]`, `403` for a method or
+   * path the config doesn't allow, `502` for a service that couldn't be
+   * reached, `504` for one that took too long.
    */
   status: number;
 
