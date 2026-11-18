@@ -366,12 +366,16 @@ pub struct Route {
     pub validation: Validation,
     /// Layers below prefix entries: defaults, OpenAPI, folder policies.
     pub low: Layer,
-    /// Layers above prefix entries: the route's own policies and exact entries.
+    /// Layers above prefix entries: the route's own policies and exact
+    /// entries. For a catch-all route, prefix entries for some of its paths
+    /// merge above these in turn.
     pub high: Layer,
     /// The static layers in merge order, for `unsworn routes --policies`.
     pub layers: Vec<(String, Layer)>,
     pub param_names: Vec<String>,
     pub catch_all: Option<String>,
+    /// The path's segments.
+    segs: Vec<Seg>,
     pub op: Option<OpInfo>,
     pub shadow: Option<Shadow>,
 }
@@ -467,6 +471,20 @@ fn match_prefix(segs: &[Seg], path: &str) -> Option<Vec<String>> {
         }
     }
     (parts.len() == segs.len()).then_some(values)
+}
+
+/// Whether a prefix entry covers every path a catch-all route serves, both
+/// given as segments ending in a catch-all. `/{*rest}` and `/{team}/{*rest}`
+/// cover the route `/app/{*rest}`; `/app/admin/{*rest}` and, for the route
+/// `/{team}/{*rest}`, `/admin/{*rest}` cover only some of its paths.
+fn covers(prefix: &[Seg], route: &[Seg]) -> bool {
+    let fixed = prefix.len().saturating_sub(1);
+    fixed < route.len()
+        && prefix[..fixed].iter().zip(route).all(|pair| match pair {
+            (Seg::Param(_), Seg::Lit(_) | Seg::Param(_)) => true,
+            (Seg::Lit(a), Seg::Lit(b)) => a == b,
+            _ => false,
+        })
 }
 
 /// A policy-only entry whose path ends in `{*rest}`.
@@ -872,12 +890,40 @@ impl Project {
         out
     }
 
-    /// The prefix entries that apply to a route's own pattern, for display.
+    /// The prefix entries that apply to every path of a route, for display.
     pub fn prefixes_for(&self, route: &Route) -> Vec<&PrefixEntry> {
         let probe = route.path.replace("{*", "{");
         self.prefixes
             .iter()
-            .filter(|p| match_prefix(&p.segs, &probe).is_some())
+            .filter(|p| match route.catch_all {
+                Some(_) => covers(&p.segs, &route.segs),
+                None => match_prefix(&p.segs, &probe).is_some(),
+            })
+            .collect()
+    }
+
+    /// The prefix entries for some of a catch-all route's paths, for
+    /// display. Their policies win over the route's own on those paths.
+    pub fn prefixes_inside(&self, route: &Route) -> Vec<&PrefixEntry> {
+        if route.catch_all.is_none() {
+            return Vec::new();
+        }
+        let probe = |p: &PrefixEntry| p.path.replace("{*", "{");
+        // A narrower catch-all route serves the paths of the entries it
+        // covers, so those belong to it.
+        let elsewhere = |p: &PrefixEntry| {
+            self.routes.iter().any(|r| {
+                r.id != route.id
+                    && r.catch_all.is_some()
+                    && covers(&r.segs, &p.segs)
+                    && !covers(&r.segs, &route.segs)
+            })
+        };
+        self.prefixes
+            .iter()
+            .filter(|p| !covers(&p.segs, &route.segs))
+            .filter(|p| match_prefix(&route.segs, &probe(p)).is_some())
+            .filter(|p| !elsewhere(p))
             .collect()
     }
 
@@ -946,14 +992,22 @@ fn merged_layer(
     method: &str,
     path: &str,
 ) -> Layer {
+    // A prefix entry for some of a catch-all's paths is more specific than
+    // the catch-all, so it merges after the route's own policies.
+    let inside = |p: &PrefixEntry| route.catch_all.is_some() && !covers(&p.segs, &route.segs);
     let mut layer = route.low.clone();
     for p in prefixes {
-        if p.matches(method, path) {
+        if !inside(p) && p.matches(method, path) {
             layer.merge_from(&p.layer);
         }
     }
     layer.merge_from(&route.high);
     if route.catch_all.is_some() {
+        for p in prefixes {
+            if inside(p) && p.matches(method, path) {
+                layer.merge_from(&p.layer);
+            }
+        }
         for e in path_entries {
             if e.matches_exact(method, path) {
                 layer.merge_from(&e.layer);
@@ -3767,6 +3821,7 @@ impl<'h> Compiler<'h> {
             layers,
             param_names,
             catch_all,
+            segs,
             op: d.op,
             shadow,
         })

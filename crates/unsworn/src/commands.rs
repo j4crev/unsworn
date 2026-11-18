@@ -302,6 +302,13 @@ pub fn routes(root: &Path, config: &str, policies: bool, as_json: bool) -> Resul
                     println!("    from {} ({}): {}", p.source, p.path, summary.join(", "));
                 }
             }
+            // Narrower than the catch-all, so these win on their paths.
+            for p in project.prefixes_inside(route) {
+                let summary = layer_summary(&p.layer);
+                if !summary.is_empty() {
+                    println!("    at {} ({}): {}", p.path, p.source, summary.join(", "));
+                }
+            }
         }
     }
     if !project.prefixes.is_empty() && !policies {

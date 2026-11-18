@@ -222,6 +222,157 @@ auth = "none"
 }
 
 #[test]
+fn an_entry_for_part_of_a_catch_all_wins_over_the_catch_alls_own_policies() {
+    let cfg = format!(
+        r#"{RUNTIMES}
+[auth.jwt]
+type = "jwt"
+secret = "s"
+
+[auth.staff]
+type = "jwt"
+secret = "t"
+
+[[route]]
+path = "/{{*rest}}"
+proxy = "http://127.0.0.1:3000"
+auth = "jwt"
+timeout = "5s"
+
+[[route]]
+path = "/assets/{{*rest}}"
+auth = "none"
+
+[[route]]
+path = "/assets/private/{{*rest}}"
+auth = "staff"
+
+[[route]]
+path = "/api/{{*rest}}"
+method = "GET"
+rate_limit = {{ requests = 10, per = "1m" }}
+
+[[route]]
+path = "/assets/private/readme"
+auth = "none"
+"#
+    );
+    let p = project(&[("unsworn.toml", &cfg)]);
+    let eff = |method: &str, path: &str| p.effective(found(&p, method, path).route, method, path);
+    let scheme = |eff: &Effective| match &eff.auth {
+        AuthReq::AnyOf(alts) => alts[0].scheme.clone(),
+        AuthReq::Public => "none".to_string(),
+    };
+
+    // The catch-all's own policy, where no entry says otherwise.
+    assert_eq!(scheme(&eff("GET", "/")), "jwt");
+    assert_eq!(scheme(&eff("GET", "/account")), "jwt");
+    assert_eq!(scheme(&eff("GET", "/assetsx")), "jwt");
+
+    // The entry that opens part of it, for the prefix itself and all under it.
+    for path in ["/assets", "/assets/", "/assets/logo.png", "/assets/a/b/c"] {
+        let eff = eff("GET", path);
+        assert_eq!(scheme(&eff), "none", "{path}");
+        // What the entry doesn't set still comes from the catch-all.
+        assert_eq!(eff.timeout, Duration::from_secs(5), "{path}");
+    }
+
+    // A longer prefix wins over a shorter one, and an exact entry over both.
+    assert_eq!(scheme(&eff("GET", "/assets/private/keys")), "staff");
+    assert_eq!(scheme(&eff("GET", "/assets/private")), "staff");
+    assert_eq!(scheme(&eff("GET", "/assets/private/readme")), "none");
+
+    // An entry that sets something else leaves the catch-all's auth alone.
+    let api = eff("GET", "/api/users");
+    assert_eq!(scheme(&api), "jwt");
+    assert!(api.rate_limit.is_some());
+    assert!(eff("POST", "/api/users").rate_limit.is_none());
+
+    let catch_all = found(&p, "GET", "/account").route;
+    let paths = |entries: Vec<&PrefixEntry>| -> Vec<String> {
+        entries.iter().map(|e| e.path.clone()).collect()
+    };
+    assert!(p.prefixes_for(catch_all).is_empty());
+    assert_eq!(
+        paths(p.prefixes_inside(catch_all)),
+        ["/assets/{*rest}", "/api/{*rest}", "/assets/private/{*rest}"]
+    );
+}
+
+#[test]
+fn an_entry_that_covers_a_route_still_loses_to_the_routes_own_policies() {
+    let cfg = format!(
+        r#"{RUNTIMES}
+[auth.jwt]
+type = "jwt"
+secret = "s"
+
+[[route]]
+path = "/{{*rest}}"
+auth = "jwt"
+
+[[route]]
+path = "/{{team}}/{{*rest}}"
+rate_limit = {{ requests = 10, per = "1m" }}
+
+[[route]]
+path = "/docs/{{*rest}}"
+proxy = "http://127.0.0.1:3000"
+auth = "none"
+
+[[route]]
+path = "/docs/{{*rest}}"
+timeout = "5s"
+
+[[route]]
+path = "/docs/internal/{{*rest}}"
+auth = "jwt"
+
+[[route]]
+path = "/status/{{id}}"
+method = "GET"
+handler = "src/users.ts#status"
+auth = "none"
+
+[[route]]
+path = "/{{team}}/{{*rest}}"
+proxy = "http://127.0.0.1:3001"
+
+[[route]]
+path = "/admin/{{*rest}}"
+ip = {{ allow = ["10.0.0.0/8"] }}
+"#
+    );
+    let p = project(&[("unsworn.toml", &cfg), ("src/users.ts", "")]);
+    let eff = |path: &str| p.effective(found(&p, "GET", path).route, "GET", path);
+
+    // `/{*rest}` covers all of `/docs/{*rest}`, which opens itself.
+    let docs = eff("/docs/guide");
+    assert_eq!(docs.auth, AuthReq::Public);
+    assert!(docs.rate_limit.is_some());
+    assert_eq!(docs.timeout, Duration::from_secs(5));
+    // An entry for part of it closes that part again.
+    assert!(matches!(eff("/docs/internal/x").auth, AuthReq::AnyOf(_)));
+
+    // A route that isn't a catch-all keeps its own policies over a prefix.
+    assert_eq!(eff("/status/1").auth, AuthReq::Public);
+
+    // `/admin/{*rest}` is part of `/{team}/{*rest}`, though no longer.
+    let teams = found(&p, "GET", "/acme/x").route;
+    assert_eq!(teams.path, "/{team}/{*rest}");
+    let paths = |entries: Vec<&PrefixEntry>| -> Vec<String> {
+        entries.iter().map(|e| e.path.clone()).collect()
+    };
+    assert_eq!(
+        paths(p.prefixes_for(teams)),
+        ["/{*rest}", "/{team}/{*rest}"]
+    );
+    assert_eq!(paths(p.prefixes_inside(teams)), ["/admin/{*rest}"]);
+    assert!(eff("/admin/x").ip.is_some());
+    assert!(eff("/acme/x").ip.is_none());
+}
+
+#[test]
 fn exact_entries_overlay_and_must_match() {
     let cfg = format!(
         r#"{RUNTIMES}
