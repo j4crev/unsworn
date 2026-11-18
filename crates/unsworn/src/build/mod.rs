@@ -5,7 +5,8 @@
 //!
 //! What every target shares is here: compiling the project while noting the
 //! files it reads, checking it against the target, and writing the bundle
-//! the SDK's runtime loads. Each target's module writes its entry and the
+//! the SDK's runtime loads. The bundle holds its config documents as JSON,
+//! which is all the WebAssembly core reads (see `unsworn_core::bundle`). Each target's module writes its entry and the
 //! platform's own config.
 
 mod cloudflare;
@@ -20,9 +21,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Value, json};
+use unsworn_core::config::Format;
 use unsworn_core::policy::HandlerRef;
 use unsworn_core::project::{Action, Host};
-use unsworn_core::{Compiled, Project, compile, targets};
+use unsworn_core::{Compiled, Project, bundle, compile, targets};
 
 use crate::load::{self, FsHost, SKIP_DIRS};
 
@@ -48,6 +50,9 @@ fn normalize(path: &str) -> String {
 struct Recorder {
     fs: FsHost,
     files: RefCell<BTreeMap<String, Option<String>>>,
+    /// The files parsed as config documents, with the format of each. The
+    /// bundle gets these as JSON.
+    documents: RefCell<BTreeMap<String, Format>>,
     missing_env: RefCell<BTreeSet<String>>,
 }
 
@@ -84,6 +89,12 @@ impl Host for Recorder {
             files.entry(path).or_insert(None);
         }
         Ok(list)
+    }
+
+    fn format(&self, path: &str) -> Format {
+        let format = self.fs.format(path);
+        self.documents.borrow_mut().insert(normalize(path), format);
+        format
     }
 
     /// A variable that isn't set here reads as a placeholder URL, which
@@ -191,28 +202,46 @@ pub fn build(opts: BuildOptions) -> Result<(), String> {
 /// Compiles a project as it will load on `target`, where the platform
 /// supplies the environment: an `{env.NAME}` that isn't set here is noted,
 /// with how to set it there, and isn't an error. Also returns the files
-/// the compiler read and the variables that weren't set.
+/// the compiler read, as the bundle holds them, and the variables that
+/// weren't set.
+///
+/// A project that loads here and wouldn't from its bundle, or would with
+/// other rules, comes back with the reasons as errors and no project.
 fn compile_noting_env(
     root: &Path,
     config: &str,
-    target: &Target,
+    env_hint: Option<&str>,
 ) -> (Compiled, BTreeMap<String, Option<String>>, BTreeSet<String>) {
     let recorder = Recorder {
         fs: FsHost {
             root: root.to_path_buf(),
         },
         files: RefCell::default(),
+        documents: RefCell::default(),
         missing_env: RefCell::default(),
     };
-    let compiled = compile(&recorder, config);
+    let mut compiled = compile(&recorder, config);
     let missing_env = recorder.missing_env.take();
-    for name in &missing_env {
-        eprintln!(
-            "! {{env.{name}}} isn't set here; it's read at runtime, so {}",
-            target.env_hint.replace("{name}", name)
-        );
+    let mut files = recorder.files.take();
+    if compiled.project.is_some() {
+        match bundle::pack(&recorder.fs, config, files, &recorder.documents.take()) {
+            Ok(packed) => files = packed,
+            Err(errors) => {
+                files = BTreeMap::new();
+                compiled.project = None;
+                compiled.diagnostics.splice(0..0, errors);
+            }
+        }
     }
-    (compiled, recorder.files.take(), missing_env)
+    for name in &missing_env {
+        if let Some(hint) = env_hint {
+            eprintln!(
+                "! {{env.{name}}} isn't set here; it's read at runtime, so {}",
+                hint.replace("{name}", name)
+            );
+        }
+    }
+    (compiled, files, missing_env)
 }
 
 /// What `unsworn check --target` compiles for a target `unsworn build`
@@ -220,14 +249,35 @@ fn compile_noting_env(
 /// for any other target.
 pub fn compile_for(root: &Path, config: &str, target: &str) -> Option<Compiled> {
     let target = TARGETS.iter().find(|t| t.name == target)?;
-    Some(compile_noting_env(root, config, target).0)
+    Some(compile_noting_env(root, config, Some(target.env_hint)).0)
+}
+
+/// The files a bundle of this project holds, with the config's path, as
+/// JSON: `{"config": ..., "files": {...}}`. It's what [`build`] hands the
+/// SDK's runtime, without the handler modules or a platform around it, for
+/// tests that drive a JavaScript host directly.
+pub fn bundle_files(root: &Path, config: &str) -> Result<String, String> {
+    let (compiled, files, _) = compile_noting_env(root, config, None);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.is_error())
+        .cloned()
+        .collect();
+    if compiled.project.is_none() {
+        load::print_diagnostics(&errors);
+        return Err(format!("{} error(s)", errors.len()));
+    }
+    serde_json::to_string(&json!({ "config": normalize(config), "files": files }))
+        .map_err(|e| e.to_string())
 }
 
 /// Compiles the project, checks it for the target and empties the output
 /// directory.
 fn prepare(opts: &BuildOptions, target: &Target) -> Result<Prepared, String> {
     let root = &opts.root;
-    let (compiled, files, missing_env) = compile_noting_env(root, &opts.config, target);
+    let (compiled, files, missing_env) =
+        compile_noting_env(root, &opts.config, Some(target.env_hint));
     let mut errors = load::print_diagnostics(&compiled.diagnostics);
     let Some(project) = compiled.project else {
         return Err(format!("{errors} error(s)"));

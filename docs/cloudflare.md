@@ -34,14 +34,19 @@ Rebuild after changing the config, routes or the set of handler modules.
 Wrangler bundles the handler code itself, so `wrangler dev` picks up edits to
 handlers without a rebuild. `--out <dir>` writes somewhere else.
 
-The config files are bundled as written and loaded when the Worker starts,
-so `{env.NAME}` is read from the Worker's variables and secrets, not from
+The config files are bundled and loaded when the Worker starts, so
+`{env.NAME}` is read from the Worker's variables and secrets, not from
 your shell at build time. The build lists any it can't see:
 
 ```
 ! {env.JWT_SECRET} isn't set here; it's read at runtime, so set it with `wrangler secret put JWT_SECRET` or as a var
 ✓ built dist/cloudflare: 12 routes, 3 handler modules, 3 asset files
 ```
+
+The bundle holds them as JSON, whatever format you wrote them in. That
+changes nothing in TOML; in a YAML config, text has to be in quotes where
+YAML would also take a bare number. See
+[config in a bundle](config.md#in-a-bundle-config-is-json).
 
 ## Your `wrangler.jsonc`
 
@@ -137,7 +142,7 @@ within a second, `"open"` lets the request through and `"closed"` answers
 
 ## Size
 
-The core adds about 1.4 MB, gzipped, to the Worker. Cloudflare allows 3 MB
+The core adds about 1.2 MB, gzipped, to the Worker. Cloudflare allows 3 MB
 compressed on the free plan and 10 MB on paid plans, handlers and their
 dependencies included.
 

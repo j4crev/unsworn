@@ -37,6 +37,35 @@ src/
     → add [runtimes.<name>] with extensions = [".rb"], or change the handler
   ```
 
+### In a bundle, config is JSON
+
+`unsworn build` for an edge or serverless target puts the config in the
+bundle as JSON: the config file, each `_policies.toml`, schema files and
+the OpenAPI spec. Your files stay as you wrote them. It means the core
+that runs there carries no TOML or YAML parser, which makes it about a
+sixth smaller.
+
+One thing reads differently that way. Where a setting is text, YAML takes
+a number or `true` without quotes, and JSON doesn't:
+
+```yaml
+runtimes:
+  ts:
+    env:
+      PORT: 3000        # fine for `unsworn serve`; write "3000" for a built target
+```
+
+The build compiles the bundle's copy as well and compares the two plans, so
+it stops on a value like that instead of writing a bundle that would fail
+when it loads. `unsworn check --target <name>` reports the same:
+
+```
+✗ unsworn.yaml runtimes.ts.env.PORT: 3000 is a number, and this setting is text
+  → write it in quotes: "3000". YAML takes it as text either way, but `unsworn build` stores the config as JSON, where it has to be quoted
+```
+
+TOML has no such case: text is always quoted there.
+
 ## The rule: config never computes
 
 > **Config may match, validate, transform and reject. It may not compute.**

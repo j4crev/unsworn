@@ -2,18 +2,58 @@
 // stand-in for a Redis REST API.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 const here = new URL(".", import.meta.url).pathname;
 const repo = join(here, "../..");
 
+/** Runs `unsworn` with `args`. Set UNSWORN_BIN to use a built binary instead of `cargo run`. */
+function unsworn(args, env = {}) {
+  const bin = process.env.UNSWORN_BIN;
+  const [cmd, first] = bin ? [bin, []] : ["cargo", ["run", "-q", "-p", "unsworn", "--"]];
+  return spawnSync(cmd, [...first, ...args], { cwd: repo, encoding: "utf8", env: { ...process.env, ...env } });
+}
+
+/**
+ * The files of the project in `dir` as a bundle holds them, with the
+ * config's path: `{ config, files }`. `unsworn build` works them out the
+ * same way, so the config is JSON here, as the core reads it. Add the
+ * handler `modules` to make a bundle for a host.
+ */
+export function bundleFiles(dir) {
+  const result = unsworn(["bundle-files", "-C", dir]);
+  if (result.status !== 0) throw new Error(`unsworn bundle-files failed:\n${result.stdout}${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
+
+/**
+ * `bundleFiles` for a project written out here: `files` maps each path to
+ * its text, or to `null` for a file that only has to exist, such as a
+ * handler module or a directory of assets.
+ */
+export function bundleOf(files) {
+  const dir = mkdtempSync(join(tmpdir(), "unsworn-bundle-"));
+  try {
+    for (const [path, text] of Object.entries(files)) {
+      const full = join(dir, path);
+      mkdirSync(dirname(full), { recursive: true });
+      if (text !== null) writeFileSync(full, text);
+      else if (path.includes(".")) writeFileSync(full, "");
+      else mkdirSync(full, { recursive: true });
+    }
+    return bundleFiles(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /**
  * Builds `dir` with `unsworn build --target <target>`, linking the SDK from
  * this repository as the project's @unswornjs/sdk. esbuild comes from this
- * directory's node_modules. Set UNSWORN_BIN to use a built binary instead
- * of `cargo run`.
+ * directory's node_modules.
  */
 export function build(dir, target, env = {}) {
   // Test files run side by side and share the fixture, so only make the
@@ -37,13 +77,7 @@ export function build(dir, target, env = {}) {
       if (current() !== sdk) throw err;
     }
   }
-  const bin = process.env.UNSWORN_BIN;
-  const [cmd, args] = bin ? [bin, []] : ["cargo", ["run", "-q", "-p", "unsworn", "--"]];
-  const result = spawnSync(cmd, [...args, "build", "--target", target, "-C", dir], {
-    cwd: repo,
-    encoding: "utf8",
-    env: { ...process.env, ...env },
-  });
+  const result = unsworn(["build", "--target", target, "-C", dir], env);
   const output = result.stdout + result.stderr;
   if (result.status !== 0) throw new Error(`unsworn build failed:\n${output}`);
   return { dir, output };

@@ -12,56 +12,37 @@ import { Unsworn, initSync, takeToken, version } from "../../../sdk/js/wasm/unsw
 
 initSync({ module: readFileSync(new URL("../../../sdk/js/wasm/unsworn_bg.wasm", import.meta.url)) });
 
-const CONFIG = `
-[runtimes.ts]
-extensions = [".ts"]
-command = "bun run worker.ts"
-
-[[route]]
-path = "/health"
-method = "GET"
-respond = { status = 200, json = { ok = true } }
-
-[[route]]
-path = "/users/{id}"
-method = "GET"
-handler = "src/users.ts#get"
-params = { id = { type = "integer" } }
-before = ["src/auth.ts#tenant"]
-
-[[route]]
-path = "/users"
-method = "POST"
-handler = "src/users.ts#create"
-body = { type = "object", required = ["name"] }
-
-[[route]]
-path = "/upload"
-method = "POST"
-handler = "src/users.ts#upload"
-stream_body = true
-
-[[route]]
-path = "/limited"
-method = "GET"
-respond = { status = 200, text = "ok" }
-rate_limit = { requests = 2, per = "1m" }
-
-[[route]]
-path = "/cached"
-method = "GET"
-handler = "src/users.ts#count"
-cache = { ttl = "30s" }
-
-[[route]]
-path = "/files/{*rest}"
-method = "GET"
-static = { dir = "public", spa_fallback = "index.html" }
-
-[[route]]
-path = "/up/{*rest}"
-proxy = { upstreams = ["{env.UPSTREAM}"], strip_prefix = "/up" }
-`;
+// A bundle holds its config as JSON, which is all this core reads:
+// `unsworn build` converts the project's TOML and YAML.
+const CONFIG = JSON.stringify({
+  runtimes: { ts: { extensions: [".ts"], command: "bun run worker.ts" } },
+  route: [
+    { path: "/health", method: "GET", respond: { status: 200, json: { ok: true } } },
+    {
+      path: "/users/{id}",
+      method: "GET",
+      handler: "src/users.ts#get",
+      params: { id: { type: "integer" } },
+      before: ["src/auth.ts#tenant"],
+    },
+    {
+      path: "/users",
+      method: "POST",
+      handler: "src/users.ts#create",
+      body: { type: "object", required: ["name"] },
+    },
+    { path: "/upload", method: "POST", handler: "src/users.ts#upload", stream_body: true },
+    {
+      path: "/limited",
+      method: "GET",
+      respond: { status: 200, text: "ok" },
+      rate_limit: { requests: 2, per: "1m" },
+    },
+    { path: "/cached", method: "GET", handler: "src/users.ts#count", cache: { ttl: "30s" } },
+    { path: "/files/{*rest}", method: "GET", static: { dir: "public", spa_fallback: "index.html" } },
+    { path: "/up/{*rest}", proxy: { upstreams: ["{env.UPSTREAM}"], strip_prefix: "/up" } },
+  ],
+});
 
 const FILES = {
   "unsworn.toml": CONFIG,
@@ -173,6 +154,14 @@ test("loads a project and reports errors", () => {
   assert.equal(version(), JSON.parse(readFileSync(new URL("../../../sdk/js/package.json", import.meta.url))).version);
   assert.deepEqual(app.handlers, ["src/auth.ts#tenant", "src/users.ts#count", "src/users.ts#create", "src/users.ts#get", "src/users.ts#upload"]);
   assert.throws(() => new Unsworn("unsworn.toml", FILES, {}, false), /UPSTREAM/);
+});
+
+test("a config that isn't JSON is refused, with why", () => {
+  const files = { "unsworn.toml": '[[route]]\npath = "/health"\nrespond = { status = 200 }\n' };
+  assert.throws(
+    () => new Unsworn("unsworn.toml", files, {}, false),
+    /unsworn\.toml isn't JSON here\. This core reads a bundle's config as JSON, which is how `unsworn build`/,
+  );
 });
 
 test("answers fixed routes and unknown paths", async () => {

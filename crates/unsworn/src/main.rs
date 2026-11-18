@@ -185,6 +185,11 @@ enum Command {
     Init,
     /// Print the JSON Schema for the config file, for editor autocomplete.
     Schema,
+    /// Print the files a bundle from `unsworn build` holds, config
+    /// documents converted to JSON, as `{"config": ..., "files": {...}}`.
+    /// For this repository's tests of the JavaScript hosts.
+    #[command(hide = true)]
+    BundleFiles,
 }
 
 fn init_logging(format: &str, dev: bool) {
@@ -263,6 +268,7 @@ fn main() -> ExitCode {
             out,
             from,
         }),
+        Command::BundleFiles => build::bundle_files(&root, &config).map(|json| println!("{json}")),
         Command::Routes { policies, json } => commands::routes(&root, &config, policies, json),
         Command::Plan { check, output } => plan::plan(&root, &config, check, output.as_deref()),
         Command::Diff { base, fail_on } => plan::diff(

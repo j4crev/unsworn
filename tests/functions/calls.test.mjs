@@ -11,6 +11,7 @@ import { after, before, test } from "node:test";
 
 import { baseBridge } from "../../sdk/js/src/host.ts";
 import { createHandler } from "../../sdk/js/src/node.ts";
+import { bundleOf } from "./harness.mjs";
 
 const TRACE = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 
@@ -163,8 +164,7 @@ before(async () => {
   await new Promise((resolve) => service.listen(0, "127.0.0.1", resolve));
   const env = { SERVICE: `http://127.0.0.1:${service.address().port}`, BILLING_KEY: "sk_live_s3cret" };
   const bundle = {
-    config: "unsworn.toml",
-    files: { "unsworn.toml": config, "src/fn.ts": null, "src/routes.ts": null },
+    ...bundleOf({ "unsworn.toml": config, "src/fn.ts": null, "src/routes.ts": null }),
     modules: { "src/fn.ts": functions, "src/routes.ts": routes },
   };
   app = createHandler(bundle, { env });

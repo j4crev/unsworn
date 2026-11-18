@@ -11,6 +11,7 @@ use bytes::Bytes;
 use http::{HeaderValue, Method, StatusCode, Uri, header};
 use js_sys::{Object, Promise};
 use serde_json::Value;
+use unsworn_core::bundle::Files;
 use unsworn_core::calls::{self, Failure};
 use unsworn_core::pipeline::{
     Body, Deadline, FetchError, Host, KeyCache, Problem, Reply, Router, problem_response,
@@ -22,7 +23,6 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
 use crate::bridge::{Bridge, JsBody, bytes_to_js, get, headers_from_js, response_to_js, set};
-use crate::files::Files;
 use crate::host::{Caller, WasmHost, WasmStore};
 use crate::log;
 
@@ -49,7 +49,9 @@ fn string_entries(value: &JsValue) -> Vec<(String, Option<String>)> {
 #[wasm_bindgen]
 impl Unsworn {
     /// Loads a project. `files` maps project-relative paths to their text,
-    /// or `null` for files that only need to exist (handler modules).
+    /// or `null` for files that only need to exist (handler modules). The
+    /// config file and every other config document is JSON, as `unsworn
+    /// build` writes them, whatever its name says.
     /// `env` holds the variables `{env.NAME}` reads; values that aren't
     /// strings are ignored. Throws with the diagnostics when the project
     /// has errors, and logs its warnings.
@@ -89,8 +91,21 @@ impl Unsworn {
         let project = match compiled.project {
             Some(p) if errors.is_empty() => p,
             _ => {
+                // A bundle put together by hand, or by an older `unsworn`,
+                // may hold the config as it was written.
+                let config = unsworn_core::project::Host::read(&files, config_file);
+                let not_json =
+                    config.is_some_and(|text| serde_json::from_str::<Value>(&text).is_err());
+                let hint = if not_json {
+                    format!(
+                        "\n  → {config_file} isn't JSON here. This core reads a bundle's config as JSON, which is how `unsworn build` {} stores it; build the project with that version",
+                        unsworn_core::VERSION
+                    )
+                } else {
+                    String::new()
+                };
                 return Err(JsError::new(&format!(
-                    "the project has errors:\n{}",
+                    "the project has errors:\n{}{hint}",
                     errors.join("\n")
                 )));
             }

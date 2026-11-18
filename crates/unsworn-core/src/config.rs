@@ -919,14 +919,24 @@ impl Format {
 }
 
 /// Deserializes any config-like document (config, `_policies.toml`, schemas).
+///
+/// Without the `parsers` feature only JSON can be read, which is all a
+/// bundle from `unsworn build` holds; see [`crate::bundle`].
 pub fn parse_document<T: serde::de::DeserializeOwned>(
     text: &str,
     format: Format,
 ) -> Result<T, String> {
     match format {
+        #[cfg(feature = "parsers")]
         Format::Toml => toml::from_str(text).map_err(|e| e.to_string().trim_end().to_string()),
+        #[cfg(feature = "parsers")]
         Format::Yaml => serde_norway::from_str(text).map_err(|e| e.to_string()),
         Format::Json => serde_json::from_str(text).map_err(|e| e.to_string()),
+        #[cfg(not(feature = "parsers"))]
+        Format::Toml | Format::Yaml => Err(
+            "this build of Unsworn's core reads config as JSON only; `unsworn build` converts a project's files for it"
+                .into(),
+        ),
     }
 }
 

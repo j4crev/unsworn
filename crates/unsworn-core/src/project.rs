@@ -35,6 +35,15 @@ pub trait Host {
     /// Every file below `dir`, recursively, relative to `dir`.
     fn list(&self, dir: &str) -> Result<Vec<String>, String>;
     fn env(&self, key: &str) -> Option<String>;
+    /// The format of the config document at `path`: the config file, a
+    /// `_policies.toml`, a schema file or an OpenAPI spec. It's asked once
+    /// for each document the compiler parses, and never for a file read as
+    /// it is, such as a public key. Its extension says, unless the host
+    /// holds its documents in another form, as a bundle does (see
+    /// [`crate::bundle`]).
+    fn format(&self, path: &str) -> Format {
+        Format::from_path(path)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1226,7 +1235,7 @@ impl<'h> Compiler<'h> {
             );
             return None;
         };
-        let format = Format::from_path(&self.config_file);
+        let format = self.host.format(&self.config_file);
         let raw: RawConfig = match config::parse_document(&text, format) {
             Ok(r) => r,
             Err(e) => {
@@ -2470,7 +2479,7 @@ impl<'h> Compiler<'h> {
                         .error(loc, format!("schema file \"{path}\" not found"));
                     return None;
                 };
-                match config::parse_document::<Value>(&text, Format::from_path(path)) {
+                match config::parse_document::<Value>(&text, self.host.format(path)) {
                     Ok(v) => Some(v),
                     Err(e) => {
                         self.diags.error(loc, format!("{path}: {e}"));
@@ -3374,7 +3383,7 @@ impl<'h> Compiler<'h> {
             let Some(text) = self.host.read(&path) else {
                 continue;
             };
-            match config::parse_document::<RawPolicies>(&text, Format::Toml) {
+            match config::parse_document::<RawPolicies>(&text, self.host.format(&path)) {
                 Ok(raw) => {
                     let layer = self.layer(&raw, &path, None);
                     folder_layers.push((p.scope.clone(), path, layer));
@@ -3480,7 +3489,7 @@ impl<'h> Compiler<'h> {
             self.diags.error(loc, format!("file \"{spec}\" not found"));
             return None;
         };
-        let doc: Value = match config::parse_document(&text, Format::from_path(spec)) {
+        let doc: Value = match config::parse_document(&text, self.host.format(spec)) {
             Ok(d) => d,
             Err(e) => {
                 self.diags.error(spec, e);

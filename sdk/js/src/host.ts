@@ -59,7 +59,12 @@ function calls(project: Unsworn | undefined, bridge: Bridge, caller: string | un
 export interface Bundle {
   /** The config file's path, e.g. `unsworn.toml`. */
   config: string;
-  /** Project files by path; `null` for files that only need to exist. */
+  /**
+   * Project files by path; `null` for files that only need to exist. Each
+   * config document (the config file, `_policies.toml`, schemas, the
+   * OpenAPI spec) is JSON, whatever its name says: the core reads nothing
+   * else, and `unsworn build` converts them.
+   */
   files: Record<string, string | null>;
   /** Handler modules by project-relative path. */
   modules: Record<string, Record<string, unknown>>;

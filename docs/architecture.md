@@ -290,6 +290,9 @@ limit buckets, validation, `before` handlers and `unsworn routes --policies`.
   JavaScript *bridge* for its I/O, the way the binary implements `Host`; the
   Cloudflare bridge is `@unswornjs/sdk/cloudflare`. Languages that can't run
   there need a container target instead. See [`cloudflare.md`](cloudflare.md).
+  The bundle holds the project's config as JSON (`unsworn_core::bundle`),
+  so the core is built for these targets without its TOML and YAML
+  parsers, and the build checks that the JSON loads into the same plan.
 - **v3: serverless functions** (`--target vercel`, `--target netlify`,
   `--target lambda`). One Node function runs the whole project: the same
   wasm core, with the Node bridge in `@unswornjs/sdk/node` and a thin entry

@@ -5,13 +5,13 @@
 //   node --test tests/functions/node.test.mjs
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 
 import { createHandler } from "../../sdk/js/src/node.ts";
-import { redisRest, upstream } from "./harness.mjs";
+import { bundleFiles, bundleOf, redisRest, upstream } from "./harness.mjs";
 
 const fixture = new URL("./fixture/", import.meta.url);
 const modules = ["src/app.ts", "src/auth.ts", "src/tools.ts", "src/users.ts"];
@@ -26,12 +26,7 @@ before(async () => {
   const env = { UPSTREAM: up.url, REDIS_REST_URL: redis.url, REDIS_REST_TOKEN: redis.token, UNSWORN_DEV: "1" };
   process.env.GREETING = "hello";
   const bundle = {
-    config: "unsworn.toml",
-    files: {
-      "unsworn.toml": readFileSync(new URL("unsworn.toml", fixture), "utf8"),
-      public: null,
-      ...Object.fromEntries(modules.map((m) => [m, null])),
-    },
+    ...bundleFiles(fixture.pathname),
     modules: Object.fromEntries(await Promise.all(modules.map(async (m) => [m, await import(new URL(m, fixture))]))),
   };
   app = createHandler(bundle, { assets: fixture, env });
@@ -174,7 +169,7 @@ test("a file that changes without changing its size or time gets a new ETag", as
       utimesSync(file, stamp, stamp);
     };
     const config = '[[route]]\npath = "/site/{*rest}"\nmethod = "GET"\nstatic = { dir = "public" }\n';
-    const bundle = { config: "unsworn.toml", files: { "unsworn.toml": config, public: null }, modules: {} };
+    const bundle = { ...bundleOf({ "unsworn.toml": config, public: null }), modules: {} };
     // Each deployment's instances are new, so each gets a handler of its own.
     const deploy = () => {
       const site = createHandler(bundle, { assets: dir, env: {} });

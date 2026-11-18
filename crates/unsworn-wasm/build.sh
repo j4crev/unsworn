@@ -9,8 +9,10 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 out="$root/sdk/js/wasm"
 # Cloudflare's free plan allows 3 MB compressed per Worker, handlers
-# included. Keep the core well under it.
-max_gzip=$((1600 * 1024))
+# included. Keep the core well under it. It's about 1,220 KiB without the
+# TOML and YAML parsers; a jump past this limit likely means a dependency
+# brought one back.
+max_gzip=$((1350 * 1024))
 
 cd "$root"
 cargo build -p unsworn-wasm --target wasm32-unknown-unknown --profile wasm

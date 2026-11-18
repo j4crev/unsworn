@@ -39,9 +39,14 @@ The `@unswornjs/sdk` version must match your `unsworn` binary; the build
 says so if it doesn't. Rebuild after any change, to handlers included: the
 function is a single bundled file.
 
-The config files are bundled as written and loaded when the function starts,
-so `{env.NAME}` is read from the function's environment variables, not from
+The config files are bundled and loaded when the function starts, so
+`{env.NAME}` is read from the function's environment variables, not from
 your shell at build time. The build lists any it can't see.
+
+The bundle holds them as JSON, whatever format you wrote them in. That
+changes nothing in TOML; in a YAML config, text has to be in quotes where
+YAML would also take a bare number. See
+[config in a bundle](config.md#in-a-bundle-config-is-json).
 
 ## Vercel
 
@@ -252,7 +257,7 @@ verdicts) is kept in each instance's memory, which is fine.
 
 ## Size
 
-The core adds about 4.4 MB to the function (1.4 MB gzipped), plus your
+The core adds about 3.7 MB to the function (1.2 MB gzipped), plus your
 handlers, their dependencies and your static files.
 
 ## How it works

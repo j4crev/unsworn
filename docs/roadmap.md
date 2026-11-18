@@ -30,8 +30,8 @@ Cloudflare Workers first (`unsworn build --target cloudflare`). Work needed:
   The core owns the token bucket, the cache entry format and what
   `on_error` means. The binary's memory and Redis stores implement both.
 - ~~**`unsworn-wasm`.**~~ Done: the core as a WebAssembly module that asks
-  a JavaScript bridge for I/O, so every JS platform reuses it. About 1.4 MB
-  gzipped; CI keeps it under 1.6 MB.
+  a JavaScript bridge for I/O, so every JS platform reuses it. About 1.2 MB
+  gzipped; CI keeps it under 1.35 MB.
 - ~~**`unsworn build --target cloudflare`.**~~ Done: bundles the project
   files and JS/TS handlers into a Worker, with handlers called in the
   isolate, a Durable Object per rate-limit bucket, the Cache API for `cache`
@@ -109,14 +109,35 @@ on the way out. In the order planned:
      [`types.md`](types.md).
    - **A typed client for callers,** generated from the same schemas, so
      the code that calls an API is checked against it as its handlers are.
-   - **A compiled plan the core runs,** so edge and serverless builds
-     ship the plan instead of the config files and the parsers for them
-     (TOML, YAML, OpenAPI), which should make the WebAssembly core
-     smaller and quicker to start. `unsworn.plan` is text for people
-     today; the core still reads the config itself. Compiling each
-     route's schema, about 5 ms a route at startup, only goes away if the
-     plan holds the validators too, which means a validator format of
-     Unsworn's own in place of the `jsonschema` crate.
+   - **A smaller core for edge and serverless builds.** Measured before
+     building, by taking pieces out of the WebAssembly core (gzipped):
+
+     | | Size |
+     |---|--:|
+     | The core as it was | 1,457 KiB |
+     | Without the TOML and YAML parsers | 1,218 KiB |
+     | Without the config types and compiler either | 1,076 KiB at best |
+     | As it was, without the `jsonschema` crate | 847 KiB |
+
+     - ~~**Config as JSON in the bundle.**~~ Done: `unsworn build`
+       converts the config documents, the core for these targets is built
+       without the two parsers, and the build checks that the bundle's
+       copy loads into the same plan. A sixth smaller, and a project
+       loads about a fifth sooner in Node (13 to 10.5 ms for 5 routes,
+       48 to 37 ms for 300).
+       See [config in a bundle](config.md#in-a-bundle-config-is-json).
+     - **A compiled plan the core runs,** in place of the config and the
+       compiler. Not planned: it would save about another 140 KiB at
+       best, and it means a second way to build a project that has to
+       match the first for every setting. `unsworn.plan` stays text for
+       people.
+     - **A validator format of Unsworn's own,** in place of the
+       `jsonschema` crate. That crate is about 600 KiB of the core, and
+       replacing it is the only way to stop compiling each route's
+       schema when a request first needs it (about 5 ms a route). It
+       means implementing JSON Schema and giving the same errors on
+       every target, so it waits until someone is near a platform's size
+       limit.
 2. **A cheaper call into a handler.**
    - ~~**Worker pools that start small.**~~ Done: a runtime starts one
      worker and adds more when calls wait or its workers are busy and
