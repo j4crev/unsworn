@@ -131,7 +131,15 @@ on the way out. In the order planned:
    gets a copy of its requests so a rewrite's answers can be compared
    before it takes over ([`shadow.md`](shadow.md)).
 5. **WebAssembly handlers** called in the server's process, and from the
-   core on edge targets.
+   core on edge targets. Measured first, with a prototype
+   ([`bench/wasm-prototype`](../bench/wasm-prototype)): a call into a
+   WebAssembly handler adds 0.7 µs, against about 20 µs for a call to a
+   worker, but code that computes runs half as fast as it does natively.
+   So it would suit handlers that do little, and not the one that's in
+   Rust for speed. It also needs wasmtime, a dependency of about 170
+   packages. Not built, and not planned for now: the trade isn't worth
+   it until people ask for it. The prototype stays, so the numbers can be
+   taken again.
 6. **One deployment.**
    - ~~**A container image target.**~~ Done: `unsworn build --target
      image` writes a Dockerfile for the project, with each runtime at the
