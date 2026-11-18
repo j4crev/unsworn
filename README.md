@@ -280,7 +280,7 @@ All of this is configured in `unsworn.toml`, with no code:
 Details: [architecture](docs/architecture.md), [config](docs/config.md),
 [plan and diff](docs/plan.md), [generated types](docs/types.md),
 [functions](docs/functions.md), [outbound services](docs/outbound.md),
-[`top`](docs/top.md), [`shadow`](docs/shadow.md),
+[tracing](docs/tracing.md), [`top`](docs/top.md), [`shadow`](docs/shadow.md),
 [container image](docs/image.md),
 [protocol](docs/protocol.md),
 [conformance](docs/conformance.md), [MCP](docs/mcp.md),

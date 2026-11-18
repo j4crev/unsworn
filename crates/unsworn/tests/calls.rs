@@ -66,6 +66,11 @@ handler = "fn/shout.ts#relay"
 name = "loop"
 handler = "fn/shout.ts#loop"
 
+# TypeScript calling TypeScript calling Python.
+[[function]]
+name = "via"
+handler = "fn/shout.ts#via"
+
 [[route]]
 path = "/ts/{{what}}"
 handler = "src/routes.ts#route"
@@ -92,7 +97,7 @@ def count(req, ctx):
     return json({"words": len(req.json["text"].split())})
 
 def whoami(req, ctx):
-    return json({"auth": ctx.get("auth"), "caller": ctx.get("caller"), "route": req.route})
+    return json({"auth": ctx.get("auth"), "caller": ctx.get("caller"), "route": req.route, "headers": dict(req.headers)})
 
 def sleepy(req, ctx):
     time.sleep(2)
@@ -105,6 +110,7 @@ export const refuse = () => ({ status: 409, json: { error: "not now" } });
 export const lies = () => ({ json: { nothing: true } });
 export const relay = async (req: any, ctx: any) => ({ json: { relayed: await ctx.call("count", req.json) } });
 export const loop = async (_req: any, ctx: any) => ({ json: await ctx.call("loop") });
+export const via = async (_req: any, ctx: any) => ({ json: await ctx.call("whoami") });
 "#;
 
 const ROUTES_TS: &str = r#"
@@ -113,6 +119,7 @@ export const route = async (req: any, ctx: any) => {
   try {
     if (what === "count") return { json: await ctx.call("count", { text: req.query.q }) };
     if (what === "whoami") return { json: await ctx.call("whoami") };
+    if (what === "via") return { json: await ctx.call("via") };
     if (what === "bad-input") return { json: await ctx.call("count", { text: 5 }) };
     if (what === "missing") return { json: await ctx.call("nope") };
     if (what === "refuse") return { json: await ctx.call("refuse") };
@@ -207,6 +214,39 @@ fn typescript_calls_python_and_python_calls_typescript() {
 }
 
 #[test]
+fn a_function_joins_the_trace_of_the_request_it_was_called_for() {
+    let Some((_p, s)) = start("") else { return };
+    const TRACE: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    let ask = |what: &str, headers: &[(&str, &str)]| {
+        let mut all = vec![("x-api-key", "secret")];
+        all.extend_from_slice(headers);
+        let r = s.request("GET", &format!("/ts/{what}"), &all, b"");
+        assert_eq!(r.status, 200, "{}\n{}", r.text(), s.logs());
+        r.json()["headers"].clone()
+    };
+    let traced = [("traceparent", TRACE), ("tracestate", "vendor=1")];
+    let both = json!({ "traceparent": TRACE, "tracestate": "vendor=1" });
+    // A function has no HTTP request, and gets these two headers of the
+    // one it was called for. So does a function that it calls in turn.
+    assert_eq!(ask("whoami", &traced), both);
+    assert_eq!(ask("via", &traced), both);
+    assert_eq!(
+        ask("whoami", &[("traceparent", TRACE), ("cookie", "a=1")]),
+        json!({ "traceparent": TRACE })
+    );
+    // No trace is made up for a request that came without one, and one
+    // that receivers would refuse isn't passed on.
+    assert_eq!(ask("whoami", &[]), json!({}));
+    assert_eq!(
+        ask(
+            "whoami",
+            &[("traceparent", "00-0-0-01"), ("tracestate", "vendor=1")]
+        ),
+        json!({})
+    );
+}
+
+#[test]
 fn a_function_gets_the_callers_context_and_says_who_called() {
     let Some((_p, s)) = start("") else { return };
     let who = ts(&s, "whoami");
@@ -241,7 +281,7 @@ fn failures_reach_the_caller_as_errors_with_a_status() {
         missing["message"]
             .as_str()
             .unwrap()
-            .contains("no [[function]] named \"nope\" in the config (it declares: count, lies, loop, refuse, relay, shout, sleepy, whoami)"),
+            .contains("no [[function]] named \"nope\" in the config (it declares: count, lies, loop, refuse, relay, shout, sleepy, via, whoami)"),
         "{missing}"
     );
 

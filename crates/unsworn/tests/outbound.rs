@@ -268,6 +268,51 @@ fn unsworn_adds_the_credential_the_handler_never_holds() {
 }
 
 #[test]
+fn a_request_to_a_service_joins_the_trace_of_the_request_it_was_made_for() {
+    let Some((_p, s, _service)) = start() else {
+        return;
+    };
+    const TRACE: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    const SPAN: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-b7ad6b7169203331-01";
+    let seen = |route: &str, incoming: &[(&str, &str)], sent: Value| {
+        let mut headers = vec![("content-type", "application/json")];
+        headers.extend_from_slice(incoming);
+        let body = json!({ "service": "open", "path": "/echo", "headers": sent });
+        let r = s.request("POST", route, &headers, body.to_string().as_bytes());
+        assert_eq!(r.status, 200, "{}\n{}", r.text(), s.logs());
+        let seen: Value = serde_json::from_str(r.json()["text"].as_str().unwrap()).unwrap();
+        (
+            seen["headers"]["traceparent"].clone(),
+            seen["headers"]["tracestate"].clone(),
+        )
+    };
+    let traced = [("traceparent", TRACE), ("tracestate", "vendor=1")];
+    for route in ["/ts", "/py"] {
+        // The handler passes nothing on, and the service gets the trace.
+        assert_eq!(
+            seen(route, &traced, json!({})),
+            (json!(TRACE), json!("vendor=1")),
+            "{route}"
+        );
+        // A handler that sends its own span is where the trace continues
+        // from, with its tracestate or none.
+        assert_eq!(
+            seen(route, &traced, json!({ "Traceparent": SPAN })),
+            (json!(SPAN), Value::Null),
+            "{route}"
+        );
+        // A tracestate alone means nothing, and gives way to the request's.
+        assert_eq!(
+            seen(route, &traced, json!({ "tracestate": "mine=1" })),
+            (json!(TRACE), json!("vendor=1")),
+            "{route}"
+        );
+        // A request that came without a trace isn't given one.
+        assert_eq!(seen(route, &[], json!({})), (Value::Null, Value::Null));
+    }
+}
+
+#[test]
 fn only_what_the_config_allows_is_sent() {
     let Some((_p, s, service)) = start() else {
         return;

@@ -49,6 +49,9 @@ Unsworn, which runs the function in its own runtime's workers.
   client went away, Unsworn cancels the calls made for it.
 - **Ties the logs together.** The function's logs carry the same request
   id as the caller's and the access log line.
+- **Keeps it in the request's trace.** When the request came with a
+  `traceparent` header, the function gets it, and the `tracestate` with
+  it, as `req.headers`. See [`tracing.md`](tracing.md).
 - **Checks the output** against `output`, as `response_validation` says:
   `log` (the default) logs a mismatch, `enforce` fails the call with
   `502`, `off` skips it.
@@ -85,8 +88,9 @@ a `500` and the reason is logged.
 ## A function's handler
 
 It's an ordinary handler. The input arrives as the JSON body (`req.json`),
-`req.route` is `fn:<name>`, and what it answers with as JSON is the call's
-result. A text reply arrives as a JSON string. Bytes and streams aren't
+`req.route` is `fn:<name>`, `req.headers` holds only the calling request's
+[trace](tracing.md), if it had one, and what it answers with as JSON is
+the call's result. A text reply arrives as a JSON string. Bytes and streams aren't
 supported: a call fails with `502`.
 
 The same handler can also serve a route or be an MCP tool, if it's listed

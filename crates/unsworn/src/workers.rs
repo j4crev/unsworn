@@ -21,6 +21,7 @@ use unsworn_core::Project;
 use unsworn_core::config::Protocol;
 use unsworn_core::config::ResponseValidation;
 use unsworn_core::project::{Function, Outbound, Runtime};
+use unsworn_core::trace::{self, TraceContext};
 use unsworn_proto::{
     self as proto, Cancel, Chunk, DecodeError, End, Frame, Json, LogLevel, Message,
     PROTOCOL_VERSION, Request, Response, Verify,
@@ -93,6 +94,9 @@ struct Caller {
     /// The function gets the same context, and no more time.
     context: Map<String, Value>,
     deadline: Instant,
+    /// The trace the request belongs to, which its functions and outbound
+    /// requests join.
+    trace: Option<TraceContext>,
 }
 
 /// How deep calls may nest: a function calling a function, and so on. A
@@ -558,6 +562,15 @@ impl Pools {
             method: "POST".into(),
             path: name,
             context,
+            // A function has no HTTP request of its own. These are the
+            // calling request's, so the function's spans join its trace,
+            // and so do those of whatever the function calls in turn.
+            headers: caller
+                .trace
+                .iter()
+                .flat_map(TraceContext::headers)
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
             json: Some(Json::raw(Bytes::from(input))),
             ..Request::default()
         };
@@ -677,19 +690,37 @@ impl Pools {
         let mut request = http::Request::builder()
             .method(method.as_str())
             .uri(format!("{}{}", service.url, fetch.path));
-        // The handler's headers first, then the service's over them: a
-        // handler can't replace the credential, or see it.
+        // The request's trace, unless the handler sent its own position in
+        // it (its span), or the service's headers set one.
+        let has_trace = fetch
+            .headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case(trace::TRACEPARENT))
+            || service
+                .headers
+                .iter()
+                .any(|(own, _)| own == trace::TRACEPARENT);
+        let traced = caller.trace.as_ref().filter(|_| !has_trace);
+        // The handler's headers, then the service's over them: a handler
+        // can't replace the credential, or see it.
         let sent = fetch.headers.iter().filter(|(name, _)| {
             let name = name.to_ascii_lowercase();
             !NOT_FORWARDED.contains(&name.as_str())
                 && !service.headers.iter().any(|(own, _)| *own == name)
+                // A `tracestate` belongs to the `traceparent` it came with.
+                && !(traced.is_some() && name == trace::TRACESTATE)
         });
-        for (name, value) in sent.map(|(n, v)| (n.as_str(), v.as_str())).chain(
-            service
-                .headers
-                .iter()
-                .map(|(n, v)| (n.as_str(), v.as_str())),
-        ) {
+        for (name, value) in traced
+            .iter()
+            .flat_map(|t| t.headers())
+            .chain(sent.map(|(n, v)| (n.as_str(), v.as_str())))
+            .chain(
+                service
+                    .headers
+                    .iter()
+                    .map(|(n, v)| (n.as_str(), v.as_str())),
+            )
+        {
             request = request.header(name, value);
         }
         let request = match request.body(crate::server::support::full(body.unwrap_or_default())) {
@@ -1707,6 +1738,9 @@ impl Pool {
                         handler: request.handler.clone(),
                         context: request.context.clone(),
                         deadline,
+                        trace: TraceContext::from_headers(|name| {
+                            request.headers.get(name).map(String::as_str)
+                        }),
                     })
                 }),
                 request_id,

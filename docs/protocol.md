@@ -209,8 +209,9 @@ through Unsworn. The worker sends `call`:
 
 Unsworn runs the function as a normal `request` to a worker of its
 runtime (`route` and `path` are `fn:<name>`, `method` is `POST`, `json` is
-the input, and `context` is the calling request's plus `caller`), then
-answers with `result`:
+the input, `context` is the calling request's plus `caller`, and `headers`
+has the calling request's `traceparent` and `tracestate`, if it came with
+a valid one), then answers with `result`:
 
 ```json
 {"type":"result","id":"c-7","status":200,"json":[0.12,0.98]}

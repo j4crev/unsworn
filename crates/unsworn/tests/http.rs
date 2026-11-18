@@ -528,10 +528,15 @@ respond = {{ status = 200, text = "front" }}
         "specific routes win over the catch-all"
     );
 
+    const TRACE: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
     let r = s.request(
         "POST",
         "/orders/9?x=1",
-        &[("content-type", "application/json")],
+        &[
+            ("content-type", "application/json"),
+            ("traceparent", TRACE),
+            ("tracestate", "vendor=1"),
+        ],
         br#"{"a":1}"#,
     );
     assert_eq!(r.status, 200, "{}", r.text());
@@ -541,6 +546,10 @@ respond = {{ status = 200, text = "front" }}
     assert_eq!(v["query"]["x"], "1");
     assert_eq!(v["headers"]["x-forwarded-for"], "127.0.0.1");
     assert!(v["headers"]["x-request-id"].is_string());
+    // The request's trace goes through the proxy and reaches the handler
+    // behind it as it came.
+    assert_eq!(v["headers"]["traceparent"], TRACE);
+    assert_eq!(v["headers"]["tracestate"], "vendor=1");
 
     assert_eq!(
         s.get("/admin/users").status,
