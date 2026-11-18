@@ -78,6 +78,17 @@ pub fn parse_size(input: &str) -> Result<u64, String> {
     Ok((number * factor as f64) as u64)
 }
 
+/// Writes a size the way [`parse_size`] reads one: `1MB`, `512KB`, `100B`.
+pub fn format_size(bytes: u64) -> String {
+    const UNITS: [(u64, &str); 3] = [(1 << 30, "GB"), (1 << 20, "MB"), (1 << 10, "KB")];
+    for (factor, unit) in UNITS {
+        if bytes >= factor && bytes.is_multiple_of(factor) {
+            return format!("{}{unit}", bytes / factor);
+        }
+    }
+    format!("{bytes}B")
+}
+
 /// A duration in config: a string like `"30s"` or a number of seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfigDuration(pub Duration);
@@ -188,6 +199,14 @@ impl schemars::JsonSchema for ConfigSize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sizes_are_written_as_they_are_read() {
+        for text in ["0B", "100B", "512KB", "1MB", "10MB", "2GB", "1536KB"] {
+            assert_eq!(format_size(parse_size(text).unwrap()), text);
+        }
+        assert_eq!(format_size(1025), "1025B");
+    }
 
     #[test]
     fn durations() {

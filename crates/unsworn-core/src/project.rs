@@ -347,13 +347,13 @@ impl Route {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Seg {
+pub(crate) enum Seg {
     Lit(String),
     Param(String),
     CatchAll(String),
 }
 
-fn parse_pattern(pattern: &str) -> Vec<Seg> {
+pub(crate) fn parse_pattern(pattern: &str) -> Vec<Seg> {
     pattern
         .split('/')
         .filter(|s| !s.is_empty())
@@ -410,7 +410,7 @@ fn match_prefix(segs: &[Seg], path: &str) -> Option<Vec<String>> {
 /// A policy-only entry whose path ends in `{*rest}`.
 #[derive(Debug, Clone)]
 pub struct PrefixEntry {
-    segs: Vec<Seg>,
+    pub(crate) segs: Vec<Seg>,
     pub path: String,
     pub methods: Option<Vec<String>>,
     pub layer: Layer,
@@ -802,9 +802,22 @@ pub fn compile(host: &dyn Host, config_file: &str) -> Compiled {
 /// [`compile`], choosing when validation schemas are built. Pass
 /// [`Build::OnFirstUse`] only for a config that `compile` already accepted.
 pub fn compile_with(host: &dyn Host, config_file: &str, schemas: Build) -> Compiled {
+    compile_inner(host, config_file, schemas, false)
+}
+
+/// [`compile`], leaving every `{env.NAME}` as written instead of reading
+/// the variable. The result describes the project's rules on any machine,
+/// which is what [`crate::plan`] needs: it doesn't depend on the
+/// environment, and no variable has to be set. It can't serve requests.
+pub fn compile_symbolic(host: &dyn Host, config_file: &str) -> Compiled {
+    compile_inner(host, config_file, Build::Now, true)
+}
+
+fn compile_inner(host: &dyn Host, config_file: &str, schemas: Build, symbolic: bool) -> Compiled {
     let mut c = Compiler {
         host,
         schemas,
+        symbolic,
         config_file: config_file.to_string(),
         diags: Diagnostics::default(),
         runtimes: BTreeMap::new(),
@@ -829,6 +842,8 @@ pub fn compile_with(host: &dyn Host, config_file: &str, schemas: Build) -> Compi
 
 struct Compiler<'h> {
     host: &'h dyn Host,
+    /// Leave `{env.NAME}` in place; see [`compile_symbolic`].
+    symbolic: bool,
     schemas: Build,
     config_file: String,
     diags: Diagnostics,
@@ -1187,7 +1202,16 @@ impl<'h> Compiler<'h> {
         })
     }
 
+    /// Whether `value` still has a variable in it, which only a symbolic
+    /// compile leaves there. Checks of the value's form don't apply to it.
+    fn unresolved(&self, value: &str) -> bool {
+        self.symbolic && value.contains("{env.")
+    }
+
     fn subst(&mut self, value: &str, loc: &str) -> String {
+        if self.symbolic {
+            return value.to_string();
+        }
         let mut out = String::new();
         let mut rest = value;
         while let Some(start) = rest.find("{env.") {
@@ -1229,7 +1253,7 @@ impl<'h> Compiler<'h> {
     /// Reports a URL Unsworn fetches that isn't `http://` or `https://`.
     fn check_url(&mut self, url: &str, loc: &str) {
         // An unset variable has already been reported.
-        if url.is_empty() {
+        if url.is_empty() || self.unresolved(url) {
             return;
         }
         let ok = ["http://", "https://"].iter().any(|scheme| {
@@ -1248,6 +1272,9 @@ impl<'h> Compiler<'h> {
     /// Warns about a URL that credentials or signing keys travel over in
     /// the clear. This machine's own addresses are fine.
     fn warn_plain_http(&mut self, url: &str, loc: &str, risk: &str) {
+        if self.unresolved(url) {
+            return;
+        }
         let Ok(uri) = url.parse::<http::Uri>() else {
             return;
         };
@@ -1455,7 +1482,10 @@ impl<'h> Compiler<'h> {
                                 Diagnostic::error(&at, "the secret is empty")
                                     .hint("anyone can sign a token with an empty secret; set one of at least 32 random bytes"),
                             );
-                        } else if !secret.is_empty() && secret.len() < MIN_SECRET_BYTES {
+                        } else if !secret.is_empty()
+                            && secret.len() < MIN_SECRET_BYTES
+                            && !self.unresolved(&secret)
+                        {
                             self.diags.push(
                                 Diagnostic::warning(
                                     &at,
@@ -1656,6 +1686,7 @@ impl<'h> Compiler<'h> {
             }
             (config::StoreBackend::Redis, Some(u))
                 if !u.is_empty()
+                    && !self.unresolved(u)
                     && !StoreConfig::is_rest_url(u)
                     && !["redis://", "rediss://", "redis+unix://", "unix://"]
                         .iter()
@@ -1687,7 +1718,7 @@ impl<'h> Compiler<'h> {
                     .hint("token = \"{env.UPSTASH_REDIS_REST_TOKEN}\""),
             );
         }
-        if token.is_some() && !rest {
+        if token.is_some() && !rest && !url.as_deref().is_some_and(|u| self.unresolved(u)) {
             self.diags.push(Diagnostic::warning(
                 "[store].token",
                 "`token` is only used with an https:// `url` (a Redis REST API)",
@@ -2204,6 +2235,9 @@ impl<'h> Compiler<'h> {
                 self.diags.error(format!("{loc}.proxy"), "no upstreams");
             }
             for u in &upstreams {
+                if self.unresolved(u) {
+                    continue;
+                }
                 if let Some(path) = u.strip_prefix(UNIX_UPSTREAM) {
                     if !path.starts_with('/') {
                         self.diags.push(

@@ -19,3 +19,7 @@ curl -H 'x-api-key: secret' -H 'x-tenant: acme' -H 'content-type: application/js
      -d '{"text": "Unsworn routes requests to handlers in any language"}' localhost:8080/api/summarize
 unsworn routes --policies
 ```
+
+[`unsworn.plan`](unsworn.plan) is what the config and route files add up
+to, for each route. `unsworn plan` writes it, and `unsworn diff` shows what
+your changes do to it. See [`docs/plan.md`](../../docs/plan.md).

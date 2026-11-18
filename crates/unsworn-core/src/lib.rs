@@ -19,6 +19,7 @@ pub mod export;
 pub mod mcp;
 pub mod openapi;
 pub mod pipeline;
+pub mod plan;
 pub mod policy;
 pub mod project;
 pub mod routefiles;
@@ -29,7 +30,9 @@ pub mod units;
 pub mod validate;
 
 pub use diag::{Diagnostic, Level};
-pub use project::{Compiled, Host, MatchResult, Matched, Project, Route, compile, compile_with};
+pub use project::{
+    Compiled, Host, MatchResult, Matched, Project, Route, compile, compile_symbolic, compile_with,
+};
 
 /// The Unsworn version, shared by the core and every host.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
