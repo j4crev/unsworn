@@ -82,7 +82,8 @@ whole project, as a Worker does. Work needed:
 Still open for serverless:
 
 - **Running on the platforms themselves.** The tests run the built
-  functions in Node, called the way each platform calls them.
+  functions in Node, called the way each platform calls them. Vercel has
+  been deployed to and checked; Netlify and Lambda haven't.
 - **More than one function per project,** for routes that need their own
   memory, duration or permissions: named groups, each a function running
   the same router with some of the handlers. Only if someone needs it.
