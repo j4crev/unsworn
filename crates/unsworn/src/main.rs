@@ -81,8 +81,9 @@ enum Command {
         #[arg(long)]
         target: Option<String>,
     },
-    /// Bundle the project for a deployment target: `cloudflare` (a
-    /// Worker), or `vercel`, `netlify` or `lambda` (a function on each).
+    /// Bundle the project for a deployment target: `image` (a Dockerfile
+    /// for the server and its workers), `cloudflare` (a Worker), or
+    /// `vercel`, `netlify` or `lambda` (a function on each).
     Build {
         /// The deployment target.
         #[arg(long)]
@@ -92,6 +93,10 @@ enum Command {
         /// `.netlify/v1`), else `dist/<target>`.
         #[arg(long, short)]
         out: Option<PathBuf>,
+        /// For `image`: the image to copy the `unsworn` binary from.
+        /// Default: this version's official image.
+        #[arg(long)]
+        from: Option<String>,
     },
     /// Print the resolved route table.
     Routes {
@@ -251,11 +256,12 @@ fn main() -> ExitCode {
             }
             runtime.block_on(commands::check(&root, &config, deep, target.as_deref()))
         }
-        Command::Build { target, out } => build::build(build::BuildOptions {
+        Command::Build { target, out, from } => build::build(build::BuildOptions {
             root,
             config,
             target,
             out,
+            from,
         }),
         Command::Routes { policies, json } => commands::routes(&root, &config, policies, json),
         Command::Plan { check, output } => plan::plan(&root, &config, check, output.as_deref()),
