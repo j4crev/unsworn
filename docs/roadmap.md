@@ -109,14 +109,42 @@ on the way out. In the order planned:
      [`types.md`](types.md).
    - **A typed client for callers,** generated from the same schemas, so
      the code that calls an API is checked against it as its handlers are.
-   - **A compiled plan the core runs,** so edge and serverless builds
-     ship the plan instead of the config files and the parsers for them
-     (TOML, YAML, OpenAPI), which should make the WebAssembly core
-     smaller and quicker to start. `unsworn.plan` is text for people
-     today; the core still reads the config itself. Compiling each
-     route's schema, about 5 ms a route at startup, only goes away if the
-     plan holds the validators too, which means a validator format of
-     Unsworn's own in place of the `jsonschema` crate.
+   - **A smaller core for edge and serverless builds.** The idea was a
+     compiled plan the core runs, so those builds ship the plan instead
+     of the config files and the code that reads them. Measured first,
+     by taking pieces out of the WebAssembly core (gzipped):
+
+     | | Size |
+     |---|--:|
+     | The core as it is | 1,457 KiB |
+     | Without the TOML and YAML parsers | 1,218 KiB |
+     | Without the config types and compiler either | 1,076 KiB at best |
+     | As it is, without the `jsonschema` crate | 847 KiB |
+     | Without the compiler or `jsonschema` | 482 KiB |
+
+     Not planned for now. The core is under half of what Cloudflare's
+     free plan allows (3 MB compressed), so none of this is worth its
+     cost until someone is near a platform's size limit. In three parts:
+
+     - **Config as JSON in the bundle,** with the two parsers left out
+       of the core for these targets. Built, and not merged
+       ([#77](https://github.com/j4crev/unsworn/pull/77)). The core was a
+       sixth smaller and a project loaded about a fifth sooner in Node
+       (13 to 10.5 ms for 5 routes, 48 to 37 ms for 300). Against that,
+       the server and these targets would read config in two ways, the
+       binary and the SDK would have to be released together, and a
+       YAML config could pass `unsworn check` and fail `unsworn build`:
+       YAML takes an unquoted number as text where JSON doesn't.
+     - **A compiled plan the core runs,** in place of the config and the
+       compiler. About another 140 KiB at best, for a second way to
+       build a project that has to match the first for every setting.
+       `unsworn.plan` stays text for people.
+     - **A validator format of Unsworn's own,** in place of the
+       `jsonschema` crate. That crate is about 600 KiB of the core, and
+       replacing it is the only way to stop compiling each route's
+       schema when a request first needs it (about 5 ms a route). It
+       means implementing JSON Schema and giving the same errors on
+       every target.
 2. **A cheaper call into a handler.**
    - ~~**Worker pools that start small.**~~ Done: a runtime starts one
      worker and adds more when calls wait or its workers are busy and
