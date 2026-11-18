@@ -23,7 +23,11 @@ pub async fn check(
     deep: bool,
     target: Option<&str>,
 ) -> Result<(), String> {
-    let compiled = load::load(root, config);
+    // For a target that's built, a variable only the platform has is a
+    // note, as it is for `unsworn build`.
+    let compiled = target
+        .and_then(|t| crate::build::compile_for(root, config, t))
+        .unwrap_or_else(|| load::load(root, config));
     let mut errors = load::print_diagnostics(&compiled.diagnostics);
     let Some(project) = compiled.project else {
         return Err(format!("{errors} error(s)"));

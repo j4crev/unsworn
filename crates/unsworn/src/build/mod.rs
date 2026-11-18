@@ -22,7 +22,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Value, json};
 use unsworn_core::policy::HandlerRef;
 use unsworn_core::project::{Action, Host};
-use unsworn_core::{Project, compile, targets};
+use unsworn_core::{Compiled, Project, compile, targets};
 
 use crate::load::{self, FsHost, SKIP_DIRS};
 
@@ -188,24 +188,46 @@ pub fn build(opts: BuildOptions) -> Result<(), String> {
     (target.build)(prepare(&opts, target)?)
 }
 
-/// Compiles the project, checks it for the target and empties the output
-/// directory.
-fn prepare(opts: &BuildOptions, target: &Target) -> Result<Prepared, String> {
-    let root = &opts.root;
-    let env_hint = target.env_hint;
+/// Compiles a project as it will load on `target`, where the platform
+/// supplies the environment: an `{env.NAME}` that isn't set here is noted,
+/// with how to set it there, and isn't an error. Also returns the files
+/// the compiler read and the variables that weren't set.
+fn compile_noting_env(
+    root: &Path,
+    config: &str,
+    target: &Target,
+) -> (Compiled, BTreeMap<String, Option<String>>, BTreeSet<String>) {
     let recorder = Recorder {
-        fs: FsHost { root: root.clone() },
+        fs: FsHost {
+            root: root.to_path_buf(),
+        },
         files: RefCell::default(),
         missing_env: RefCell::default(),
     };
-    let compiled = compile(&recorder, &opts.config);
+    let compiled = compile(&recorder, config);
     let missing_env = recorder.missing_env.take();
     for name in &missing_env {
         eprintln!(
             "! {{env.{name}}} isn't set here; it's read at runtime, so {}",
-            env_hint.replace("{name}", name)
+            target.env_hint.replace("{name}", name)
         );
     }
+    (compiled, recorder.files.take(), missing_env)
+}
+
+/// What `unsworn check --target` compiles for a target `unsworn build`
+/// writes, so the two agree on a variable only the platform has. `None`
+/// for any other target.
+pub fn compile_for(root: &Path, config: &str, target: &str) -> Option<Compiled> {
+    let target = TARGETS.iter().find(|t| t.name == target)?;
+    Some(compile_noting_env(root, config, target).0)
+}
+
+/// Compiles the project, checks it for the target and empties the output
+/// directory.
+fn prepare(opts: &BuildOptions, target: &Target) -> Result<Prepared, String> {
+    let root = &opts.root;
+    let (compiled, files, missing_env) = compile_noting_env(root, &opts.config, target);
     let mut errors = load::print_diagnostics(&compiled.diagnostics);
     let Some(project) = compiled.project else {
         return Err(format!("{errors} error(s)"));
@@ -233,7 +255,7 @@ fn prepare(opts: &BuildOptions, target: &Target) -> Result<Prepared, String> {
         config: normalize(&opts.config),
         modules: handler_modules(&project),
         statics: static_dirs(&project),
-        files: recorder.files.take(),
+        files,
         project,
         out,
         missing_env,
