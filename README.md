@@ -13,7 +13,7 @@ MCP tools.
 
 ## AI Usage and Security Disclosure
 
-**Latest release built with Fable 5.2 Medium and Opus 5.5 High**
+**Latest release built with Fable 5.2 High**
 
 **Last Security Audit on 2026-11-15 by Fable 5.2 Medium, followed by Opus 5.5 High**
 
