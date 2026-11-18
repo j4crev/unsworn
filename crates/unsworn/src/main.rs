@@ -17,6 +17,7 @@ mod commands;
 mod conformance;
 mod load;
 mod plan;
+mod scale;
 mod server;
 mod store;
 mod workers;

@@ -298,6 +298,62 @@ language keeps up with.
   Python gains the least from the second hyperthread: two busy workers
   and four both managed 74 searches a second.
 
+### Pools that size themselves
+
+The tables above set `workers` to a number. Left unset, a runtime starts
+one worker and adds more while its workers are busy, up to one for each
+CPU (see [`workers`](config.md#how-many-workers)). This compares the two,
+for the handler that does nothing and the one that searches. It's a
+separate comparison from the rest of this page: a build of the branch
+that added it (glibc, not the released musl binary), three rounds with
+the variants taken in turn, 5 seconds of warmup and 6 of measurement, on
+the same machine and cores. Unsworn has four CPUs here, which are two
+cores with two hyperthreads each. Each figure is the median of the three
+rounds.
+
+| Scenario | `workers` | Req/s | CPU µs/req | Peak memory | Workers it ended with |
+|---|---|--:|--:|--:|--:|
+| "hello", TypeScript on Bun | 1 | 65,077 | 45.7 | 115 MB | 1 |
+| | 4 | 67,330 | 52.7 | 355 MB | 4 |
+| | unset | 67,474 | 47.5 | 197 MB | 2 |
+| "hello", TypeScript on Node | 1 | 69,677 | 43.3 | 230 MB | 1 |
+| | 4 | 65,250 | 55.4 | 630 MB | 4 |
+| | unset | 70,589 | 47.4 | 409 MB | 2 |
+| "hello", Python | 2 | 27,096 | 112.2 | 85 MB | 2 |
+| | 4 | 28,513 | 129.2 | 139 MB | 4 |
+| | unset | 28,278 | 125.1 | 109 MB | 3 |
+| "hello", Go | 1 | 52,732 | 62.7 | 55 MB | 1 |
+| | 4 | 43,084 | 83.8 | 106 MB | 4 |
+| | unset | 49,401 | 71.2 | 72 MB | 2 |
+| Search, TypeScript on Bun | 4 | 2,661 | 1,493 | 212 MB | 4 |
+| | unset | 2,881 | 1,381 | 215 MB | 4 |
+| Search, Python | 4 | 64 | 62,578 | 122 MB | 4 |
+| | unset | 63 | 63,044 | 126 MB | 4 |
+| Search, Rust | 4 | 4,170 | 953 | 63 MB | 4 |
+| | unset | 4,157 | 956 | 69 MB | 4 |
+
+- **For the search handler, the pool grew to all four CPUs** in every
+  round, within the warmup, and then matched `workers = 4`. Bun's lower
+  figure for 4 comes from one slow round (2,074 req/s; the other two were
+  2,873 and 2,661), not from the setting.
+- **For a handler that does little, it stopped at two workers** (three
+  for Python), because two workers sharing the work of one are no longer
+  busy. That's 10 to 15% less CPU a call than four workers (3% for
+  Python) and about half to three quarters of the memory.
+- **It ends one worker above the cheapest number for "hello".** One worker
+  (two for Python) answers about as many calls for 4 to 12% less CPU a
+  call, and 7% more of them on Go. A single worker that is busy all the
+  time has no room left, though, so the pool doesn't stay there: this
+  test sends as many requests as the server will take, which is the one
+  case where the second worker's room is never used. Set `workers = 1`
+  for a runtime where that saving matters more.
+- The rounds differ by more than the settings do in places: Bun's "hello"
+  with one worker ran from 64,659 to 84,590 req/s, and the third round was
+  about a tenth slower than the first two for every runtime.
+- Earlier runs of this comparison, with an earlier version of the rule,
+  had two slow rounds of "hello" on Python with `workers` unset (13,100
+  and 19,600 req/s) that were never explained. None of these three was.
+
 ### Policies
 
 One policy at a time on a static `respond` route, so each row's CPU µs/req

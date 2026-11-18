@@ -119,7 +119,7 @@ tie the server up:
 extensions      = [".ts", ".js"]
 command         = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
 protocol        = "framed"        # "jsonl" (Tier 1, the default) | "framed" (Tier 2)
-workers         = 4               # default: the number of CPU cores, up to 4
+workers         = { min = 1 }     # the default: one, and more under load (see below)
 eager           = false           # start workers at boot instead of on first request
 startup_timeout = "30s"           # time allowed for `build` and `ready`
 env             = { NODE_ENV = "production" }
@@ -144,6 +144,50 @@ about 64 KB, and leaves the worker's stdout to the handler.
 `protocol = "binary"`, the name used before 0.2, still works as an alias for
 `"framed"`, with a warning. Commands run through `sh -c` in the project root. `build` runs once, before
 the runtime's first workers start, and again on each reload.
+
+#### How many workers
+
+A runtime starts with one worker process and adds more when its workers
+can't keep up, up to one for each CPU Unsworn may use (hyperthreads count,
+and so does a container's CPU limit). A handler that does little needs one
+or two workers, and one that computes needs a process per CPU, so the
+number follows the work:
+
+```toml
+workers = { min = 1, max = 8 }                 # the default on a machine with 8 CPUs, written out
+workers = { min = 2, max = 4, idle = "5m" }    # keep two, never more than four; let a spare one go after 5 minutes
+workers = 4                                    # exactly four, always
+```
+
+A worker is added when:
+
+- **a call has to wait** because every worker is at the `max_in_flight`
+  it declared. That's how a worker that takes one request at a time shows
+  it's busy.
+- **every worker has used 90% of a CPU core for half a second, and there
+  is idle CPU** to run another one. That's for workers that take many
+  requests at once, such as the SDKs': they never make a call wait, so
+  Unsworn reads their CPU time instead.
+
+The pool keeps adding workers for as long as either is true, so work
+that fills a core for every worker it's given ends with one worker per
+CPU. Work that doesn't stops sooner: once two workers share what kept one
+busy, neither is busy any more. Each worker holds memory (from about
+10 MB for Go and Rust to more than 100 MB for Node), so on a machine with
+many CPUs, set `max` if a full pool would be more than you want to give
+one runtime.
+
+A worker is retired when the others could do its work at half their
+capacity, and that has been so for `idle` (30 seconds by default). It
+finishes the requests it has first.
+
+Starting a worker takes from about 10 ms (Go, Rust) to about 300 ms
+(Node), and the pool adds one at a time, about one a second. So a burst
+of heavy requests on a quiet server is served by fewer workers for its
+first few seconds. If that matters more than the memory, set `min` to
+what the burst needs, or give `workers` a number.
+
+Unsworn logs each worker it adds or retires, and why.
 
 For production, build compiled workers ahead of time (in CI or a Docker build
 stage) and run `unsworn serve --no-build` (or set `UNSWORN_NO_BUILD=1`), so

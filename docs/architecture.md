@@ -182,9 +182,16 @@ workers    = 2
 
 ### Supervision
 
-- **Pools.** Each runtime has a pool of N worker processes. A worker can
+- **Pools.** Each runtime has a pool of worker processes. A worker can
   handle many requests at once if it declares `max_in_flight` in its `ready`
   message (see [`protocol.md`](protocol.md)).
+- **Sizing.** A pool starts with its fewest workers (one by default) and
+  adds one when calls have to wait for a worker, or when every worker has
+  used most of a CPU core and there is idle CPU for another, up to one
+  worker for each CPU. The pool retires a worker when the rest have had
+  room for its work for a while. The rules are in
+  `crates/unsworn/src/scale.rs`, and the setting is
+  [`workers`](config.md#how-many-workers).
 - **Lazy start.** By default, a runtime's workers start on its first request,
   which keeps startup fast on scale-to-zero platforms. `eager = true` starts
   them at boot.
@@ -201,7 +208,9 @@ workers    = 2
   logs, tagged with runtime and worker id.
 - **Reload.** On a reload (file changes in `unsworn dev`, `SIGHUP` for
   `unsworn serve`), Unsworn starts new workers, moves new requests to them
-  and lets old workers finish their in-flight requests.
+  and lets old workers finish their in-flight requests. It then closes
+  their input, which asks them to exit, and kills any that haven't after
+  two seconds.
 
 ## Protocol tiers
 

@@ -106,8 +106,9 @@ needs raw speed.
 
 - **Declarative endpoints run entirely in Rust.** Static responses,
   redirects, proxies, cached responses and rejected requests never reach a handler.
-- **Handlers run in worker pools across all CPU cores,** without any
-  clustering setup in your code.
+- **Handlers run in worker pools that grow with the load,** without any
+  clustering setup in your code: one process while that's enough, and one
+  per CPU core when a handler has real work to do.
 - **A CPU-heavy endpoint can move to a faster language** without changing
   the API. Replace `get.ts` with `get.rs`, rewrite the handler, and clients
   notice nothing except the speed. In

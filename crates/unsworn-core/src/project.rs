@@ -63,10 +63,52 @@ pub struct Runtime {
     pub command: String,
     pub build: Option<String>,
     pub protocol: Protocol,
-    pub workers: Option<u32>,
+    pub workers: Workers,
     pub eager: bool,
     pub env: BTreeMap<String, String>,
     pub startup_timeout: Duration,
+}
+
+/// How many worker processes a runtime runs: `min` to start with, and up
+/// to `max` when they're busy. Equal for a fixed number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Workers {
+    pub min: u32,
+    /// `None` leaves it to the host: one for each CPU it may use.
+    pub max: Option<u32>,
+    /// How long a worker the others could do without is kept.
+    pub idle: Duration,
+}
+
+impl Default for Workers {
+    fn default() -> Workers {
+        Workers {
+            min: 1,
+            max: None,
+            idle: Workers::IDLE,
+        }
+    }
+}
+
+impl Workers {
+    /// The default for [`Workers::idle`].
+    pub const IDLE: Duration = Duration::from_secs(30);
+
+    pub fn fixed(n: u32) -> Workers {
+        Workers {
+            min: n.max(1),
+            max: Some(n.max(1)),
+            idle: Workers::IDLE,
+        }
+    }
+
+    /// The most workers to run where `cores` CPUs are available.
+    pub fn most(&self, cores: usize) -> usize {
+        match self.max {
+            Some(max) => max as usize,
+            None => cores.max(1).max(self.min as usize),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1460,6 +1502,33 @@ impl<'h> Compiler<'h> {
             for (k, v) in &r.env {
                 env.insert(k.clone(), self.subst(v, &format!("{loc}.env.{k}")));
             }
+            let workers = match r.workers {
+                None => Workers::default(),
+                Some(config::RawWorkers::Fixed(n)) => Workers::fixed(n),
+                Some(config::RawWorkers::Range(range)) => {
+                    let min = range.min.unwrap_or(1);
+                    if min == 0 {
+                        self.diags.push(
+                            Diagnostic::error(
+                                format!("{loc}.workers.min"),
+                                "a runtime keeps at least one worker",
+                            )
+                            .hint("leave `eager` off to start the first one on the first request"),
+                        );
+                    }
+                    if range.max.is_some_and(|max| max < min) {
+                        self.diags.error(
+                            format!("{loc}.workers.max"),
+                            format!("max is less than min ({min})"),
+                        );
+                    }
+                    Workers {
+                        min: min.max(1),
+                        max: range.max,
+                        idle: range.idle.map_or(Workers::IDLE, |d| d.0),
+                    }
+                }
+            };
             self.runtimes.insert(
                 name.clone(),
                 Arc::new(Runtime {
@@ -1468,7 +1537,7 @@ impl<'h> Compiler<'h> {
                     command: r.command.clone(),
                     build: r.build.clone(),
                     protocol,
-                    workers: r.workers,
+                    workers,
                     eager: r.eager,
                     env,
                     startup_timeout: r.startup_timeout.map_or(Duration::from_secs(30), |d| d.0),
