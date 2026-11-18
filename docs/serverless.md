@@ -8,8 +8,9 @@ are bundled into the same function and called directly, with no worker
 processes.
 
 > These targets are tested by running the built functions in Node, called
-> the way each platform calls them. They haven't been run on Vercel, Netlify
-> or AWS themselves yet.
+> the way each platform calls them. The Vercel target has also been
+> deployed and checked on Vercel itself. The Netlify and Lambda targets
+> haven't been run on their platforms yet.
 
 ## One function per project
 
@@ -79,6 +80,11 @@ add`, or in the project's settings. Add `.vercel/` to `.gitignore`.
 
 Responses stream. The client IP comes from the `X-Real-IP` header that
 Vercel sets, and the request id from `X-Vercel-Id`.
+
+Without `--prod`, the deployment is a preview, and Vercel asks for a login
+at a preview's URL unless you turn Deployment Protection off for the
+project. To try an API with `curl`, deploy with `--prod` and use the
+project's own domain.
 
 ## Netlify
 
@@ -222,7 +228,10 @@ verdicts) is kept in each instance's memory, which is fine.
 - **Static files** are bundled into the function and served by it, so a
   `static` route's auth, CORS and rate limits apply to its files. They
   count towards the function's size, and aren't served from the platform's
-  CDN.
+  CDN. A file's `ETag` comes from its contents, and there's no
+  `Last-Modified`: a platform gives every deployed file the same time, so
+  a date would tell a browser that a file changed by a new deployment
+  hadn't.
 - **Proxy routes** forward with `fetch()`. WebSocket upgrades can't pass
   through a function, and answer `501`. Compressed upstream responses are
   decompressed on the way through.

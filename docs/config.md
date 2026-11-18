@@ -537,7 +537,9 @@ A `static` route never serves a dotfile or anything inside a dot directory
 (`.env`, `.git/config`): those answer `404`. `.well-known` is the exception.
 
 A `static` route sends `ETag` and `Last-Modified`, and honors
-`If-None-Match`, `If-Modified-Since`, `Range` and `If-Range`.
+`If-None-Match`, `If-Modified-Since`, `Range` and `If-Range`. In a
+serverless function there's no `Last-Modified`; see
+[`serverless.md`](serverless.md#differences-from-the-server).
 
 ### Handler references
 

@@ -823,6 +823,29 @@ rate_limit = { requests = 1, per = "1s" }
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("needs a shared store"));
 
+    // A variable only the platform has is an error for the server, and a
+    // note for a target that's built, as it is for `unsworn build`.
+    let secret = Project::new(&[(
+        "unsworn.toml",
+        r#"
+[[route]]
+path = "/up/{*rest}"
+proxy = { upstreams = ["{env.UNSWORN_TEST_ONLY_ON_THE_PLATFORM}"] }
+"#,
+    )]);
+    let out = secret.command(&["check"]);
+    assert!(!out.status.success());
+    let out = secret.command(&["check", "--target", "server"]);
+    assert!(!out.status.success());
+    let out = secret.command(&["check", "--target", "vercel"]);
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{err}");
+    assert!(
+        err.contains("isn't set here")
+            && err.contains("vercel env add UNSWORN_TEST_ONLY_ON_THE_PLATFORM"),
+        "{err}"
+    );
+
     let out = p.command(&["routes"]);
     let table = String::from_utf8_lossy(&out.stdout);
     assert!(

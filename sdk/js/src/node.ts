@@ -11,7 +11,7 @@
 // config reads the process's environment. UNSWORN_DEV=1 puts error details
 // in responses.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createReadStream, readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -122,9 +122,30 @@ function byteRange(header: string | undefined, size: number): [number, number] |
   return start > end || start >= size ? "bad" : [start, end];
 }
 
+/** ETags of the files a handler has served, with the size and time each was read at. */
+type Etags = Map<string, { size: number; mtimeMs: number; etag: string }>;
+
+/**
+ * A strong validator from the file's bytes. Not from its size and time, as
+ * a server's is: platforms give every deployed file the same time (Vercel:
+ * a day in 2018), so a redeploy that changed a file but not its length
+ * would keep the validator, and browsers would keep the old file. A file
+ * is read for this once per instance.
+ */
+async function contentTag(etags: Etags, file: string, info: { size: number; mtimeMs: number }): Promise<string> {
+  const known = etags.get(file);
+  if (known && known.size === info.size && known.mtimeMs === info.mtimeMs) return known.etag;
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  const etag = `"${hash.digest("base64url").slice(0, 27)}"`;
+  etags.set(file, { size: info.size, mtimeMs: info.mtimeMs, etag });
+  return etag;
+}
+
 /** A file below `root` by URL path, as a response, or `null` when there's none. */
 async function serveFile(
   root: string,
+  etags: Etags,
   path: string,
   method: string,
   headers: HeaderPairs,
@@ -140,31 +161,26 @@ async function serveFile(
   if (!info?.isFile()) return null;
 
   const header = (name: string) => headers.find(([k]) => k.toLowerCase() === name)?.[1];
-  // HTTP dates have whole seconds.
-  const modified = Math.floor(info.mtimeMs / 1000) * 1000;
-  const lastModified = new Date(modified).toUTCString();
-  // A strong validator: it changes whenever the file's bytes may have.
-  const etag = `"${info.size.toString(16)}-${Math.floor(info.mtimeMs).toString(16)}"`;
+  const etag = await contentTag(etags, file, info).catch(() => null);
+  if (etag === null) return null;
+  // No `Last-Modified`: the file's time is the platform's, not the file's,
+  // and a date that never changes would answer `If-Modified-Since` with
+  // `304` for a file that has changed.
   const out: HeaderPairs = [
     ["content-type", TYPES[extname(file).toLowerCase()] ?? "application/octet-stream"],
-    ["last-modified", lastModified],
     ["etag", etag],
     ["accept-ranges", "bytes"],
   ];
-  // `If-None-Match` outranks `If-Modified-Since` (RFC 9110 section 13.2.2).
   const noneMatch = header("if-none-match");
   if (noneMatch !== undefined) {
     const tags = noneMatch.split(",").map((t) => t.trim().replace(/^W\//, ""));
     if (tags.includes("*") || tags.includes(etag)) return { status: 304, headers: out, body: null };
-  } else {
-    const since = Date.parse(header("if-modified-since") ?? "");
-    if (!Number.isNaN(since) && modified <= since) return { status: 304, headers: out, body: null };
   }
 
-  // A range applies only while `If-Range` still names this file: its ETag
-  // or its exact date. Otherwise the file goes out whole (section 13.1.5).
+  // A range applies only while `If-Range` still names this file by its
+  // ETag. Otherwise the file goes out whole (RFC 9110 section 13.1.5).
   const ifRange = header("if-range")?.trim();
-  const current = ifRange === undefined || ifRange === etag || ifRange === lastModified;
+  const current = ifRange === undefined || ifRange === etag;
   const range = current ? byteRange(header("range"), info.size) : null;
   if (range === "bad") {
     return { status: 416, headers: [...out, ["content-range", `bytes */${info.size}`]], body: null };
@@ -195,6 +211,7 @@ function bridge(
   bundle: Bundle,
   store: () => Store,
   assets: string | undefined,
+  etags: Etags,
   dev: boolean,
   info: RequestInfo,
   waitUntil: (promise: Promise<unknown>) => void,
@@ -225,7 +242,7 @@ function bridge(
 
     async asset(path, method, headers) {
       if (!assets) throw new Error("static routes need the bundled assets directory; rebuild with unsworn build");
-      return serveFile(assets, path, method, headers);
+      return serveFile(assets, etags, path, method, headers);
     },
 
     rateLimit: (key, requests, perMs) => store().rateLimit(key, requests, perMs),
@@ -260,6 +277,7 @@ export function createHandler(bundle: Bundle, options: HandlerOptions = {}): Han
     dev,
   );
 
+  const etags: Etags = new Map();
   const pending = new Set<Promise<unknown>>();
   const track = (promise: Promise<unknown>) => {
     const settled = promise.catch(() => {}).finally(() => pending.delete(settled));
@@ -276,7 +294,7 @@ export function createHandler(bundle: Bundle, options: HandlerOptions = {}): Han
         return failure(500, errorMessage(err, false), dev);
       }
       const requestId = request.headers.get("x-request-id")?.slice(0, 128) || info.requestId || randomUUID();
-      const io = bridge(bundle, () => (store ??= storeFor(project.store)), assets, dev, info, info.waitUntil ?? track);
+      const io = bridge(bundle, () => (store ??= storeFor(project.store)), assets, etags, dev, info, info.waitUntil ?? track);
       const handled = await withRequestId(requestId, () =>
         project.handle(
           {
