@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -27,25 +27,32 @@ pub fn has(cmd: &str) -> bool {
 }
 
 /// A port nothing is listening on, for tests that need an address to point
-/// at (a dead upstream, or a server the test starts itself). The port is
-/// released before it's returned, so the OS could hand it out again; this
-/// at least never returns the same port twice to tests in this process.
-/// Unsworn servers don't use it: they bind port 0 (see
+/// at (a dead upstream, an admin listener, or a server the test starts
+/// itself). The port is free when this returns and is never given twice
+/// to tests in this process.
+///
+/// Ports come from below the range the OS hands out on its own (32768 and
+/// up on Linux, 49152 and up on macOS). A port the OS picked and this
+/// released could go to any port 0 bind or outgoing connection before the
+/// test used it, and one did: a server found its admin port taken.
+/// Unsworn's main listener doesn't use this; it binds port 0 (see
 /// [`Project::start_with`]).
 pub fn free_port() -> u16 {
-    static GIVEN: Mutex<Option<HashSet<u16>>> = Mutex::new(None);
-    let mut given = GIVEN.lock().unwrap();
-    let given = given.get_or_insert_with(HashSet::new);
-    loop {
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        if given.insert(port) {
+    const FIRST: u16 = 20000;
+    const COUNT: u16 = 12000;
+    // Each test binary starts somewhere else in the range, so two running
+    // at once don't walk the same ports.
+    static NEXT: Mutex<Option<u16>> = Mutex::new(None);
+    let mut next = NEXT.lock().unwrap();
+    let next = next.get_or_insert_with(|| (std::process::id() % u32::from(COUNT)) as u16);
+    for _ in 0..COUNT {
+        let port = FIRST + *next;
+        *next = (*next + 1) % COUNT;
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
             return port;
         }
     }
+    panic!("no free port between {FIRST} and {}", FIRST + COUNT);
 }
 
 pub struct Project {
