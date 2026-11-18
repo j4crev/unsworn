@@ -791,14 +791,7 @@ async fn run_action<H: Host>(
                             request,
                             body: raw_body,
                             deadline,
-                            primary: super::shadow::Answer {
-                                status: response.status,
-                                body: match &body {
-                                    Body::Empty => Some(Bytes::new()),
-                                    Body::Bytes(bytes) => Some(bytes.clone()),
-                                    Body::Host(_) => None,
-                                },
-                            },
+                            primary: super::shadow::Answer::of(&response, &body),
                             primary_time: ctx.host.monotonic().saturating_sub(began),
                         });
                     }

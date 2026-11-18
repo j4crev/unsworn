@@ -62,6 +62,5 @@ doesn't join it.
 
 ## Where it works
 
-On servers and containers. Functions and outbound services don't run on
-edge and serverless targets yet (see the [roadmap](roadmap.md)); a
-request's own headers reach handlers there as everywhere.
+On every target: servers and containers, Cloudflare Workers and
+serverless functions.

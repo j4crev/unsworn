@@ -10,7 +10,7 @@
 use bytes::Bytes;
 use serde_json::Value;
 
-use super::host::Deadline;
+use super::host::{Body, Deadline};
 use crate::policy::HandlerRef;
 
 /// A handler's answer, as far as it's compared.
@@ -19,6 +19,25 @@ pub struct Answer {
     pub status: u16,
     /// `None` for a streamed body, which isn't compared.
     pub body: Option<Bytes>,
+}
+
+impl Answer {
+    /// What a handler answered: the bytes the client gets, wherever the
+    /// host left them. A host that calls handlers in its own process keeps
+    /// JSON and text in the response itself.
+    pub fn of<B>(response: &unsworn_proto::Response, body: &Body<B>) -> Answer {
+        let body = match (body, &response.json, &response.text) {
+            (Body::Empty, Some(json), _) => Some(json.to_bytes()),
+            (Body::Empty, None, Some(text)) => Some(Bytes::from(text.clone())),
+            (Body::Empty, None, None) => Some(Bytes::new()),
+            (Body::Bytes(bytes), _, _) => Some(bytes.clone()),
+            (Body::Host(_), _, _) => None,
+        };
+        Answer {
+            status: response.status,
+            body,
+        }
+    }
 }
 
 /// A request to send to a route's shadow handler, with the answer the

@@ -338,10 +338,12 @@ fn functions_are_checked_and_planned() {
         "{plan}"
     );
 
-    // A function that can't run on a target is reported for it.
+    // Functions run on every target, in the languages the target runs.
     let out = p.command(&["check", "--target", "cloudflare"]);
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(err.contains("only run on the server"), "{err}");
+    assert!(err.contains("\"fn/words.py\" can't run in"), "{err}");
+    assert!(!err.contains("fn/shout.ts"), "{err}");
+    assert!(!err.contains("[[function]]"), "{err}");
 
     let bad = config("\n[[function]]\nname = \"count\"\nhandler = \"fn/missing.py\"\n");
     p.write("unsworn.toml", &bad);

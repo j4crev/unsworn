@@ -137,10 +137,12 @@ on the way out. In the order planned:
      service under `[outbound.<name>]`, and Unsworn adds its credential,
      so the handler never holds it. See [`outbound.md`](outbound.md).
      Still open: streamed bodies.
-   - **Functions, outbound services and shadows on edge and serverless
-     targets.** All three work on servers and containers only. Elsewhere
-     `ctx.call` answers `501`, outbound services aren't offered, a
-     `shadow` is ignored, and `unsworn check --target` reports each.
+   - ~~**Functions, outbound services and shadows on edge and serverless
+     targets.**~~ Done: the checks for `ctx.call` and `ctx.fetch` moved
+     into the core, which runs them on every target, and a `shadow` gets
+     its copy everywhere. What differs there: handlers share a process
+     with the core, so a service's key isn't kept from them, and a
+     shadow's differences are logged but not counted.
    - **Limits on what a worker can reach.** An outbound service keeps the
      credential from a handler, but nothing stops the handler opening its
      own connections, and a worker has whatever memory and CPU the

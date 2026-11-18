@@ -215,9 +215,10 @@ function bridge(
   dev: boolean,
   info: RequestInfo,
   waitUntil: (promise: Promise<unknown>) => void,
+  project: Unsworn,
 ): Bridge {
   return {
-    ...baseBridge(bundle, dev, () => info.fetchArgs ?? []),
+    ...baseBridge(bundle, dev, () => info.fetchArgs ?? [], project),
 
     async proxy(request) {
       if (request.headers.some(([k]) => k.toLowerCase() === "upgrade")) {
@@ -294,7 +295,16 @@ export function createHandler(bundle: Bundle, options: HandlerOptions = {}): Han
         return failure(500, errorMessage(err, false), dev);
       }
       const requestId = request.headers.get("x-request-id")?.slice(0, 128) || info.requestId || randomUUID();
-      const io = bridge(bundle, () => (store ??= storeFor(project.store)), assets, etags, dev, info, info.waitUntil ?? track);
+      const io = bridge(
+        bundle,
+        () => (store ??= storeFor(project.store)),
+        assets,
+        etags,
+        dev,
+        info,
+        info.waitUntil ?? track,
+        project,
+      );
       const handled = await withRequestId(requestId, () =>
         project.handle(
           {

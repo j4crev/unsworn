@@ -14,7 +14,7 @@ let up;
 before(async () => {
   up = await upstream();
   const { dir } = build(new URL("./fixture", import.meta.url).pathname);
-  worker = await start(dir, { UPSTREAM: up.url, UNSWORN_DEV: "1" });
+  worker = await start(dir, { UPSTREAM: up.url, BILLING_KEY: "sk_live_s3cret", UNSWORN_DEV: "1" });
 });
 
 after(() => {
@@ -170,4 +170,38 @@ test("MCP tools run as handlers", async () => {
   assert.deepEqual(result.structuredContent, { city: "Oslo", sky: "clear", tool: "weather" });
   const bad = await send("tools/call", { name: "weather", arguments: {} }, "weather");
   assert.equal(bad.isError, true);
+});
+
+const TRACE = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+test("handlers call functions, with the caller's context and trace", async () => {
+  assert.deepEqual(await (await get("/do/count?q=one%20two%20three")).json(), { words: 3 });
+  const bad = await (await get("/do/bad")).json();
+  assert.deepEqual([bad.failed, bad.name], [422, "CallError"]);
+  const who = await (await get("/do/whoami", { headers: { "x-tenant": "acme", traceparent: TRACE } })).json();
+  assert.equal(who.ctx.tenant, "acme");
+  assert.deepEqual(who.ctx.caller, { function: "whoami", from: "src/calls.ts#route", depth: 1 });
+  assert.equal(who.route, "fn:whoami");
+  assert.deepEqual(who.headers, { traceparent: TRACE });
+});
+
+test("Unsworn adds a service's credential, and only sends what's allowed", async () => {
+  const r = await (await get("/do/charge", { headers: { traceparent: TRACE } })).json();
+  assert.equal(r.status, 200);
+  assert.equal(r.sent.url, "/api/charges?limit=2");
+  assert.equal(r.sent.headers.authorization, "Bearer sk_live_s3cret");
+  assert.equal(r.sent.headers.traceparent, TRACE);
+  const refused = await (await get("/do/admin")).json();
+  assert.deepEqual([refused.failed, refused.name], [403, "FetchError"]);
+});
+
+test("a shadow gets a copy, and a difference is logged", async () => {
+  assert.deepEqual(await (await get("/search?q=cats")).json(), { hits: ["cats"], total: 1 });
+  // A wrong answer from the shadow: the client still gets the right one.
+  assert.deepEqual(await (await get("/search?q=bug")).json(), { hits: ["bug"], total: 1 });
+  const logged = /shadow route=\/search shadow=src\/calls\.ts#searchV2 id=\S+: \$\.hits\[0\] is "bug", and "WRONG" in the shadow's answer/;
+  const deadline = Date.now() + 5000;
+  while (!logged.test(worker.output()) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+  assert.match(worker.output(), logged);
+  assert.equal(worker.output().match(/shadow route=/g).length, 1, "the matching answer wasn't logged");
 });

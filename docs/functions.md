@@ -126,10 +126,11 @@ looser.
 
 ## Limits
 
-- **Servers and containers only.** On Cloudflare and serverless targets
-  handlers run in one process, where a handler can import another and call
-  it directly. `unsworn check --target` reports a project's functions for
-  those targets, and `ctx.call` fails there with `501`.
+- **On Cloudflare and serverless targets, a function runs in the same
+  process as its caller.** `ctx.call` works there as it does on a server,
+  with the same checks, context, time limit and statuses, but only for
+  functions in JavaScript or TypeScript, like every handler on those
+  targets. `unsworn check --target` reports any others.
 - **A worker that takes one request at a time can't call a function in
   its own runtime** unless another worker is free: it's busy with the
   caller. The SDKs' workers take many requests at once, so this is about

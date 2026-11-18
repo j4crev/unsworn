@@ -26,30 +26,29 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
         "cloudflare" => cloudflare(project),
         _ => functions(project, target),
     };
-    // Calls between handlers, and to services, go through the server's
-    // worker connections.
-    if let Some(name) = project.functions.keys().next() {
-        out.push(
-            Diagnostic::error(
-                format!("[[function]] \"{name}\""),
-                format!("functions that handlers call (`ctx.call`) only run on the server, not on {target}"),
-            )
-            .hint("on this target, import the other handler and call it, or keep the function on a server"),
-        );
-    }
+    // Functions, outbound services and shadows run on every target. What
+    // differs is said here.
     if let Some(route) = project.routes.iter().find(|r| r.shadow.is_some()) {
         out.push(Diagnostic::warning(
             format!("{}.shadow", route.source.loc()),
-            format!("`shadow` handlers only run on the server, so this one is ignored on {target}"),
+            format!(
+                "on {target}, a shadow's differences are logged, and there are no figures: `unsworn top` reads a server"
+            ),
         ));
     }
-    if let Some(name) = project.outbound.keys().next() {
+    if let Some((name, _)) = project
+        .outbound
+        .iter()
+        .find(|(_, service)| !service.headers.is_empty())
+    {
         out.push(
-            Diagnostic::error(
+            Diagnostic::warning(
                 format!("[outbound.{name}]"),
-                format!("services Unsworn calls for handlers (`ctx.fetch`) only work on the server, not on {target}"),
+                format!(
+                    "on {target}, handlers run in the same process as Unsworn, so one can read the variables this service's headers come from"
+                ),
             )
-            .hint("on this target, call the service from the handler with the platform's own secrets"),
+            .hint("Unsworn still adds the headers and checks the method and path; on a server, handlers can't reach the variables at all"),
         );
     }
     out
