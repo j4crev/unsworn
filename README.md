@@ -4,7 +4,7 @@ An API router with allegiance to no language.
 
 That means your endpoint handlers can be written in virtually anything.
 
-Unsworn is a single compiled binary that handles the HTTP side of an API:
+Unsworn handles the HTTP side of an API:
 routing, validation, auth, CORS, rate limiting, caching, proxying, logging
 and metrics. You configure it with a TOML file. Anything that
 needs real logic goes to a **handler**, a plain function in whatever language
@@ -24,7 +24,7 @@ MCP tools.
 In most frameworks, auth checks, input validation and rate limits are code,
 but code can be wrong. One forgotten middleware or an unvalidated field is enough to get you rekt.
 
-With Unsworn, the security-critical part of your API is a short file of rules someone can review in a minute.
+With Unsworn, the security-critical part of your API is one file of rules someone can review.
 Those rules are declared in `unsworn.toml` and enforced by a
 binary that handler code can't change. A handler only runs after its request
 has been tested against those rules.
@@ -41,7 +41,7 @@ $ unsworn diff origin/main
 
 See [`docs/plan.md`](docs/plan.md).
 
-The rules cover the way out too. Declare a service a handler needs, and
+The rules cover outbound traffic too. Declare a service a handler needs, and
 Unsworn makes the request and adds the credential:
 
 ```toml
@@ -52,23 +52,21 @@ paths   = ["/v1/charges", "/v1/charges/{id}"]
 ```
 
 The handler calls `ctx.fetch("stripe", "/v1/charges", ...)` and never
-holds the key, so a handler that's tricked into misbehaving has nothing
+holds the environment variable, so a handler that's tricked into misbehaving has nothing
 to leak. See [`docs/outbound.md`](docs/outbound.md).
 
 ### Built for MCP servers
 
-AI agents reach your systems through MCP servers. Every caller of an MCP
-server is a model acting for someone, so that's where rules outside your
-code matter most. Unsworn supports remote MCP servers at three levels:
+Unsworn supports remote MCP servers at three levels:
 
 - **In front of the MCP server you already have.** OAuth token checks with
   the metadata MCP clients expect, origin checks, rate limits and audit
   logs, with no auth code in the server. Per-tool scopes and rate limits
   work for it too.
 - **Tools as plain functions.** Unsworn speaks MCP itself (protocol
-  version 2026-07-28, which needs no sessions). Each tool is a handler in
+  version 2026-07-28). Each tool is a handler in
   any language, with no MCP SDK, its arguments validated before it runs,
-  and its own scopes and rate limits. Callers only see the tools their
+  with its own scopes and rate limits. Callers only see the tools their
   token allows.
 - **Your API, also as tools.** Mark a route, or operations in your OpenAPI
   spec, as tools. One handler with one set of rules serves both your REST
@@ -92,7 +90,7 @@ mcp     = { tool = "get_user", description = "Look up a user by id" }
 
 See [`docs/mcp.md`](docs/mcp.md).
 
-### Start in front of the app you already have
+### Plug 'n Play
 
 Unsworn can sit between your existing app and the internet. Run it behind
 your platform's load balancer, Caddy, nginx or Cloudflare, or on its own with a simple setup.
@@ -100,48 +98,49 @@ Point a catch-all route at your existing Express, Hono, FastAPI or Go app,
 with no code changes, and you can immediately:
 
 - add JWT or API-key auth, rate limits and caching to any path
-- validate requests against an OpenAPI spec before they reach your app
+- validate requests and data against an OpenAPI spec before they reach your app
 - serve health checks, redirects and static files without touching the app
 
 Then move routes out of the old app one at a time, at your own pace.
 
 ### The right language for each endpoint
 
-Plenty of apps use one language, except for the parts that need Python's AI and
+Creating an API with one langugage is great, except for the parts that need Python's AI and
 data libraries. Those parts usually turn into a separate service with its own
 deploy, networking and auth.
 
 With Unsworn, `routes/chat.post.py` sits next to `routes/users.get.ts`. They
 share one router, one auth config, one API contract and one deploy. The same
-goes for a Go endpoint that needs Go's concurrency, or a Rust endpoint that
-needs raw speed.
+goes for a Go endpoint that needs Go's concurrency, a Rust endpoint, etc.
 
 And they can call each other. A handler declared as a
-[function](docs/functions.md) is called by name from any other handler,
+[function](docs/functions.md) in the config, is called by name from any other handler,
 with its input checked on the way and no service in between:
 
 ```ts
-const vector = await ctx.call("embed", { text: req.query.q });   // embed is Python
+// let's say "embed" represents a Python function
+// but called from your TypeScript handler
+const vector = await ctx.call("embed", { text: req.query.q });
 ```
 
-### Speed where it matters
+### Performance behavior and tweaks
 
 - **Declarative endpoints run entirely in Rust.** Static responses,
   redirects, proxies, cached responses and rejected requests never reach a handler.
 - **Handlers run in worker pools that grow with the load,** without any
-  clustering setup in your code: one process while that's enough, and one
-  per CPU core when a handler has real work to do.
+  clustering setup in your code. Each runtime starts with one worker by
+  default and adds more as needed, up to one per available CPU.
 - **A CPU-heavy endpoint can move to a faster language** without changing
   the API. Replace `get.ts` with `get.rs`, rewrite the handler, and clients
   notice nothing except the speed. In
   [our benchmark](docs/benchmarks.md#a-handler-that-does-work), one search
-  handler costs 53 ms of CPU a request in Python, 1.2 ms in TypeScript on
+  handler costs 53 ms of CPU per request in Python, 1.2 ms in TypeScript on
   Bun and 0.84 ms in Rust.
-- **You can see which endpoint that is, and try the rewrite first.**
+- **Look for latency, and try the rewrite first.**
   [`unsworn top`](docs/top.md) lists each route's latency and its
   handler's CPU on a running server. [`shadow`](docs/shadow.md) sends a
   copy of a route's requests to the new handler and compares its answers
-  with the old one's, while clients keep getting the old one's.
+  with the original one. Clients continue being served by the original.
 
 A handler call does cross a process boundary, and that costs about the same
 in every language. So a trivial endpoint won't beat the same code running
@@ -238,7 +237,7 @@ in that case.
 
 ## What's built in
 
-All of this is configured in `unsworn.toml`, with no code:
+All of this can be configured in `unsworn.toml`, with no code:
 
 | Area | Features |
 |---|---|
@@ -323,10 +322,12 @@ Unsworn runs on Linux (x86_64 and arm64). Install the latest release:
 curl -fsSL https://raw.githubusercontent.com/j4crev/unsworn/main/install.sh | sh
 ```
 
-When the GitHub CLI is installed and signed in, the script also checks that
-the release was built by this repository's release workflow. Set
-`UNSWORN_VERIFY=1` to require that check, or `0` to skip it; see
-[`SECURITY.md`](SECURITY.md).
+By default, the installer verifies the release's build attestation if the
+GitHub CLI is installed and signed in. Otherwise, it installs without
+that check. To require successful verification before installing, set
+`UNSWORN_VERIFY=1`. To skip verification, set `UNSWORN_VERIFY=0`.
+See [`SECURITY.md`](SECURITY.md).
+
 
 For containers, `unsworn build --target image` writes a Dockerfile for the
 project: each runtime at the version your project names, dependencies
