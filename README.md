@@ -208,7 +208,7 @@ import type { GetUser } from "./unsworn.gen";   // written by `unsworn gen` from
 export const getUser: GetUser = async (req, ctx) => {
   // req.params.id is already validated as an integer >= 1, and typed as a
   // number. ctx.auth holds the verified JWT claims.
-  const user = await db.users.find(req.params.id);
+  const user = await db.users.find(ctx.auth.sub);
   return { status: 200, json: user };
 };
 ```
