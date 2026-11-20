@@ -448,14 +448,14 @@ fn services_are_planned_without_their_secrets() {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_unsworn"))
         .arg("-C")
         .arg(p.path())
-        .args(["check", "--target", "lambda"])
+        .args(["check", "--target", "vercel"])
         .env("BILLING_KEY", "k")
         .output()
         .unwrap();
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
     // Services work there too. What a function can't promise is said.
     assert!(
-        err.contains("[outbound.billing]: on lambda, handlers run in the same process as Unsworn"),
+        err.contains("[outbound.billing]: on vercel, handlers run in the same process as Unsworn"),
         "{err}"
     );
     assert!(!err.contains("[outbound.open]"), "{err}");

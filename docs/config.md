@@ -1468,9 +1468,10 @@ The capability table for each target is part of Unsworn's source, so a config
 that passes `check` for a target is expected to work there.
 
 `unsworn build --target cloudflare` bundles a project into a Cloudflare
-Worker; see [`cloudflare.md`](cloudflare.md). `--target vercel`,
-`--target netlify` and `--target lambda` bundle it into a serverless
-function; see [`serverless.md`](serverless.md).
+Worker; see [`cloudflare.md`](cloudflare.md). `--target vercel` and
+`--target netlify` bundle it into a serverless function; see
+[`serverless.md`](serverless.md). `--target lambda` writes the server's
+image for AWS Lambda; see [`lambda.md`](lambda.md).
 
 ## Open questions
 

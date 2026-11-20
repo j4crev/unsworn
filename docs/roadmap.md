@@ -8,7 +8,7 @@ deployment target is meant to look like, see
 |---|---|---|
 | v1 | Servers and containers | Available (v0.3.0) |
 | v2 | Adds edge isolates | Available (v0.3.0): Cloudflare Workers |
-| v3 | Adds serverless functions | Available (v0.3.0): Vercel, Netlify and AWS Lambda |
+| v3 | Adds serverless functions | Available (v0.3.0): Vercel and Netlify as Node functions; AWS Lambda as the server in a container |
 
 ## v2: edge isolates
 
@@ -83,12 +83,12 @@ Still open for serverless:
 
 - **Running on the platforms themselves.** The tests run the built
   functions in Node, called the way each platform calls them. Vercel has
-  been deployed to and checked; Netlify and Lambda haven't.
+  been deployed to and checked; Netlify hasn't. Lambda's image has been
+  built and run under Lambda's constraints, and not on Lambda.
 - **More than one function per project,** for routes that need their own
   memory, duration or permissions: named groups, each a function running
   the same router with some of the handlers. Only if someone needs it.
-- **Other stores,** such as DynamoDB on Lambda, and Redis over TCP for
-  functions inside a VPC.
+- **Other stores,** such as DynamoDB on Lambda.
 - **Handlers in other languages.** The wasm core talks to a JavaScript
   bridge, so a Python or Go function would need another interface to it.
   Until then, those run on the server in a container.
@@ -202,8 +202,11 @@ on the way out. In the order planned:
    - ~~**A container image target.**~~ Done: `unsworn build --target
      image` writes a Dockerfile for the project, with each runtime at the
      version the project names. See [`image.md`](image.md).
-   - **The binary as an AWS Lambda custom runtime,** for handlers in any
-     language on Lambda, without the WebAssembly core.
+   - ~~**The binary on AWS Lambda,** for handlers in any language there,
+     without the WebAssembly core.~~ Done: `unsworn build --target lambda`
+     writes the server's image with AWS's Lambda Web Adapter in it, which
+     replaces the Node function that target used to build. See
+     [`lambda.md`](lambda.md).
 
 ## Not scheduled yet
 
@@ -227,8 +230,7 @@ Tracked where they apply:
 - [Protocol](protocol.md#open-questions): handler-owned WebSockets,
   progress messages, elicitation.
 
-And one about how Unsworn is described: on a server, handlers run in
-other processes and can't change the rules. On edge and serverless
-targets they share an isolate or a process with the core, so that holds
-there only as far as the platform makes it. The README and the target
-pages should say which is which.
+How Unsworn is described used to be one more: on a server, handlers run
+in other processes and can't change the rules, and on Cloudflare, Vercel
+and Netlify they share an isolate or a process with the core. The README
+now says which is which, under "Where Unsworn runs".

@@ -115,5 +115,54 @@ fn writes_a_dockerfile_from_the_config_and_the_projects_files() {
     // And the other targets are still named when one is mistyped.
     let out = p.command(&["build", "--target", "docker"]);
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(err.contains("and image for a container"), "{err}");
+    assert!(
+        err.contains("and image and lambda for a container"),
+        "{err}"
+    );
+}
+
+/// Lambda gets the server's own image, with AWS's adapter beside it: not
+/// a bundle of JavaScript, so a handler in any language runs there.
+#[test]
+fn the_lambda_target_writes_the_servers_image() {
+    let p = Project::new(&[
+        (
+            "unsworn.toml",
+            "[runtimes.py]\nextensions = [\".py\"]\ncommand = \"python3 -u -m unsworn.worker\"\n\n[[route]]\npath = \"/x\"\nhandler = \"src/x.py#x\"\n",
+        ),
+        ("src/x.py", ""),
+    ]);
+    let out = p.command(&["build", "--target", "lambda"]);
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    );
+    assert!(out.status.success(), "{stderr}");
+    assert!(stdout.contains("wrote dist/lambda/Dockerfile"), "{stdout}");
+    // Lambda takes one image, which this flag makes Docker write.
+    assert!(
+        stdout.contains("docker build --provenance=false -f dist/lambda/Dockerfile -t "),
+        "{stdout}"
+    );
+    let dockerfile = std::fs::read_to_string(p.path().join("dist/lambda/Dockerfile")).unwrap();
+    assert!(
+        dockerfile.contains("/lambda-adapter /opt/extensions/lambda-adapter\n"),
+        "{dockerfile}"
+    );
+    assert!(
+        dockerfile.contains("ENTRYPOINT [\"unsworn\"]\n"),
+        "{dockerfile}"
+    );
+    assert!(!p.path().join("dist/lambda/index.mjs").exists());
+
+    // What differs there is said: a store instances share, and where
+    // requests arrive from.
+    let out = p.command(&["check", "--target", "lambda"]);
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{err}");
+    assert!(
+        err.contains("every request arrives from the adapter at 127.0.0.1"),
+        "{err}"
+    );
+    assert!(!err.contains("can't run in"), "{err}");
 }
