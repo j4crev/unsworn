@@ -463,6 +463,106 @@ auth = "jwt"
 }
 
 #[test]
+fn require_rules_are_placed_checked_and_added_up() {
+    let cfg = |rest: &str| {
+        format!(
+            r#"{RUNTIMES}
+[auth.jwt]
+type = "jwt"
+secret = "s"
+
+[defaults]
+auth = "jwt"
+
+[policies.tenant]
+require = {{ "params.org" = "auth.org" }}
+
+[[route]]
+path = "/orgs/{{org}}/invoices/{{id}}"
+respond = {{ status = 200 }}
+{rest}"#
+        )
+    };
+    // A rule on a prefix entry holds for every route under it, and a
+    // narrower statement adds to it. An unquoted key says the same.
+    let p = project(&[(
+        "unsworn.toml",
+        &cfg(r#"
+[[route]]
+path = "/orgs/{tenant}/{*rest}"
+require = { params.tenant = "auth.org" }
+
+[[route]]
+path = "/orgs/{org}/invoices/{id}"
+require = { "auth.sub" = "query.as" }
+"#),
+    )]);
+    let route = found(&p, "GET", "/orgs/acme/invoices/7").route;
+    let eff = p.effective(route, "GET", "/orgs/acme/invoices/7");
+    let rules: Vec<String> = eff.require.iter().map(|r| r.describe()).collect();
+    assert_eq!(rules, ["params.tenant = auth.org", "auth.sub = query.as"]);
+    // The parameter is where it is in the entry's own path, whatever the
+    // route calls it.
+    assert_eq!(
+        eff.require[0].left,
+        Operand::Param {
+            name: "tenant".into(),
+            segment: Some(1),
+            rest: false
+        }
+    );
+
+    // A set's rule gets its place from the entry that uses the set.
+    let p = project(&[(
+        "unsworn.toml",
+        &cfg("\n[[route]]\npath = \"/orgs/{org}/{*rest}\"\nuse = [\"tenant\"]\n"),
+    )]);
+    let eff = p.effective(
+        found(&p, "GET", "/orgs/a/invoices/1").route,
+        "GET",
+        "/orgs/a/invoices/1",
+    );
+    assert_eq!(eff.require.len(), 1);
+
+    // `"off"` leaves the wider rules out.
+    let p = project(&[(
+        "unsworn.toml",
+        &cfg(
+            "\n[[route]]\npath = \"/orgs/{org}/{*rest}\"\nuse = [\"tenant\"]\n\n[[route]]\npath = \"/orgs/{org}/invoices/{id}\"\nrequire = \"off\"\n",
+        ),
+    )]);
+    let eff = p.effective(
+        found(&p, "GET", "/orgs/a/invoices/1").route,
+        "GET",
+        "/orgs/a/invoices/1",
+    );
+    assert!(eff.require.is_empty());
+
+    let first_error = |rest: &str| errors(&[("unsworn.toml", &cfg(rest))]).remove(0);
+    // A parameter the path doesn't have,
+    let e = first_error(
+        "\n[[route]]\npath = \"/orgs/{org}/{*rest}\"\nrequire = { \"params.team\" = \"auth.org\" }\n",
+    );
+    assert!(e.contains("has no parameter named \"team\""), "{e}");
+    // a table with no path,
+    let e = first_error("\n[mcp]\nuse = [\"tenant\"]\n");
+    assert!(e.contains("`params.org` needs a path"), "{e}");
+    // something that isn't a value of the request,
+    let e = first_error(
+        "\n[[route]]\npath = \"/orgs/{org}/{*rest}\"\nrequire = { \"params.org\" = \"acme\" }\n",
+    );
+    assert!(e.contains("\"acme\" isn't a value a request has"), "{e}");
+    // and a claim where there's no caller.
+    let e = first_error(
+        "\n[[route]]\npath = \"/orgs/{org}/{*rest}\"\nauth = \"none\"\nuse = [\"tenant\"]\n",
+    );
+    assert!(
+        e.contains("is public: a request there has no caller"),
+        "{e}"
+    );
+}
+
+#[test]
 fn an_entry_for_one_method_leaves_the_others_alone() {
     let cfg = format!(
         r#"{RUNTIMES}

@@ -42,6 +42,20 @@
         }
       ]
     },
+    "Map_of_RawRequireValueOrOff": {
+      "anyOf": [
+        {
+          "const": "off",
+          "description": "Switch off a setting inherited from a broader layer."
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/RawRequireValue"
+          },
+          "type": "object"
+        }
+      ]
+    },
     "OnError": {
       "oneOf": [
         {
@@ -1174,6 +1188,17 @@
             }
           ]
         },
+        "require": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Map_of_RawRequireValueOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Pairs of values that have to be the same, such as\n`{ \"params.org\" = \"auth.org\" }`."
+        },
         "response_headers": {
           "anyOf": [
             {
@@ -1340,6 +1365,20 @@
         "to"
       ],
       "type": "object"
+    },
+    "RawRequireValue": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "What an unquoted dotted key turns into: `params.org = \"auth.org\"`\nis `{ params = { org = \"auth.org\" } }`.",
+          "type": "object"
+        }
+      ]
     },
     "RawRespond": {
       "additionalProperties": false,
@@ -1545,6 +1584,17 @@
               "type": "null"
             }
           ]
+        },
+        "require": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Map_of_RawRequireValueOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Pairs of values that have to be the same, such as\n`{ \"params.org\" = \"auth.org\" }`."
         },
         "respond": {
           "anyOf": [

@@ -244,6 +244,35 @@ use = ["private"]
 }
 
 #[test]
+fn a_require_rule_is_in_the_plan_and_dropping_one_is_looser() {
+    let route = |require: &str| {
+        format!(
+            "[defaults]\nauth = \"jwt\"\n\n[[route]]\npath = \"/orgs/{{org}}/{{*rest}}\"\nproxy = \"http://app\"\n{require}\n"
+        )
+    };
+    let both = "require = { \"params.org\" = \"auth.org\", \"header.x-region\" = \"auth.region\" }";
+    let one = "require = { \"params.org\" = \"auth.org\" }";
+    let plan = plan_of(&route(both), &[]);
+    assert_eq!(
+        text(entry(&plan, "* /orgs/{org}/{*rest}"), "require"),
+        "header.x-region = auth.region; params.org = auth.org"
+    );
+    let dir = |old: &str, new: &str| {
+        let d = changes(&route(old), &route(new));
+        let (_, c) = only_change(&d);
+        (c.key.clone(), c.direction)
+    };
+    assert_eq!(dir(both, one), ("require".into(), Direction::Looser));
+    assert_eq!(dir(one, ""), ("require".into(), Direction::Looser));
+    assert_eq!(dir("", one), ("require".into(), Direction::Tighter));
+    assert_eq!(dir(one, both), ("require".into(), Direction::Tighter));
+    assert_eq!(
+        dir(one, "require = { \"params.org\" = \"auth.tenant\" }"),
+        ("require".into(), Direction::Changed)
+    );
+}
+
+#[test]
 fn removing_auth_is_looser() {
     let old = "[[route]]\npath = \"/admin/{*rest}\"\nproxy = \"http://app\"\nauth = \"jwt\"\n";
     let new = "[[route]]\npath = \"/admin/{*rest}\"\nproxy = \"http://app\"\n";

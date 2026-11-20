@@ -387,6 +387,7 @@ const POLICY_KEYS: &[&str] = &[
     "rate_limit",
     "cache",
     "before",
+    "require",
     "timeout",
     "max_body",
     "stream_body",
@@ -629,6 +630,11 @@ fn policies(e: &mut Entry, eff: &Effective, project: &Project) {
     if !eff.before.is_empty() {
         let list: Vec<String> = eff.before.iter().map(|h| h.raw.clone()).collect();
         e.push("before", list.join(", "), Weigh::Before(list));
+    }
+    if !eff.require.is_empty() {
+        let rules: Vec<String> = eff.require.iter().map(|r| r.describe()).collect();
+        // Each rule turns requests away, as a `before` handler may.
+        e.push("require", rules.join("; "), Weigh::Before(rules));
     }
     e.plain("timeout", format_duration(eff.timeout));
     if let Some(f) = e.facts.last_mut() {

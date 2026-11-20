@@ -22,7 +22,7 @@ use crate::config::{OrOff, ResponseValidation};
 use crate::mcp::rpc::{self, Headers, Message, RpcError};
 use crate::mcp::{McpEndpoint, McpTool};
 use crate::pipeline::host::{Body, CallError, Host, ProxyRequest, Reply};
-use crate::pipeline::{header_map, query_pairs, retry_secs};
+use crate::pipeline::{header_map, query_pairs, retry_secs, unmet};
 use crate::policy::{AuthReq, Effective};
 use crate::project::{Project, Proxy};
 use crate::store::RateLimit;
@@ -330,6 +330,24 @@ impl ToolCall<'_> {
                 ..Default::default()
             },
         };
+        // A route offered as a tool keeps its `require` rules, checked
+        // against the request its arguments make. (The endpoint's own
+        // were checked with the request that carried the call.)
+        if tool.binding.is_some()
+            && let Some(rule) = unmet(
+                &eff.require,
+                &template.path,
+                &query_pairs(template.raw_query.as_deref()),
+                &self.trusted,
+                claims.as_ref(),
+            )
+        {
+            return Err(self.error(format!(
+                "Not allowed: `{}` and `{}` have to be the same for this call.",
+                rule.left.describe(),
+                rule.right.describe()
+            )));
+        }
         if !eff.before.is_empty() {
             let deadline = ctx.deadline(eff.timeout);
             match run_befores(ctx, &eff, &template, None, context, deadline).await {

@@ -85,6 +85,81 @@ impl KeySource {
     }
 }
 
+/// One side of a `require` rule: a value the request or its caller has.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Operand {
+    /// A claim from the verified credentials: `auth.org`.
+    Claim(String),
+    /// A request header, by its lowercase name: `header.x-tenant`.
+    Header(String),
+    /// A query parameter: `query.org`.
+    Query(String),
+    /// A parameter of the path the rule is written for: `params.org`.
+    Param {
+        name: String,
+        /// Which of the path's segments it is, once the path is known. A
+        /// rule in a policy set gets its place where the set is used.
+        segment: Option<usize>,
+        /// It's a `{*rest}`: every segment from there on.
+        rest: bool,
+    },
+}
+
+impl Operand {
+    pub fn parse(s: &str) -> Result<Operand, String> {
+        let named = |prefix: &str| s.strip_prefix(prefix).filter(|name| !name.is_empty());
+        if let Some(claim) = named("auth.") {
+            Ok(Operand::Claim(claim.to_string()))
+        } else if let Some(h) = named("header.") {
+            Ok(Operand::Header(h.to_ascii_lowercase()))
+        } else if let Some(q) = named("query.") {
+            Ok(Operand::Query(q.to_string()))
+        } else if let Some(p) = named("params.") {
+            Ok(Operand::Param {
+                name: p.to_string(),
+                segment: None,
+                rest: false,
+            })
+        } else {
+            Err(format!(
+                "\"{s}\" isn't a value a request has: use \"auth.<claim>\", \"params.<name>\", \"query.<name>\" or \"header.<name>\""
+            ))
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Operand::Claim(c) => format!("auth.{c}"),
+            Operand::Header(h) => format!("header.{h}"),
+            Operand::Query(q) => format!("query.{q}"),
+            Operand::Param { name, .. } => format!("params.{name}"),
+        }
+    }
+}
+
+/// A `require` rule: two values that have to be the same for the request
+/// to go on, such as the organization in the path and the one in the
+/// caller's token. A request where they differ, or that lacks one of
+/// them, gets `403`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Requirement {
+    pub left: Operand,
+    pub right: Operand,
+}
+
+impl Requirement {
+    /// The rule as it's written: `params.org = auth.org`.
+    pub fn describe(&self) -> String {
+        format!("{} = {}", self.left.describe(), self.right.describe())
+    }
+
+    /// Whether the rule looks at who the caller is.
+    pub fn needs_caller(&self) -> bool {
+        matches!(self.left, Operand::Claim(_)) || matches!(self.right, Operand::Claim(_))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RateLimit {
     pub requests: u32,
@@ -145,6 +220,9 @@ pub struct Layer {
     pub response_headers: Option<OrOff<HeaderRules>>,
     /// Accumulates across layers; `Off` clears what came before.
     pub before: Option<OrOff<Vec<HandlerRef>>>,
+    /// Accumulates across layers, as `before` does: a narrower statement
+    /// adds to what a wider one requires. `Off` clears what came before.
+    pub require: Option<OrOff<Vec<Requirement>>>,
 }
 
 impl Layer {
@@ -165,18 +243,26 @@ impl Layer {
         take(&mut self.max_body, &other.max_body);
         take(&mut self.stream_body, &other.stream_body);
         take(&mut self.response_headers, &other.response_headers);
-        match (&mut self.before, &other.before) {
-            (_, None) => {}
-            (slot, Some(OrOff::Off)) => *slot = Some(OrOff::Off),
-            (Some(OrOff::On(existing)), Some(OrOff::On(more))) => {
-                for h in more {
-                    if !existing.contains(h) {
-                        existing.push(h.clone());
+        /// Adds a list to the one so far, leaving out what's there.
+        fn add<T: Clone + PartialEq>(
+            slot: &mut Option<OrOff<Vec<T>>>,
+            value: &Option<OrOff<Vec<T>>>,
+        ) {
+            match (&mut *slot, value) {
+                (_, None) => {}
+                (_, Some(OrOff::Off)) => *slot = Some(OrOff::Off),
+                (Some(OrOff::On(existing)), Some(OrOff::On(more))) => {
+                    for item in more {
+                        if !existing.contains(item) {
+                            existing.push(item.clone());
+                        }
                     }
                 }
+                (_, Some(OrOff::On(more))) => *slot = Some(OrOff::On(more.clone())),
             }
-            (slot, Some(OrOff::On(more))) => *slot = Some(OrOff::On(more.clone())),
         }
+        add(&mut self.before, &other.before);
+        add(&mut self.require, &other.require);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -197,6 +283,7 @@ impl Layer {
             ("stream_body", self.stream_body.is_some()),
             ("response_headers", self.response_headers.is_some()),
             ("before", self.before.is_some()),
+            ("require", self.require.is_some()),
         ]
         .into_iter()
         .filter_map(|(key, set)| set.then_some(key))
@@ -223,6 +310,7 @@ impl Layer {
             stream_body: self.stream_body.unwrap_or(false),
             response_headers: on(&self.response_headers).unwrap_or_default(),
             before: on(&self.before).unwrap_or_default(),
+            require: on(&self.require).unwrap_or_default(),
         }
     }
 }
@@ -241,6 +329,7 @@ pub struct Effective {
     pub stream_body: bool,
     pub response_headers: HeaderRules,
     pub before: Vec<HandlerRef>,
+    pub require: Vec<Requirement>,
 }
 
 #[cfg(test)]
