@@ -93,6 +93,8 @@ pub fn run(
                 go_package: package
                     .map(String::from)
                     .or_else(|| listed.and_then(|g| g.options.go_package.clone())),
+                // Where the file is says which handlers it can name.
+                file: file.clone().filter(|f| f != "-"),
             };
             match file.as_deref() {
                 None | Some("-") => {

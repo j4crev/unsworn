@@ -1976,8 +1976,11 @@ impl<'h> Compiler<'h> {
             }
             out.push(Generated {
                 lang,
-                file,
-                options: Options { go_package },
+                file: file.clone(),
+                options: Options {
+                    go_package,
+                    file: Some(file),
+                },
             });
         }
         out
@@ -2679,6 +2682,100 @@ impl<'h> Compiler<'h> {
         }
     }
 
+    /// The runtime for a handler file no `[runtimes.*]` claims, when it's
+    /// in a language with an SDK: the command that SDK's own instructions
+    /// give. Which tool, where there's a choice, is read from the
+    /// project's lock files. A project writes a runtime of its own only
+    /// to run things differently.
+    fn default_runtime(&mut self, ext: &str, file: &str) -> Option<String> {
+        const JS: &[&str] = &[".ts", ".mts", ".js", ".mjs"];
+        let (name, extensions, build, command, startup): (
+            &str,
+            &[&str],
+            Option<String>,
+            String,
+            u64,
+        ) = match ext {
+            ".ts" | ".mts" | ".js" | ".mjs" => {
+                let worker = "node_modules/@unswornjs/sdk/src/worker.ts";
+                let tool = match self.host.exists("bun.lock") || self.host.exists("bun.lockb") {
+                    true => "bun run",
+                    false => "node",
+                };
+                ("ts", JS, None, format!("{tool} {worker}"), 30)
+            }
+            ".py" => {
+                let python = match self.host.exists("uv.lock") {
+                    true => "uv run python",
+                    false => "python3",
+                };
+                (
+                    "python",
+                    &[".py"],
+                    None,
+                    format!("{python} -u -m unsworn.worker"),
+                    30,
+                )
+            }
+            ".go" => {
+                // One worker program, built from the package the
+                // handlers are in.
+                let package = match file.rsplit_once('/') {
+                    Some((dir, _)) => format!("./{dir}"),
+                    None => ".".to_string(),
+                };
+                (
+                    "go",
+                    &[".go"],
+                    Some(format!("go build -o .unsworn/go-worker {package}")),
+                    ".unsworn/go-worker".to_string(),
+                    120,
+                )
+            }
+            ".rs" => {
+                // The worker is the crate's binary, whose name is in
+                // its manifest.
+                let manifest = self.host.read("Cargo.toml")?;
+                let manifest: toml::Value = toml::from_str(&manifest).ok()?;
+                let name = |table: &toml::Value| table.get("name")?.as_str().map(String::from);
+                let bin = manifest
+                    .get("bin")
+                    .and_then(|bins| bins.as_array()?.first().and_then(name))
+                    .or_else(|| manifest.get("package").and_then(name))?;
+                self.files.push("Cargo.toml".into());
+                (
+                    "rust",
+                    &[".rs"],
+                    Some("cargo build --release".to_string()),
+                    format!("target/release/{bin}"),
+                    300,
+                )
+            }
+            _ => return None,
+        };
+        // A runtime of that name with other extensions is someone's own.
+        let mut key = name.to_string();
+        while self.runtimes.contains_key(&key) {
+            key.push_str("-default");
+        }
+        self.runtimes.insert(
+            key.clone(),
+            Arc::new(Runtime {
+                name: key.clone(),
+                extensions: extensions.iter().map(|e| e.to_string()).collect(),
+                command,
+                build,
+                protocol: Protocol::Framed,
+                workers: Workers::default(),
+                eager: false,
+                env: BTreeMap::new(),
+                startup_timeout: Duration::from_secs(startup),
+                listen: config::Listen::default(),
+            }),
+        );
+        Some(key)
+    }
+
     fn handler_ref(&mut self, raw: &str, runtime: Option<&str>, loc: &str) -> Option<HandlerRef> {
         let (file, name) = HandlerRef::split(raw);
         if file.is_empty() {
@@ -2714,8 +2811,11 @@ impl<'h> Compiler<'h> {
                     .runtimes
                     .values()
                     .find(|r| r.extensions.iter().any(|e| e == ext));
-                match found {
-                    Some(r) => r.name.clone(),
+                let found = found.map(|r| r.name.clone());
+                // A language Unsworn has an SDK for runs the usual way
+                // unless a runtime says otherwise.
+                match found.or_else(|| self.default_runtime(ext, file)) {
+                    Some(name) => name,
                     None => {
                         let shown = if ext.is_empty() { file } else { ext };
                         self.diags.push(

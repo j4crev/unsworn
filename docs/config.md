@@ -116,6 +116,25 @@ tie the server up:
 
 ### `[runtimes.<name>]`
 
+**A language with an SDK needs no runtime of its own.** A handler file in
+TypeScript, JavaScript, Python, Go or Rust that no `[runtimes.*]` claims
+runs the way its SDK's instructions say:
+
+| Files | Runs with | When |
+|---|---|---|
+| `.ts`, `.mts`, `.js`, `.mjs` | `bun run node_modules/@unswornjs/sdk/src/worker.ts` | the project has `bun.lock` or `bun.lockb` |
+| | `node node_modules/@unswornjs/sdk/src/worker.ts` | otherwise |
+| `.py` | `uv run python -u -m unsworn.worker` | the project has `uv.lock` |
+| | `python3 -u -m unsworn.worker` | otherwise |
+| `.go` | `.unsworn/go-worker`, built with `go build -o .unsworn/go-worker ./<the handlers' directory>` | |
+| `.rs` | `target/release/<the binary in Cargo.toml>`, built with `cargo build --release` | the project has a `Cargo.toml` |
+
+All four use `protocol = "framed"` and the usual [`workers`](#how-many-workers).
+[`unsworn plan`](plan.md) lists the runtime a project ended up with, as it
+does one you wrote. Write a `[runtimes.<name>]` to run things differently
+(Deno, a virtualenv's Python, a debug build, fixed `workers`, `env`), or
+for any other language:
+
 ```toml
 [runtimes.ts]
 extensions      = [".ts", ".js"]
@@ -148,7 +167,8 @@ language, that Unsworn starts and forwards requests to. It has no
 `extensions`: routes reach it with `proxy = { runtime = "api" }`. See
 [`http-runtime.md`](http-runtime.md).
 
-Runtime names are arbitrary. Unsworn knows nothing about any specific language.
+Runtime names are arbitrary, and a runtime you write is taken as written:
+Unsworn runs its `command` and asks nothing about the language.
 With an SDK either `protocol` works, and the handler code is the same. `"jsonl"`
 is slightly faster for small requests. `"framed"` is faster once bodies reach
 about 64 KB, and leaves the worker's stdout to the handler.

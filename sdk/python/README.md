@@ -14,17 +14,16 @@ def get_user(req, ctx):
 
 ```toml
 # unsworn.toml
-[runtimes.python]
-extensions = [".py"]
-command = "python3 -u -m unsworn.worker"
-protocol = "framed"
-
 [[route]]
 path = "/users/{id}"
 method = "GET"
 handler = "src/users.py#get_user"
 params = { id = { type = "integer", min = 1 } }
 ```
+
+That's all the config a Python handler needs: with no `[runtimes.*]` for
+`.py`, Unsworn runs `python3 -u -m unsworn.worker` (through `uv run` in a
+project with a `uv.lock`). Write a runtime to run it another way.
 
 ## Types from the config
 

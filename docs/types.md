@@ -145,6 +145,39 @@ after the function.
 The TypeScript file also lists each [outbound service](outbound.md), so
 `ctx.fetch("strpe", ...)` is a compile error.
 
+## The worker's list of handlers, for Go and Rust
+
+TypeScript and Python load a handler's file when a request names it. Go
+and Rust can't: their handlers are compiled into one worker program, which
+needs a list of them. The generated file has that list too, made from the
+config, so `main` doesn't keep one:
+
+```go
+// main.go
+func main() { unsworn.Serve(Handlers()...) }
+```
+
+```rust
+// src/main.rs
+fn main() {
+    unsworn_sdk::run(unsworn_gen::handlers());
+}
+```
+
+- **Every handler the config names is in it:** routes' handlers, `before`
+  handlers, shadows and functions.
+- **A name in the config that isn't a function fails the build,** where
+  it used to fail when the worker started.
+- **It names what it can reach.** Go: the functions in the generated
+  file's own directory, which is its package. Rust: the functions below
+  the generated file's directory, by module path
+  (`src/api/users.rs#get_user` is `crate::api::users::get_user`), so put
+  the file in the crate's `src`. A handler it can't name, and a route
+  file, whose reference names no function, are listed in a comment above
+  it for you to add yourself.
+- **Printed to the terminal,** `unsworn gen go` has no list: where the
+  file is decides what it can name.
+
 ## How schemas become types
 
 | JSON Schema | TypeScript | Python | Go | Rust |
