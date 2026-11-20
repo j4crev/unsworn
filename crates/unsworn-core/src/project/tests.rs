@@ -120,7 +120,7 @@ params = {{ id = {{ type = "integer", min = 1 }} }}
 }
 
 #[test]
-fn route_files_nested_and_flat_with_a_folders_before_handler() {
+fn route_files_nested_and_flat_with_a_folders_policies_in_the_config() {
     let cfg = format!(
         r#"{RUNTIMES}
 [defaults]
@@ -136,23 +136,35 @@ secret = "s"
 [policies.cached]
 cache = {{ ttl = "5m" }}
 
-# Policies for a folder's routes are an entry for the folder's path.
+# Policies for a folder's routes are an entry for the folder's path,
+# its `before` handlers among them.
 [[route]]
 path = "/admin/{{*rest}}"
 auth = "jwt"
 use = ["cached"]
+before = ["routes/admin/guard.ts"]
+
+# A route written here, under the folder's path, is covered like the
+# files in it.
+[[route]]
+method = "POST"
+path = "/admin/purge"
+handler = "src/purge.ts"
 "#
     );
     let files = [
         ("unsworn.toml", cfg.as_str()),
         ("routes/users.get.ts", ""),
         ("routes/users/[id]/put.go", ""),
-        ("routes/admin/_before.ts", ""),
+        // No method in its name, so it's a helper to the scan: a handler
+        // because the entry above lists it.
+        ("routes/admin/guard.ts", ""),
         ("routes/admin/stats.get.ts", ""),
         ("routes/lib/db.ts", ""),
+        ("src/purge.ts", ""),
     ];
     let p = project(&files);
-    assert_eq!(p.routes.len(), 3);
+    assert_eq!(p.routes.len(), 4);
     let put = found(&p, "PUT", "/users/7");
     assert_eq!(put.route.handler().unwrap().runtime, "go");
 
@@ -161,7 +173,11 @@ use = ["cached"]
     assert!(matches!(eff.auth, AuthReq::AnyOf(_)));
     assert!(eff.cache.is_some());
     assert_eq!(eff.before.len(), 1);
-    assert_eq!(eff.before[0].file, "routes/admin/_before.ts");
+    assert_eq!(eff.before[0].file, "routes/admin/guard.ts");
+    let purge = found(&p, "POST", "/admin/purge");
+    let eff = p.effective(purge.route, "POST", "/admin/purge");
+    assert_eq!(eff.before.len(), 1);
+    assert_eq!(eff.before[0].file, "routes/admin/guard.ts");
 
     let users = found(&p, "GET", "/users");
     let eff = p.effective(users.route, "GET", "/users");
@@ -174,6 +190,18 @@ use = ["cached"]
     let errs = errors(&with_file);
     assert!(errs[0].contains("routes/admin/_policies.toml"), "{errs:?}");
     assert!(errs[0].contains("path = \"/admin/{*rest}\""), "{errs:?}");
+
+    // Nor is a `before` handler picked up by its name, for the same
+    // reason. The error gives the line to write, with a name for the file
+    // that isn't this error again.
+    let mut with_file = files.to_vec();
+    with_file.push(("routes/admin/_before.py", ""));
+    let errs = errors(&with_file);
+    assert!(errs[0].contains("routes/admin/_before.py:"), "{errs:?}");
+    assert!(
+        errs[0].contains("`path = \"/admin/{*rest}\"` and `before = [\"routes/admin/guard.py\"]`"),
+        "{errs:?}"
+    );
 }
 
 #[test]

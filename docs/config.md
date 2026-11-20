@@ -842,8 +842,8 @@ browser fetches.
 
 Most keys replace what wider statements set. `before` and `require` are
 different: lists from every one of them are joined, widest first, so a
-folder's `_before` handler and a route's own `before` both run, and a
-route's `require` adds to a prefix's. `"off"` clears the inherited ones.
+prefix's `before` handlers and a route's own both run, and a route's
+`require` adds to a prefix's. `"off"` clears the inherited ones.
 
 `response_headers` sets and removes headers on the response. `headers`, on
 a route, is something else: rules for the request's headers (see
@@ -1208,7 +1208,6 @@ a single flat folder and any mix of the two:
 | `routes/users/[id]/put.go` | `routes/users.[id].put.go` | `PUT /users/{id}` |
 | `routes/files/[...path]/get.rs` | `routes/files.[...path].get.rs` | `GET /files/{*path}` |
 | `routes/(admin)/stats/get.ts` | `routes/(admin).stats.get.ts` | `GET /stats` |
-| `routes/users/_before.ts` | `routes/users._before.ts` | `before` handler for `/users` and below |
 
 - `[name]` is a parameter, `[...name]` matches the rest of the path, and
   `(name)` is a group that doesn't appear in the URL.
@@ -1236,15 +1235,21 @@ with an entry for the folder's path, in the config:
 path       = "/admin/{*rest}"        # routes/admin/ and everything in it
 auth       = "jwt"
 rate_limit = { requests = 20, per = "1m", key = "auth.sub" }
+before     = ["routes/admin/guard.ts"]
 ```
+
+A `before` handler can be a file in the routes directory. With no HTTP
+method in its name it isn't a route, and it runs where an entry lists it.
 
 That entry covers every request under `/admin`, whichever source its route
 comes from. A group folder such as `(public)` has no path of its own, so
 its routes take a named set through an entry each, or share a path prefix.
 
-Unsworn doesn't read a `_policies.toml` file in a routes folder, and says
-so if it finds one. Such a file would cover the route files beside it and
-not a `[[route]]` or an OpenAPI operation under the same path.
+Nothing in a routes folder applies to its routes by being there. A
+`_policies.toml` or `_before.<ext>` file is an error from `unsworn check`
+that gives the entry to write instead. Such a file would cover the route
+files beside it and not a `[[route]]` or an OpenAPI operation under the
+same path.
 
 ### 3. OpenAPI spec
 
