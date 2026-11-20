@@ -1453,10 +1453,10 @@ impl<'h> Compiler<'h> {
                         .hint("list both sets in the route's `use` instead"),
                 );
             }
-            let layer = self.layer(set, &loc, None);
+            let layer = self.layer(set, &loc, &loc);
             self.sets.insert(name.clone(), layer);
         }
-        let defaults = self.layer(&raw.defaults, "[defaults]", None);
+        let defaults = self.layer(&raw.defaults, "[defaults]", "[defaults]");
 
         let mut drafts: Vec<Draft> = Vec::new();
         let mut exacts: Vec<ExactEntry> = Vec::new();
@@ -2478,8 +2478,10 @@ impl<'h> Compiler<'h> {
         Some(AuthReq::AnyOf(alts))
     }
 
-    /// Converts policy keys into a layer. `use` sets apply first.
-    fn layer(&mut self, raw: &RawPolicies, loc: &str, _scope: Option<&str>) -> Layer {
+    /// Converts policy keys into a layer. `use` sets apply first. `counter`
+    /// names the table for a rate limit written in it (see
+    /// [`RateLimit::counter`]); a limit from a set keeps the set's.
+    fn layer(&mut self, raw: &RawPolicies, loc: &str, counter: &str) -> Layer {
         let mut layer = Layer::default();
         if let Some(sets) = &raw.use_sets {
             for name in sets {
@@ -2569,6 +2571,7 @@ impl<'h> Compiler<'h> {
                     requests: r.requests,
                     per: r.per.0,
                     key,
+                    counter: counter.to_string(),
                 }))
             }
         };
@@ -2735,7 +2738,15 @@ impl<'h> Compiler<'h> {
         }
         let methods = self.methods(r.method.as_ref().map(|m| m.to_vec()), &loc);
         let policies = r.policies();
-        let layer = self.layer(&policies, &loc, None);
+        // A route or an entry is known by its methods and path, which no
+        // other statement that sets the same policy can share.
+        let counter = format!(
+            "{} {}{}",
+            label(&methods),
+            r.host.as_deref().unwrap_or_default().to_ascii_lowercase(),
+            r.path
+        );
+        let layer = self.layer(&policies, &loc, &counter);
         let validation = self.raw_validation(r, &loc);
         let has_catch_all = parse_pattern(&r.path)
             .last()
@@ -2957,7 +2968,7 @@ impl<'h> Compiler<'h> {
             .proxy
             .as_ref()
             .map(|p| self.proxy(p, &format!("{loc}.proxy")));
-        let layer = self.layer(&raw.policies(), &loc, None);
+        let layer = self.layer(&raw.policies(), &loc, "[mcp]");
         for (key, set) in [
             ("cache", layer.cache.is_some()),
             ("stream_body", layer.stream_body.is_some()),
@@ -3048,7 +3059,7 @@ impl<'h> Compiler<'h> {
         drafts: &mut Vec<Draft>,
     ) -> Option<McpTool> {
         let loc = source.loc();
-        let own = self.layer(&t.policies(), &loc, None);
+        let own = self.layer(&t.policies(), &loc, &format!("[[mcp.tool]] {}", t.name));
         for key in endpoint_only_keys(&own)
             .into_iter()
             .chain(own.cache.is_some().then_some("cache"))

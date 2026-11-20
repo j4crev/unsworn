@@ -100,7 +100,10 @@ fn a_route_has_what_every_layer_adds_up_to() {
     let get = entry(&plan, "GET /api/users/{id}");
     assert_eq!(text(get, "handler"), "src/users.ts#user (ts)");
     assert_eq!(text(get, "auth"), "jwt");
-    assert_eq!(text(get, "rate_limit"), "100 per 1m by auth.sub");
+    assert_eq!(
+        text(get, "rate_limit"),
+        "100 per 1m by auth.sub, counted for * /api/{*rest}"
+    );
     assert_eq!(text(get, "params.id"), r#"{"minimum":1,"type":"integer"}"#);
     assert!(get.inside.is_empty());
 }
@@ -113,7 +116,10 @@ fn a_catch_all_lists_the_paths_inside_it_with_other_rules() {
     assert!(all.fact("rate_limit").is_none());
     let titles: Vec<String> = all.inside.iter().map(Entry::title).collect();
     assert_eq!(titles, ["at /api/{*rest}", "at /assets/{*rest}"]);
-    assert_eq!(text(&all.inside[0], "rate_limit"), "100 per 1m by auth.sub");
+    assert_eq!(
+        text(&all.inside[0], "rate_limit"),
+        "100 per 1m by auth.sub, counted for * /api/{*rest}"
+    );
     assert_eq!(text(&all.inside[1], "auth"), "none");
 }
 
@@ -124,14 +130,14 @@ fn renders_methods_that_agree_as_one_block() {
     assert!(out.contains("\nplan 1\n"), "{out}");
     assert!(
         out.contains(
-            "\nGET, DELETE /api/users/{id}\n  handler            src/users.ts#user (ts)\n  auth               jwt\n  rate_limit         100 per 1m by auth.sub\n  params.id          {\"minimum\":1,\"type\":\"integer\"}\n"
+            "\nGET, DELETE /api/users/{id}\n  handler            src/users.ts#user (ts)\n  auth               jwt\n  rate_limit         100 per 1m by auth.sub, counted for * /api/{*rest}\n  params.id          {\"minimum\":1,\"type\":\"integer\"}\n"
         ),
         "{out}"
     );
     // Inside the catch-all, only what differs from it.
     assert!(
         out.contains(
-            "\n* /{*rest}\n  proxy              {env.APP_URL}\n  auth               jwt\n  at /api/{*rest}\n    rate_limit         100 per 1m by auth.sub\n  at /assets/{*rest}\n    auth               none\n"
+            "\n* /{*rest}\n  proxy              {env.APP_URL}\n  auth               jwt\n  at /api/{*rest}\n    rate_limit         100 per 1m by auth.sub, counted for * /api/{*rest}\n  at /assets/{*rest}\n    auth               none\n"
         ),
         "{out}"
     );

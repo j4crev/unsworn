@@ -39,7 +39,7 @@ runtime ts
 POST /api/summarize
   handler            routes/api.summarize.post.py (py)
   auth               key
-  rate_limit         60 per 1m by ip
+  rate_limit         60 per 1m by ip, counted for * /api/{*rest}
   before             src/tenant.ts#tenant
   body               {
                        "properties": {
@@ -57,7 +57,7 @@ POST /api/summarize
 GET /api/users/{id}
   handler            routes/api.users.[id].get.ts (ts)
   auth               key
-  rate_limit         60 per 1m by ip
+  rate_limit         60 per 1m by ip, counted for * /api/{*rest}
   cache              30s; vary x-api-key
   before             src/tenant.ts#tenant
   params.id          {"minimum":1,"type":"integer"}
@@ -71,7 +71,7 @@ GET /api/users/{id}
   auth               none
   at /api/{*rest}
     auth               key
-    rate_limit         60 per 1m by ip
+    rate_limit         60 per 1m by ip, counted for * /api/{*rest}
     before             src/tenant.ts#tenant
 
 function initials
