@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header};
+use serde_json::{Map, Value};
 
 use super::Problem;
 use crate::project::{Proxy, Target};
@@ -14,6 +15,39 @@ use crate::project::{Proxy, Target};
 static ROUND_ROBIN: AtomicUsize = AtomicUsize::new(0);
 
 static KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
+
+/// The header a proxied app learns who the caller is from: the request's
+/// context, which is the verified claims under `auth` and whatever
+/// `before` handlers added, as base64url-encoded JSON without padding.
+/// It's what a handler gets as `ctx`. The JSON is encoded because a
+/// header can't hold every character a claim can.
+///
+/// A request never arrives with one: [`strip_context`] takes a client's
+/// own off every request, so an app that only Unsworn can reach can take
+/// the header's word.
+pub const CONTEXT: HeaderName = HeaderName::from_static("unsworn-context");
+
+/// Removes a context header the client sent, which would otherwise pass
+/// for Unsworn's.
+pub fn strip_context(headers: &mut HeaderMap) {
+    headers.remove(&CONTEXT);
+}
+
+/// Puts the request's context on a request about to be forwarded, for an
+/// upstream that takes it. A request with no context (nobody verified the
+/// caller, and no `before` handler added anything) goes without the
+/// header, which is how an app tells.
+pub fn forward_context(headers: &mut HeaderMap, context: &Map<String, Value>, proxy: &Proxy) {
+    use base64::Engine;
+    if !proxy.context || context.is_empty() {
+        return;
+    }
+    let json = serde_json::to_vec(context).unwrap_or_default();
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
+    if let Ok(value) = HeaderValue::try_from(encoded) {
+        headers.insert(&CONTEXT, value);
+    }
+}
 
 /// Removes hop-by-hop headers, including those named in `Connection`.
 pub fn strip_hop_by_hop(headers: &mut HeaderMap) {

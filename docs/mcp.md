@@ -140,7 +140,10 @@ rate_limit = { requests = 60, per = "1m", key = "auth.sub" }
 ```
 
 The MCP server's code needs no auth logic of its own, and the security rules
-for an agent-facing endpoint are in one short, reviewable file.
+for an agent-facing endpoint are in one short, reviewable file. When a tool
+needs to know who is calling, the server reads it from the
+[`Unsworn-Context`](config.md#who-the-caller-is-unsworn-context) header,
+which carries the verified claims.
 
 At this level, Unsworn sees every MCP request as `POST /mcp`. It can't tell
 tools apart, so policies apply to the whole server. This works with MCP

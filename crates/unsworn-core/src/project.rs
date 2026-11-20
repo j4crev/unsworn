@@ -118,6 +118,10 @@ pub struct Proxy {
     /// Lowercase header name whose value pins a client to an upstream.
     pub sticky_header: Option<String>,
     pub preserve_host: bool,
+    /// Whether the upstream gets the request's context (the caller's
+    /// verified claims and what `before` handlers added) in the
+    /// `Unsworn-Context` header.
+    pub context: bool,
     /// How to reach each upstream. In step with `upstreams`.
     #[serde(skip)]
     targets: Vec<Target>,
@@ -161,8 +165,15 @@ impl Proxy {
             strip_prefix,
             sticky_header,
             preserve_host,
+            context: true,
             targets,
         }
+    }
+
+    /// Whether the upstream is told who the caller is. It is by default.
+    pub fn with_context(mut self, context: bool) -> Proxy {
+        self.context = context;
+        self
     }
 
     /// How to reach the upstream at `index`.
@@ -2968,13 +2979,14 @@ impl<'h> Compiler<'h> {
 
     fn proxy(&mut self, p: &RawProxy, loc: &str) -> Arc<Proxy> {
         {
-            let (upstreams, strip_prefix, sticky, preserve_host) = match p {
-                RawProxy::Url(u) => (vec![u.clone()], None, None, false),
+            let (upstreams, strip_prefix, sticky, preserve_host, context) = match p {
+                RawProxy::Url(u) => (vec![u.clone()], None, None, false, true),
                 RawProxy::Full(f) => (
                     f.upstreams.clone(),
                     f.strip_prefix.clone(),
                     f.sticky.clone(),
                     f.preserve_host,
+                    f.context.unwrap_or(true),
                 ),
             };
             let upstreams: Vec<String> = upstreams
@@ -3019,12 +3031,10 @@ impl<'h> Compiler<'h> {
                     }
                 },
             };
-            Arc::new(Proxy::new(
-                upstreams,
-                strip_prefix,
-                sticky_header,
-                preserve_host,
-            ))
+            Arc::new(
+                Proxy::new(upstreams, strip_prefix, sticky_header, preserve_host)
+                    .with_context(context),
+            )
         }
     }
 

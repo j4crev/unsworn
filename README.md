@@ -111,6 +111,8 @@ Point a catch-all route at your existing Express, Hono, FastAPI or Go app,
 with no code changes, and you can immediately:
 
 - add JWT or API-key auth, rate limits and caching to any path
+- have the app told who the caller is, in a header, so it doesn't check
+  the token again
 - validate requests and data against an OpenAPI spec before they reach your app
 - serve health checks, redirects and static files without touching the app
 
