@@ -139,7 +139,7 @@ Compared with a handler in an SDK language:
   `unsworn check --target` reports an HTTP runtime there. Deploy the
   server on its own and `proxy` to its URL, or use the server target.
 - **In a container,** `unsworn build --target image` installs the tools
-  it knows (Bun, Node, Deno, Python, Go, Rust). For another one, add its
+  it knows (Bun, Node, Python, Go, Rust). For another one, add its
   install to the Dockerfile it writes.
 
 The SDK languages keep everything they had; this is one more protocol

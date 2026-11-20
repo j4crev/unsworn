@@ -132,7 +132,7 @@ runs the way its SDK's instructions say:
 All four use `protocol = "framed"` and the usual [`workers`](#how-many-workers).
 [`unsworn plan`](plan.md) lists the runtime a project ended up with, as it
 does one you wrote. Write a `[runtimes.<name>]` to run things differently
-(Deno, a virtualenv's Python, a debug build, fixed `workers`, `env`), or
+(a virtualenv's Python, a debug build, fixed `workers`, `env`), or
 for any other language:
 
 ```toml

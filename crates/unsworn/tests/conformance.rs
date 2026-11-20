@@ -68,13 +68,6 @@ fn js_sdk_node() {
 }
 
 #[test]
-fn js_sdk_deno() {
-    if has("deno") {
-        run("deno-jsonl", "sdk/js/conformance/handlers.ts");
-    }
-}
-
-#[test]
 fn go_sdk() {
     // `go` takes `version`, not `--version`.
     let has_go = Command::new("go")

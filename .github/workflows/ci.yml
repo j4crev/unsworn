@@ -16,7 +16,7 @@ env:
 jobs:
   # The `unsworn` binary for servers and containers: lint, the Rust tests
   # (including the conformance suite, which runs every SDK's worker against
-  # the binary, so it needs Bun, Node, Deno, Python and Go), and the Go SDK.
+  # the binary, so it needs Bun, Node, Python and Go), and the Go SDK.
   server:
     runs-on: ubuntu-latest
     services:
@@ -37,7 +37,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
@@ -70,7 +69,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"

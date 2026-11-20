@@ -51,8 +51,7 @@ Still open for the edge:
 - **WASM handlers** called directly, rather than through a JS wrapper.
   Not planned for now; see item 5 under
   [Beyond the front door](#beyond-the-front-door).
-- **More isolate platforms,** such as Deno Deploy and Fastly, each with its
-  own bridge.
+- **More isolate platforms,** such as Fastly, each with its own bridge.
 
 ## v3: serverless functions
 

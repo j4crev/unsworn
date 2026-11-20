@@ -26,7 +26,6 @@ use crate::load::{self, FsHost};
 enum Tool {
     Bun,
     Node,
-    Deno,
     Python,
     Go,
     Rust,
@@ -37,7 +36,6 @@ impl Tool {
         match self {
             Tool::Bun => "bun",
             Tool::Node => "node",
-            Tool::Deno => "deno",
             Tool::Python => "python",
             Tool::Go => "go",
             Tool::Rust => "rust",
@@ -55,7 +53,6 @@ impl Tool {
         match self {
             Tool::Bun | Tool::Go | Tool::Rust => "1",
             Tool::Node => "22",
-            Tool::Deno => "2",
             Tool::Python => "3",
         }
     }
@@ -65,7 +62,6 @@ impl Tool {
         match self {
             Tool::Bun => ("bun", &["--version"]),
             Tool::Node => ("node", &["--version"]),
-            Tool::Deno => ("deno", &["--version"]),
             Tool::Python => ("python3", &["--version"]),
             Tool::Go => ("go", &["version"]),
             Tool::Rust => ("rustc", &["--version"]),
@@ -107,8 +103,6 @@ fn tool(runtime: &Runtime) -> Option<Tool> {
         Some(Tool::Bun)
     } else if named(&runtime.command, &["node", "npx", "tsx"]) {
         Some(Tool::Node)
-    } else if named(&runtime.command, &["deno"]) {
-        Some(Tool::Deno)
     } else if named(&runtime.command, &["python", "python3", "uv"]) {
         Some(Tool::Python)
     } else {
@@ -204,7 +198,6 @@ fn version(look: &dyn Look, tool: Tool) -> (String, Pinned) {
         Tool::Node => file(".nvmrc")
             .or_else(|| file(".node-version"))
             .or_else(|| listed(&["nodejs", "node"])),
-        Tool::Deno => listed(&["deno"]),
         Tool::Python => file(".python-version").or_else(|| listed(&["python"])),
         Tool::Go => listed(&["golang", "go"]).or_else(|| {
             let module = look.read("go.mod")?;
@@ -400,7 +393,6 @@ fn base_image(tool: Tool, version: &str) -> String {
     match tool {
         Tool::Bun => format!("oven/bun:{version}"),
         Tool::Node => format!("node:{version}-bookworm-slim"),
-        Tool::Deno => format!("denoland/deno:bin-{version}"),
         Tool::Python => format!("python:{version}-slim-bookworm"),
         Tool::Go => format!("golang:{version}-bookworm"),
         Tool::Rust => format!("rust:{version}-bookworm"),
@@ -502,7 +494,6 @@ fn dockerfile(image: &Image, target: For) -> String {
         let copy = match tool {
             Tool::Bun => "/usr/local/bin/bun /usr/local/bin/bun",
             Tool::Node => "/usr/local/bin/node /usr/local/bin/node",
-            Tool::Deno => "/deno /usr/local/bin/deno",
             _ => continue,
         };
         let _ = writeln!(
@@ -1015,6 +1006,6 @@ proxy = "{env.APP_URL}"
             version(&look, Tool::Bun),
             ("1.4.4".into(), Pinned::Installed)
         );
-        assert_eq!(version(&look, Tool::Deno), ("2".into(), Pinned::Unknown));
+        assert_eq!(version(&look, Tool::Go), ("1".into(), Pinned::Unknown));
     }
 }

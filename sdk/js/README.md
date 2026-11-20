@@ -1,8 +1,8 @@
 # @unswornjs/sdk
 
 Write [Unsworn](https://github.com/j4crev/unsworn) handlers in JavaScript or
-TypeScript. One worker runs on Bun, Node (22.18+, which runs TypeScript
-directly) and Deno.
+TypeScript. One worker runs on Bun and on Node (22.18+, which runs
+TypeScript directly).
 
 ```ts
 // src/users.ts
@@ -27,12 +27,12 @@ params = { id = { type = "integer", min = 1 } }
 That's all the config a handler needs: with no `[runtimes.*]` for `.ts` or
 `.js`, Unsworn runs the SDK's worker with Bun in a project that has a
 `bun.lock`, and with Node otherwise. Write a runtime to run it another way,
-with Deno for one:
+with Bun in a project that has no `bun.lock` for one:
 
 ```toml
 [runtimes.ts]
 extensions = [".ts", ".js"]
-command = "deno run --allow-all node_modules/@unswornjs/sdk/src/worker.ts"
+command = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
 protocol = "framed"
 ```
 

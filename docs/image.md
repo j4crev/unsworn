@@ -26,7 +26,7 @@ command again writes it afresh from the config.
 - **A stage for JavaScript dependencies.** `node_modules` is installed
   from the lockfile (`bun.lock`, `package-lock.json`, `pnpm-lock.yaml` or
   `yarn.lock`), without dev dependencies, and copied in.
-- **The interpreters the runtimes use.** Bun, Node and Deno are one file
+- **The interpreters the runtimes use.** Bun and Node are one file
   each, copied from their official images. For Python the image starts
   from the official Python image, and `requirements.txt` (or `uv.lock`)
   is installed. Without either, only the SDK is.
@@ -53,7 +53,6 @@ Each runtime's version comes from the first of these that says:
 |---|---|
 | Bun | `.bun-version`, `.tool-versions`, `packageManager` in `package.json` |
 | Node | `.nvmrc`, `.node-version`, `.tool-versions` |
-| Deno | `.tool-versions` |
 | Python | `.python-version`, `.tool-versions` |
 | Go | `.tool-versions`, the `go` line in `go.mod` |
 | Rust | `.tool-versions`, `rust-toolchain.toml` |
@@ -85,8 +84,8 @@ unsworn build --target image --from registry.example/unsworn:0.4.0   # take the 
 - **Debian only.** Every image it uses is the Debian (`bookworm`) one,
   so the pieces fit together. There's no Alpine or distroless variant.
 - **It reads commands, it doesn't run them.** A runtime is recognised by
-  the program its `command` or `build` names: `bun`, `node`, `deno`,
-  `python3`, `go`, `cargo`.
+  the program its `command` or `build` names: `bun`, `node`, `python3`,
+  `go`, `cargo`.
 - **One project directory.** A handler that imports from outside the
   project, or a Cargo workspace above it, isn't in the build context.
 - **Images aren't pinned by digest.** Tags name a version, which is what

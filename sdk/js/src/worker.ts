@@ -7,7 +7,7 @@
 //   command = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
 //   protocol = "framed"
 //
-// Works on Bun, Node (22.18+, which runs TypeScript directly) and Deno.
+// Works on Bun and on Node (22.18+, which runs TypeScript directly).
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { connect } from "node:net";

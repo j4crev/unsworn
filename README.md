@@ -411,7 +411,7 @@ Handler SDKs:
 
 | Language | Package | Source |
 |---|---|---|
-| JavaScript and TypeScript (Bun, Node, Deno) | `@unswornjs/sdk` on npm | [`sdk/js`](sdk/js) |
+| JavaScript and TypeScript (Bun, Node) | `@unswornjs/sdk` on npm | [`sdk/js`](sdk/js) |
 | Python | `unsworn` on PyPI | [`sdk/python`](sdk/python) |
 | Go | `github.com/j4crev/unsworn/sdk/go` | [`sdk/go`](sdk/go) |
 | Rust | `unsworn-sdk` on crates.io | [`sdk/rust`](sdk/rust) |

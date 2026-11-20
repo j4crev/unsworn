@@ -15,10 +15,6 @@ extensions = [".cts"]
 command = "node sdk/js/src/worker.ts"
 protocol = "framed"
 
-[runtimes.deno-jsonl]
-extensions = [".js"]
-command = "deno run --allow-all sdk/js/src/worker.ts"
-
 [runtimes.python-jsonl]
 extensions = [".py"]
 command = "python3 -u -m unsworn.worker"

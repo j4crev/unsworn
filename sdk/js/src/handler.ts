@@ -62,7 +62,7 @@ export function fetchAdapter(app: FetchApp, fetchArgs?: () => unknown[]): Callab
         // skip headers the platform refuses
       }
     }
-    // `duplex` is required by Node and Deno for a streamed body.
+    // `duplex` is required by Node for a streamed body.
     const init = { method: req.method, headers, body, signal: req.signal, duplex: "half" } as RequestInit;
     return app.fetch(new Request(url, init), ...(fetchArgs?.() ?? []));
   };
