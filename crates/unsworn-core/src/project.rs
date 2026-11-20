@@ -10,7 +10,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::auth::{
-    ApiKeyScheme, ApiKeys, JwtKeys, JwtScheme, KeyVerifier, ProtectedResource, Scheme,
+    ApiKeyScheme, ApiKeys, JwtKeys, JwtScheme, KeyVerifier, ProtectedResource, Scheme, Signed,
+    WebhookScheme,
 };
 use crate::config::{
     self, Format, OrOff, Protocol, RawAuth, RawAuthItem, RawAuthScheme, RawConfig, RawMcp,
@@ -1120,6 +1121,13 @@ impl Project {
             add(&f.handler);
         }
         out
+    }
+
+    /// Whether one of the schemes in `auth` checks a signature made over
+    /// the request's body, which then has to be read before the caller is
+    /// known.
+    pub fn signs_body(&self, auth: &AuthReq) -> bool {
+        signs_body(&self.schemes, auth)
     }
 
     /// The headers that carry credentials for the schemes in `auth`.
@@ -2400,9 +2408,122 @@ impl<'h> Compiler<'h> {
                         keys,
                     })
                 }
+                RawAuthScheme::Webhook(w) => {
+                    let Some(scheme) = self.webhook(name, w, &loc) else {
+                        continue;
+                    };
+                    Scheme::Webhook(scheme)
+                }
             };
             self.schemes.insert(name.clone(), Arc::new(scheme));
         }
+    }
+
+    /// A scheme for requests signed with a shared secret.
+    fn webhook(&mut self, name: &str, w: &config::RawWebhook, loc: &str) -> Option<WebhookScheme> {
+        let custom = w.header.is_some() || w.encoding.is_some() || w.prefix.is_some();
+        let signed = match (&w.provider, &w.header) {
+            (Some(provider), _) if custom => {
+                self.diags.push(
+                    Diagnostic::error(
+                        loc,
+                        format!("`provider = \"{provider}\"` already says where the signature is and how it's written"),
+                    )
+                    .hint("remove `header`, `encoding` and `prefix`, or remove `provider` to describe the signature yourself"),
+                );
+                return None;
+            }
+            (Some(provider), _) => match Signed::provider(provider) {
+                Some(signed) => signed,
+                None => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!("{loc}.provider"),
+                            format!("unknown provider \"{provider}\""),
+                        )
+                        .hint(format!(
+                            "one of {}; for another service, set `header` to the one that holds an HMAC-SHA256 of the body",
+                            Signed::PROVIDERS.join(", ")
+                        )),
+                    );
+                    return None;
+                }
+            },
+            (None, Some(header)) => {
+                if !valid_header_name(header) {
+                    self.diags.error(
+                        format!("{loc}.header"),
+                        format!("\"{header}\" isn't a header name"),
+                    );
+                }
+                let base64 = match w.encoding.as_deref() {
+                    None | Some("hex") => false,
+                    Some("base64") => true,
+                    Some(other) => {
+                        self.diags.error(
+                            format!("{loc}.encoding"),
+                            format!("\"{other}\" isn't an encoding: use \"hex\" or \"base64\""),
+                        );
+                        false
+                    }
+                };
+                Signed::Body {
+                    provider: None,
+                    header: header.to_ascii_lowercase(),
+                    prefix: w.prefix.clone().unwrap_or_default(),
+                    base64,
+                }
+            }
+            (None, None) => {
+                self.diags.push(
+                    Diagnostic::error(
+                        loc,
+                        "set `provider`, or `header` for a service Unsworn has no name for",
+                    )
+                    .hint(format!("providers: {}", Signed::PROVIDERS.join(", "))),
+                );
+                return None;
+            }
+        };
+        if w.tolerance.is_some() && !signed.timed() {
+            self.diags.error(
+                format!("{loc}.tolerance"),
+                "this signature is over the body alone, with no time in it to be too old",
+            );
+        }
+        let at = format!("{loc}.secret");
+        let reported = self.diags.items.len();
+        let secret = self.subst_secret(&w.secret, &at);
+        if secret.is_empty() && self.diags.items.len() == reported {
+            self.diags.push(
+                Diagnostic::error(&at, "the secret is empty")
+                    .hint("anyone can sign a request with an empty secret"),
+            );
+        }
+        // A Standard Webhooks secret is base64 after `whsec_`. Every
+        // other one is used as it's written.
+        let key = match &signed {
+            Signed::Standard { .. } if !self.unresolved(&secret) => {
+                use base64::Engine;
+                let encoded = secret.strip_prefix("whsec_").unwrap_or(&secret);
+                match base64::engine::general_purpose::STANDARD.decode(encoded) {
+                    Ok(key) => key,
+                    Err(_) => {
+                        self.diags.push(
+                            Diagnostic::error(
+                                &at,
+                                "the secret isn't base64, which this provider's secrets are",
+                            )
+                            .hint("copy it as the service shows it, `whsec_` and all"),
+                        );
+                        Vec::new()
+                    }
+                }
+            }
+            _ => secret.into_bytes(),
+        };
+        let tolerance = w.tolerance.map_or(300, |d| d.0.as_secs());
+        Some(WebhookScheme::new(name, key, signed, tolerance))
     }
 
     fn store(&mut self, raw: &RawConfig) -> StoreConfig {
@@ -4454,6 +4575,19 @@ impl<'h> Compiler<'h> {
                     );
                     }
                 }
+                if eff.stream_body && signs_body(&self.schemes, &eff.auth) {
+                    self.diags.push(
+                    Diagnostic::error(
+                        format!("{}", r.source),
+                        format!(
+                            "{} {} sets `stream_body`, but its `auth` checks a signature made over the whole body, which has to be read first",
+                            r.method_label(),
+                            r.path
+                        ),
+                    )
+                    .hint("remove `stream_body` from this route"),
+                );
+                }
                 if eff.stream_body && r.validation.body.is_some() {
                     self.diags.push(
                     Diagnostic::error(
@@ -4720,6 +4854,15 @@ impl<'h> Compiler<'h> {
 /// as long as its 256-bit output (RFC 7518 section 3.2).
 const MIN_SECRET_BYTES: usize = 32;
 
+fn signs_body(schemes: &BTreeMap<String, Arc<Scheme>>, auth: &AuthReq) -> bool {
+    let AuthReq::AnyOf(alts) = auth else {
+        return false;
+    };
+    alts.iter()
+        .filter_map(|a| schemes.get(&a.scheme))
+        .any(|s| matches!(s.as_ref(), Scheme::Webhook(_)))
+}
+
 fn credential_headers(schemes: &BTreeMap<String, Arc<Scheme>>, auth: &AuthReq) -> Vec<String> {
     let AuthReq::AnyOf(alts) = auth else {
         return Vec::new();
@@ -4729,6 +4872,7 @@ fn credential_headers(schemes: &BTreeMap<String, Arc<Scheme>>, auth: &AuthReq) -
         .filter_map(|s| match s.as_ref() {
             Scheme::Jwt(j) => Some(j.header.clone()),
             Scheme::ApiKey(k) => k.header.clone(),
+            Scheme::Webhook(w) => Some(w.signed.header()),
         })
         .collect()
 }

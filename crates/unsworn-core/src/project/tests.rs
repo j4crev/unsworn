@@ -563,6 +563,108 @@ require = { "auth.sub" = "query.as" }
 }
 
 #[test]
+fn webhook_schemes_say_who_signs_and_how() {
+    let cfg = |scheme: &str, route: &str| {
+        format!(
+            r#"{RUNTIMES}
+[auth.hooks]
+type = "webhook"
+{scheme}
+
+[[route]]
+path = "/hooks"
+method = "POST"
+auth = "hooks"
+handler = "h.ts"
+{route}"#
+        )
+    };
+    let files = |c: &str| vec![("unsworn.toml", c.to_string()), ("h.ts", String::new())];
+    let compile_with = |c: &str, env: &[(&str, &str)]| {
+        let files = files(c);
+        let refs: Vec<(&str, &str)> = files.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let mut host = MemHost::with(&refs);
+        host.env = env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        compile(&host, "unsworn.toml")
+    };
+    let first_error = |scheme: &str, route: &str| -> String {
+        let compiled = compile_with(&cfg(scheme, route), &[]);
+        let found = compiled.diagnostics.iter().find(|d| d.is_error());
+        found
+            .unwrap_or_else(|| panic!("no error for {scheme}"))
+            .to_string()
+    };
+
+    // A provider by name, and a header of one's own.
+    let compiled = compile_with(
+        &cfg(
+            "provider = \"stripe\"\nsecret = \"{env.STRIPE_WEBHOOK_SECRET}\"\ntolerance = \"2m\"",
+            "",
+        ),
+        &[("STRIPE_WEBHOOK_SECRET", "whsec_abc")],
+    );
+    let p = compiled.project.expect("compiles");
+    let Scheme::Webhook(hooks) = p.schemes["hooks"].as_ref() else {
+        panic!("not a webhook scheme");
+    };
+    assert_eq!(
+        (hooks.signed.name(), hooks.tolerance),
+        (Some("stripe"), 120)
+    );
+    // The secret is Unsworn's own, like a JWT's: not for handlers.
+    assert_eq!(p.secret_env, ["STRIPE_WEBHOOK_SECRET"]);
+    assert!(p.signs_body(&p.route_effective(&p.routes[0]).auth));
+    // And it's not in the scheme's debug output.
+    assert!(!format!("{hooks:?}").contains("whsec"));
+
+    let compiled = compile_with(
+        &cfg(
+            "secret = \"s3cret-s3cret\"\nheader = \"X-Shopify-Hmac-Sha256\"\nencoding = \"base64\"",
+            "",
+        ),
+        &[],
+    );
+    let p = compiled.project.expect("compiles");
+    let Scheme::Webhook(hooks) = p.schemes["hooks"].as_ref() else {
+        panic!("not a webhook scheme");
+    };
+    assert_eq!(hooks.signed.header(), "x-shopify-hmac-sha256");
+
+    let e = first_error("secret = \"s\"", "");
+    assert!(e.contains("set `provider`, or `header`"), "{e}");
+    let e = first_error("secret = \"s\"\nprovider = \"paypal\"", "");
+    assert!(e.contains("unknown provider \"paypal\""), "{e}");
+    assert!(e.contains("github, slack, standard, stripe, svix"), "{e}");
+    let e = first_error(
+        "secret = \"s\"\nprovider = \"github\"\nprefix = \"sha256=\"",
+        "",
+    );
+    assert!(e.contains("already says where the signature is"), "{e}");
+    let e = first_error(
+        "secret = \"s\"\nprovider = \"github\"\ntolerance = \"1m\"",
+        "",
+    );
+    assert!(e.contains("with no time in it"), "{e}");
+    let e = first_error("secret = \"\"\nprovider = \"github\"", "");
+    assert!(e.contains("the secret is empty"), "{e}");
+    let e = first_error("secret = \"whsec_not base64!\"\nprovider = \"svix\"", "");
+    assert!(e.contains("isn't base64"), "{e}");
+    // A signature is over the whole body, which a streamed one isn't
+    // there for.
+    let e = first_error(
+        "secret = \"s\"\nprovider = \"github\"",
+        "stream_body = true",
+    );
+    assert!(
+        e.contains("checks a signature made over the whole body"),
+        "{e}"
+    );
+}
+
+#[test]
 fn an_entry_for_one_method_leaves_the_others_alone() {
     let cfg = format!(
         r#"{RUNTIMES}

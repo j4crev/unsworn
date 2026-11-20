@@ -199,7 +199,10 @@ async fn visible_tools<H: Host>(
                 Some((_, v)) => *v,
                 None => {
                     let eff = ctx.project.tool_effective(tool);
-                    let v = ctx.authenticate(&parts.headers, &eff, &query).await.is_ok();
+                    let v = ctx
+                        .authenticate(&parts.headers, &eff, &query, None)
+                        .await
+                        .is_ok();
                     verdicts.push((auth.clone(), v));
                     v
                 }
@@ -273,24 +276,25 @@ impl ToolCall<'_> {
         // A missing scope is an HTTP error, so clients can ask for more access.
         if needs_auth {
             let query = query_pairs(parts.uri.query());
-            let (more, tool_claims) = match ctx.authenticate(&parts.headers, &eff, &query).await {
-                Ok(outcome) => outcome,
-                Err(resp) => {
-                    // A call that fails the tool's `auth` still counts
-                    // against its rate limit, by the client's address,
-                    // unless it failed because a verifier is down.
-                    if resp.status() != StatusCode::SERVICE_UNAVAILABLE
-                        && let Some(limit) = limit
-                        && let RateLimit::Limited { retry_after } =
-                            ctx.rate_limit(limit, &self.trusted, None).await
-                    {
-                        return Err(super::problem_response(crate::pipeline::too_many_requests(
-                            retry_after,
-                        )));
+            let (more, tool_claims) =
+                match ctx.authenticate(&parts.headers, &eff, &query, None).await {
+                    Ok(outcome) => outcome,
+                    Err(resp) => {
+                        // A call that fails the tool's `auth` still counts
+                        // against its rate limit, by the client's address,
+                        // unless it failed because a verifier is down.
+                        if resp.status() != StatusCode::SERVICE_UNAVAILABLE
+                            && let Some(limit) = limit
+                            && let RateLimit::Limited { retry_after } =
+                                ctx.rate_limit(limit, &self.trusted, None).await
+                        {
+                            return Err(super::problem_response(
+                                crate::pipeline::too_many_requests(retry_after),
+                            ));
+                        }
+                        return Err(resp);
                     }
-                    return Err(resp);
-                }
-            };
+                };
             if let Some(auth) = more.get("auth") {
                 context.insert("auth".into(), auth.clone());
             }

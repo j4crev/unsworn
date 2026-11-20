@@ -512,6 +512,22 @@ fn scheme(scheme: &Scheme) -> Entry {
                 }
             }
         }
+        Scheme::Webhook(w) => {
+            e.plain("type", "webhook");
+            if let Some(provider) = w.signed.name() {
+                e.plain("provider", provider);
+            }
+            e.plain("header", w.signed.header());
+            e.plain("signature", "HMAC-SHA256 with a shared secret");
+            if w.signed.timed() {
+                // A longer one accepts older requests.
+                e.push(
+                    "tolerance",
+                    format_duration(Duration::from_secs(w.tolerance)),
+                    Weigh::Limit(w.tolerance),
+                );
+            }
+        }
     }
     e
 }
