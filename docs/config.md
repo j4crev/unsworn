@@ -1075,6 +1075,49 @@ cache = { ttl = "5m", key = "auth.sub" }       # one cache entry per user
 cache = "off"
 ```
 
+#### `invalidates`: a write that makes cached reads out of date
+
+A cached response otherwise lives until its `ttl`, so a user who changes
+their profile would read the old one back until then. The route that does
+the writing can say which cached paths it makes out of date:
+
+```toml
+[[route]]
+path    = "/users/{id}"
+method  = "GET"
+handler = "src/users.ts#get"
+cache   = { ttl = "1h", key = "auth.sub" }
+
+[[route]]
+path        = "/users/{id}"
+method      = "PUT"
+handler     = "src/users.ts#update"
+invalidates = ["/users/{id}", "/users"]
+```
+
+After `PUT /users/7` succeeds, the responses cached for `/users/7` and
+`/users` are no longer served: the next request for either goes to its
+handler and is cached afresh. `/users/8` stays cached.
+
+- **A path here is filled in from the request,** so it can use the
+  route's own parameters and no others. It covers every response cached
+  for that path: any query string, any `vary` value, any user.
+- **Only a request that succeeds invalidates:** a response with a status
+  below `400`. It's done before the response goes out, so whoever made
+  the change reads it back fresh.
+- **It's one path at a time.** There's no "everything under `/users`":
+  list the paths a write affects.
+- **A route from a file or an OpenAPI spec** takes `invalidates` from an
+  entry for its path and method, as it takes `shadow`.
+- **The same route called as an MCP tool** invalidates too.
+- **How it's kept:** as a mark in the [store](#store), next to the cached
+  responses, saying when the path was last invalidated. A response
+  cached before its path's mark is a miss. So instances that share a
+  Redis share invalidations, and each lookup of a response that could
+  have been invalidated reads the store once more. On Cloudflare the
+  cache is kept per data center, so a write invalidates the copies where
+  it was handled; `unsworn check --target cloudflare` says so.
+
 ### A full example
 
 ```toml

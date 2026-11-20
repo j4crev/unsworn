@@ -416,6 +416,40 @@ pub struct Route {
     segs: Vec<Seg>,
     pub op: Option<OpInfo>,
     pub shadow: Option<Shadow>,
+    /// The paths whose cached responses a successful request to this
+    /// route makes out of date. See [`Invalidates`].
+    pub invalidates: Vec<Invalidates>,
+}
+
+/// A path a route invalidates, as `invalidates` writes it:
+/// `/users/{id}`, with each parameter filled in from the request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Invalidates {
+    pub path: String,
+    segs: Vec<Seg>,
+}
+
+impl Invalidates {
+    /// The path this stands for in a request with these path parameters,
+    /// as [`crate::store::path_key`] writes one. `None` when the request
+    /// lacks one of them.
+    pub fn key(&self, params: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+        let mut segments: Vec<String> = Vec::new();
+        for seg in &self.segs {
+            match seg {
+                Seg::Lit(text) => segments.push(text.clone()),
+                Seg::Param(name) => segments.push(params(name)?),
+                // The rest of a path is segments of its own.
+                Seg::CatchAll(name) => segments.extend(
+                    params(name)?
+                        .split('/')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from),
+                ),
+            }
+        }
+        Some(crate::store::path_key(segments.iter().map(String::as_str)))
+    }
 }
 
 impl Route {
@@ -824,6 +858,12 @@ pub struct Project {
     pub routes: Vec<Route>,
     /// The policy-only `[[route]]` entries, widest first (see [`Width`]).
     pub entries: Vec<PolicyEntry>,
+    /// Every path some route's `invalidates` names, as a pattern, so a
+    /// cached response is only checked for a mark when one could exist.
+    invalidated: Vec<Vec<Seg>>,
+    /// The longest any cached response can live: how long an invalidation
+    /// mark is kept.
+    cache_ttl_max: Duration,
     pub openapi: OpenApiMeta,
     /// The MCP endpoint, when `[mcp]` is set.
     pub mcp: Option<McpEndpoint>,
@@ -1123,6 +1163,20 @@ impl Project {
         out
     }
 
+    /// Whether some route's `invalidates` could name this request path, so
+    /// that a response cached for it may have been marked out of date.
+    pub fn may_be_invalidated(&self, path: &str) -> bool {
+        self.invalidated
+            .iter()
+            .any(|segs| pattern_matches(segs, path))
+    }
+
+    /// How long an invalidation mark is kept: as long as the longest-lived
+    /// cached response it could be about.
+    pub fn invalidation_ttl(&self) -> Duration {
+        self.cache_ttl_max
+    }
+
     /// Whether one of the schemes in `auth` checks a signature made over
     /// the request's body, which then has to be read before the caller is
     /// known.
@@ -1349,6 +1403,8 @@ struct ExactEntry {
     mcp: Option<RawRouteTool>,
     /// `shadow`, for the route this entry matches.
     shadow: Option<config::RawShadow>,
+    /// `invalidates`, for the route this entry matches.
+    invalidates: Option<Vec<String>>,
 }
 
 #[derive(Default, Clone)]
@@ -1399,6 +1455,8 @@ struct Draft {
     mcp: Option<(RawRouteTool, bool)>,
     /// `shadow` on the route's own `[[route]]` entry.
     shadow: Option<config::RawShadow>,
+    /// `invalidates` on the route's own `[[route]]` entry.
+    invalidates: Option<Vec<String>>,
 }
 
 /// The OpenAPI operations `[openapi] mcp_tools` offers as tools.
@@ -1651,6 +1709,37 @@ impl<'h> Compiler<'h> {
         link_entries(&mut routes, &entries, mcp_path);
         self.conflicts(&routes, &entries);
 
+        // What `invalidates` needs at request time.
+        let mut invalidated: Vec<Vec<Seg>> = Vec::new();
+        for route in &routes {
+            for target in &route.invalidates {
+                if !invalidated.contains(&target.segs) {
+                    invalidated.push(target.segs.clone());
+                }
+            }
+        }
+        let cache_ttl_max = routes
+            .iter()
+            .flat_map(|r| [&r.low, &r.high])
+            .chain(entries.iter().map(|e| &e.layer))
+            .filter_map(|layer| match &layer.cache {
+                Some(OrOff::On(rule)) => Some(rule.ttl),
+                _ => None,
+            })
+            .max()
+            .unwrap_or_default();
+        if cache_ttl_max.is_zero()
+            && let Some(route) = routes.iter().find(|r| !r.invalidates.is_empty())
+        {
+            self.diags.push(
+                Diagnostic::warning(
+                    format!("{}.invalidates", route.source.loc()),
+                    "nothing in this project is cached, so there's nothing to invalidate",
+                )
+                .hint("set `cache` on the routes whose responses this one makes out of date"),
+            );
+        }
+
         let route_tools = self.compile_route_tools(&routes, &entries, mcp_pending.as_ref());
         let mcp = mcp_pending.and_then(|p| p.finish(&routes, route_tools));
         if let Some(m) = &mcp
@@ -1676,6 +1765,8 @@ impl<'h> Compiler<'h> {
             store,
             routes,
             entries,
+            invalidated,
+            cache_ttl_max,
             openapi: openapi_meta,
             mcp,
             functions: self.functions(&raw, server_timeout),
@@ -3056,6 +3147,12 @@ impl<'h> Compiler<'h> {
                         "a prefix entry can't be an MCP tool; set `mcp` on a route with one path",
                     );
                 }
+                if r.invalidates.is_some() {
+                    self.diags.error(
+                        format!("{loc}.invalidates"),
+                        "`invalidates` belongs to the route that does the writing, or an entry for its path",
+                    );
+                }
                 entries.push(PolicyEntry {
                     segs: parse_pattern(&r.path),
                     path: r.path.clone(),
@@ -3074,6 +3171,7 @@ impl<'h> Compiler<'h> {
                 used: false,
                 mcp: r.mcp.clone(),
                 shadow: r.shadow.clone(),
+                invalidates: r.invalidates.clone(),
             }),
             1 => {
                 let action = self.action(r, &loc);
@@ -3092,6 +3190,7 @@ impl<'h> Compiler<'h> {
                         op: None,
                         mcp: r.mcp.clone().map(|m| (m, false)),
                         shadow: r.shadow.clone(),
+                        invalidates: r.invalidates.clone(),
                     });
                 }
             }
@@ -3331,6 +3430,7 @@ impl<'h> Compiler<'h> {
             op: None,
             mcp: None,
             shadow: None,
+            invalidates: None,
         });
 
         let mut tools = Vec::new();
@@ -3508,6 +3608,7 @@ impl<'h> Compiler<'h> {
             op: None,
             mcp: None,
             shadow: None,
+            invalidates: None,
         });
         Some(McpTool {
             name: t.name.clone(),
@@ -3935,6 +4036,7 @@ impl<'h> Compiler<'h> {
                 op: None,
                 mcp: None,
                 shadow: None,
+                invalidates: None,
             });
         }
     }
@@ -4132,6 +4234,7 @@ impl<'h> Compiler<'h> {
                 op: Some(info),
                 mcp: tool.map(|t| (t, true)),
                 shadow: None,
+                invalidates: None,
             });
         }
         if pick.is_some() && picked == 0 {
@@ -4183,6 +4286,7 @@ impl<'h> Compiler<'h> {
         let mut raw_validation = d.validation.clone();
         let mut tool = d.mcp.clone().map(|(m, bulk)| (m, loc.clone(), bulk));
         let mut shadow = d.shadow.clone().map(|s| (s, loc.clone()));
+        let mut invalidates = d.invalidates.clone().map(|list| (list, loc.clone()));
         let norm = normalize(&d.path);
         for e in exacts.iter_mut() {
             if e.norm != norm {
@@ -4236,6 +4340,9 @@ impl<'h> Compiler<'h> {
             raw_validation.overlay(&e.validation);
             if let Some(s) = &e.shadow {
                 shadow = Some((s.clone(), e.source.loc()));
+            }
+            if let Some(list) = &e.invalidates {
+                invalidates = Some((list.clone(), e.source.loc()));
             }
             if let Some(m) = &e.mcp {
                 match &tool {
@@ -4314,6 +4421,37 @@ impl<'h> Compiler<'h> {
             ));
         }
 
+        let invalidates: Vec<Invalidates> = invalidates
+            .map(|(list, at)| {
+                let at = format!("{at}.invalidates");
+                let mut out = Vec::new();
+                for path in list {
+                    if !self.check_path(&path, &at) {
+                        continue;
+                    }
+                    let segs = parse_pattern(&path);
+                    // Each parameter is filled in from the request, so it
+                    // has to be one the route's own path has.
+                    let unknown = segs.iter().find_map(|seg| match seg {
+                        Seg::Param(n) | Seg::CatchAll(n) if !param_names.contains(n) => Some(n),
+                        _ => None,
+                    });
+                    if let Some(name) = unknown {
+                        self.diags.push(
+                            Diagnostic::error(
+                                &at,
+                                format!("\"{path}\" has `{{{name}}}`, which the route's path {} doesn't", d.path),
+                            )
+                            .hint("a path here is filled in from the request, so it can only use the route's own parameters"),
+                        );
+                        continue;
+                    }
+                    out.push(Invalidates { path, segs });
+                }
+                out
+            })
+            .unwrap_or_default();
+
         let shadow = shadow.and_then(|(raw, at)| {
             let at = format!("{at}.shadow");
             let (handler, runtime, sample) = match &raw {
@@ -4376,6 +4514,7 @@ impl<'h> Compiler<'h> {
             segs,
             op: d.op,
             shadow,
+            invalidates,
         })
     }
 

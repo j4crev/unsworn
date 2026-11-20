@@ -825,6 +825,10 @@ fn route_entry(project: &Project, route: &Route, method: &str) -> Entry {
             format!("{} ({}){share}", s.handler.raw, s.handler.runtime),
         );
     }
+    if !route.invalidates.is_empty() {
+        let paths: Vec<&str> = route.invalidates.iter().map(|i| i.path.as_str()).collect();
+        e.plain("invalidates", paths.join(", "));
+    }
     let own = parse_pattern(&route.path);
     policies(
         &mut e,

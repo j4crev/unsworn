@@ -1121,6 +1121,97 @@ cache = {{ ttl = "30s", vary = ["Authorization"] }}
     assert_eq!(t.get("/private").header("x-unsworn-cache"), None);
 }
 
+/// A write makes the cached reads it names out of date, so a long `ttl`
+/// doesn't mean reading old data back.
+#[test]
+fn a_write_invalidates_the_cached_responses_it_names() {
+    let read = |req: &ProtoRequest, _: &Body<Bytes>| ok_json(json!({ "path": req.path }));
+    let write = |req: &ProtoRequest, _: &Body<Bytes>| {
+        let status = if req.query.contains_key("fail") {
+            422
+        } else {
+            200
+        };
+        Ok(Reply::Response {
+            response: unsworn_proto::Response::new("", status),
+            body: Body::Empty,
+        })
+    };
+    let host = TestHost::new()
+        .handler("src/h.ts#read", read)
+        .handler("src/h.ts#write", write);
+    let t = Test::new(
+        &format!(
+            r#"{TS}
+[defaults]
+cache = {{ ttl = "1h" }}
+
+[[route]]
+path = "/users"
+method = "GET"
+handler = "src/h.ts#read"
+
+[[route]]
+path = "/users/{{id}}"
+method = "GET"
+handler = "src/h.ts#read"
+
+[[route]]
+path = "/users/{{id}}"
+method = "PUT"
+handler = "src/h.ts#write"
+invalidates = ["/users/{{id}}", "/users"]
+"#
+        ),
+        &["src/h.ts"],
+        host,
+    );
+    // Whether a request was answered by its handler, or from the cache.
+    let handled = |method: &str, uri: &str| {
+        let before = t.host.calls().len();
+        let r = t.send(method, uri, &[], b"");
+        assert!(r.status.as_u16() < 500, "{method} {uri}: {:?}", r.body);
+        t.host.calls().len() > before
+    };
+    for uri in [
+        "/users",
+        "/users/7",
+        "/users/7?fields=name",
+        "/users/8",
+        "/users/a%20b",
+    ] {
+        assert!(
+            handled("GET", uri),
+            "{uri} is first answered by its handler"
+        );
+        assert!(!handled("GET", uri), "{uri} is then cached");
+    }
+
+    // A write that fails changes nothing, and invalidates nothing.
+    assert!(handled("PUT", "/users/7?fail=1"));
+    assert!(!handled("GET", "/users/7"));
+
+    // One that succeeds makes its own user and the list out of date,
+    // whatever the query, and leaves the other users cached.
+    assert!(handled("PUT", "/users/7"));
+    t.host.clock.advance(Duration::from_millis(1));
+    assert!(handled("GET", "/users/7"));
+    assert!(handled("GET", "/users/7?fields=name"));
+    assert!(handled("GET", "/users"));
+    assert!(!handled("GET", "/users/8"));
+    assert!(!handled("GET", "/users/a%20b"));
+    // And they're cached again from then on.
+    for uri in ["/users/7", "/users/7?fields=name", "/users"] {
+        assert!(!handled("GET", uri), "{uri} is cached again");
+    }
+
+    // A path is compared with its escapes resolved, as it's routed.
+    assert!(handled("PUT", "/users/a%20b"));
+    t.host.clock.advance(Duration::from_millis(1));
+    assert!(handled("GET", "/users/a%20b"));
+    assert!(!handled("GET", "/users/8"));
+}
+
 #[test]
 fn cache_keeps_sessions_and_before_handlers() {
     let counter = Arc::new(AtomicU64::new(0));

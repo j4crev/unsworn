@@ -739,6 +739,10 @@ pub struct RawRoute {
     /// the route's own: a handler reference, or `{ handler, runtime, sample }`.
     /// Clients only ever get the route's own answer.
     pub shadow: Option<RawShadow>,
+
+    /// Paths whose cached responses a successful request to this route
+    /// makes out of date, such as `["/users/{id}", "/users"]`.
+    pub invalidates: Option<Vec<String>>,
 }
 
 /// `shadow` on a `[[route]]`.

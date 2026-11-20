@@ -1574,6 +1574,16 @@
             "null"
           ]
         },
+        "invalidates": {
+          "description": "Paths whose cached responses a successful request to this route\nmakes out of date, such as `[\"/users/{id}\", \"/users\"]`.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "ip": {
           "anyOf": [
             {

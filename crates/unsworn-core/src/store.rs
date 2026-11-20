@@ -172,6 +172,58 @@ pub async fn cache_get<S: ResponseCache + ?Sized>(
         .filter(|e| e.fresh(now_ms))
 }
 
+/// A request path as the key cached responses are invalidated by: its
+/// segments, escapes resolved, each written so that no two paths share a
+/// key. Query strings aren't part of it: invalidating `/users/7` covers
+/// every response cached for that path.
+pub fn path_key<'a>(segments: impl Iterator<Item = &'a str>) -> String {
+    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+    let mut key = String::from("inval|");
+    for segment in segments {
+        key.push('/');
+        key.extend(utf8_percent_encode(segment, NON_ALPHANUMERIC));
+    }
+    key
+}
+
+/// Marks the cached responses for a path as out of date from `now_ms` on.
+///
+/// The mark is an entry of its own, written with the one operation every
+/// store has. A cached response older than the mark for its path is a
+/// miss ([`invalidated`]). The mark is kept for `ttl`, which has to be at
+/// least as long as any response it covers can live.
+pub async fn invalidate<S: ResponseCache + ?Sized>(
+    store: &S,
+    path_key: &str,
+    now_ms: u64,
+    ttl: Duration,
+) -> Result<(), StoreError> {
+    let mark = CachedResponse {
+        status: 0,
+        headers: Vec::new(),
+        body: Bytes::new(),
+        stored_ms: now_ms,
+        ttl,
+    };
+    store.put(path_key, mark).await
+}
+
+/// Whether a response cached at `stored_ms` has been invalidated since.
+/// One stored in the same millisecond as the mark counts as before it. A
+/// store that can't be read counts as invalidated: a fresh answer is
+/// always a right one.
+pub async fn invalidated<S: ResponseCache + ?Sized>(
+    store: &S,
+    path_key: &str,
+    stored_ms: u64,
+) -> bool {
+    match store.get(path_key).await {
+        Ok(Some(mark)) => mark.stored_ms >= stored_ms,
+        Ok(None) => false,
+        Err(_) => true,
+    }
+}
+
 /// A token bucket's state: the tokens left, and when it was last counted,
 /// on whatever monotonic clock the backend keeps.
 #[derive(Debug, Clone, Copy, PartialEq)]

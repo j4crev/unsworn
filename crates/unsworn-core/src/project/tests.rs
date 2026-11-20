@@ -665,6 +665,80 @@ handler = "h.ts"
 }
 
 #[test]
+fn invalidates_names_paths_with_the_routes_own_parameters() {
+    let cfg = |write: &str, rest: &str| {
+        format!(
+            r#"{RUNTIMES}
+[routes]
+dir = "routes"
+
+[[route]]
+path = "/users/{{id}}"
+method = "GET"
+handler = "h.ts"
+cache = {{ ttl = "5m" }}
+
+[[route]]
+path = "/users/{{id}}"
+method = "PUT"
+handler = "h.ts"
+{write}
+{rest}"#
+        )
+    };
+    let files = |c: &str| {
+        vec![
+            ("unsworn.toml", c.to_string()),
+            ("h.ts", String::new()),
+            ("routes/teams/[team]/post.ts", String::new()),
+        ]
+    };
+    let load = |c: &str| {
+        let files = files(c);
+        let refs: Vec<(&str, &str)> = files.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        compile(&MemHost::with(&refs), "unsworn.toml")
+    };
+    let c = load(&cfg("invalidates = [\"/users/{id}\", \"/users\"]", ""));
+    let p = c.project.expect("compiles");
+    let put = found(&p, "PUT", "/users/7").route;
+    let paths: Vec<&str> = put.invalidates.iter().map(|i| i.path.as_str()).collect();
+    assert_eq!(paths, ["/users/{id}", "/users"]);
+    assert!(p.may_be_invalidated("/users/7") && p.may_be_invalidated("/users"));
+    assert!(!p.may_be_invalidated("/teams/7"));
+    assert_eq!(p.invalidation_ttl(), Duration::from_secs(300));
+    // The key is the path with the request's own values in it.
+    let key = put.invalidates[0].key(&|name| (name == "id").then(|| "a b".to_string()));
+    assert_eq!(key.as_deref(), Some("inval|/users/a%20b"));
+
+    // A route from a file gets it from an entry for its path.
+    let c = load(&cfg(
+        "",
+        "\n[[route]]\npath = \"/teams/{team}\"\nmethod = \"POST\"\ninvalidates = [\"/teams/{team}\"]\n",
+    ));
+    let p = c.project.expect("compiles");
+    assert_eq!(found(&p, "POST", "/teams/a").route.invalidates.len(), 1);
+
+    let error = |write: &str, rest: &str| -> String {
+        let c = load(&cfg(write, rest));
+        let found = c.diagnostics.iter().find(|d| d.is_error());
+        found.unwrap_or_else(|| panic!("no error")).to_string()
+    };
+    let e = error("invalidates = [\"/users/{user}\"]", "");
+    assert!(
+        e.contains("has `{user}`, which the route's path /users/{id} doesn't"),
+        "{e}"
+    );
+    let e = error(
+        "",
+        "\n[[route]]\npath = \"/users/{*rest}\"\ninvalidates = [\"/users\"]\n",
+    );
+    assert!(
+        e.contains("belongs to the route that does the writing"),
+        "{e}"
+    );
+}
+
+#[test]
 fn an_entry_for_one_method_leaves_the_others_alone() {
     let cfg = format!(
         r#"{RUNTIMES}
