@@ -242,9 +242,9 @@ and the variable it's read from is kept out of workers' environments. See
 
 Both tiers carry the **same message model**, so the router has one dispatch
 pipeline with two codecs. Neither is the fast one across the board: for
-small requests Tier 1 is slightly ahead in every SDK, and from about 64 KB
-of body Tier 2 is ahead by 15 to 30% in most of them (see
-[benchmarks](benchmarks.md)). Plain HTTP services are covered by the built-in
+small requests the two are within 9% of each other on Bun, Python and Go,
+and Tier 1 is 27% ahead in Rust. From about 64 KB of body, Tier 2 is ahead
+by 15 to 25% on Bun and 3 to 5% in Go (see [benchmarks](benchmarks.md)). Plain HTTP services are covered by the built-in
 `proxy` route type instead of a third tier.
 
 The **portable contract is the handler signature** provided by each language

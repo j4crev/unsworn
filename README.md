@@ -135,7 +135,7 @@ const vector = await ctx.call("embed", { text: req.query.q });
   notice nothing except the speed. In
   [our benchmark](docs/benchmarks.md#a-handler-that-does-work), one search
   handler costs 53 ms of CPU per request in Python, 1.2 ms in TypeScript on
-  Bun and 0.84 ms in Rust.
+  Bun and 0.82 ms in Rust.
 - **Look for latency, and try the rewrite first.**
   [`unsworn top`](docs/top.md) lists each route's latency and its
   handler's CPU on a running server. [`shadow`](docs/shadow.md) sends a
