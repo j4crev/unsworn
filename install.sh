@@ -24,6 +24,8 @@ os=$(uname -s)
 arch=$(uname -m)
 case "$os" in
   Linux) os_part="unknown-linux-musl" ;;
+  # For development: see the README for what differs on macOS.
+  Darwin) os_part="apple-darwin" ;;
   *) echo "unsworn: unsupported OS: $os" >&2; exit 1 ;;
 esac
 case "$arch" in
@@ -48,7 +50,12 @@ curl -fsSL "${base}/${asset}" -o "${tmp}/${asset}"
 curl -fsSL "${base}/${asset}.sha256" -o "${tmp}/${asset}.sha256"
 
 expected=$(cut -d ' ' -f 1 "${tmp}/${asset}.sha256")
-actual=$(sha256sum "${tmp}/${asset}" | cut -d ' ' -f 1)
+# macOS has `shasum` where Linux has `sha256sum`.
+if command -v sha256sum >/dev/null 2>&1; then
+  actual=$(sha256sum "${tmp}/${asset}" | cut -d ' ' -f 1)
+else
+  actual=$(shasum -a 256 "${tmp}/${asset}" | cut -d ' ' -f 1)
+fi
 if [ "$expected" != "$actual" ]; then
   echo "unsworn: checksum mismatch for ${asset}" >&2
   exit 1

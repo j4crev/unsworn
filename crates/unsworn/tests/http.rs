@@ -1091,7 +1091,9 @@ handler = "worker.py#env"
 }
 
 /// Keeping a variable out of a worker's environment isn't enough when the
-/// worker can read the server's: both run as one user.
+/// worker can read the server's: both run as one user. Linux has a way to
+/// stop that, which this is about; macOS is for development, and hasn't.
+#[cfg(target_os = "linux")]
 #[test]
 fn workers_cant_read_the_servers_environment() {
     if !needs_python() {

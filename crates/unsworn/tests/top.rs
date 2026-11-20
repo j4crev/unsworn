@@ -23,6 +23,8 @@ def broken(req, ctx):
     raise RuntimeError("no")
 "#;
 
+// Handler CPU and memory are read from `/proc`, which only Linux has.
+#[cfg(target_os = "linux")]
 #[test]
 fn top_ranks_routes_by_what_their_handlers_cost() {
     if !common::has("python3") {
