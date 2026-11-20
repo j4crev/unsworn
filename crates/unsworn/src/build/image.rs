@@ -722,6 +722,9 @@ command = "cobc-run worker.cob"
 extensions = [".rb"]
 command = "ruby worker.rb"
 
+[defaults]
+auth = "none"
+
 [auth.key]
 type = "api_key"
 keys = "{env.API_KEYS}"

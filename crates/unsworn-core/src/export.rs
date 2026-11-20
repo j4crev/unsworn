@@ -166,6 +166,9 @@ mod tests {
 extensions = [".ts"]
 command = "bun"
 
+[defaults]
+auth = "none"
+
 [auth.jwt]
 type = "jwt"
 secret = "s"

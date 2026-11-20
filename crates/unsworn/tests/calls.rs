@@ -22,6 +22,9 @@ extensions = [".py"]
 command = "python3 -u -m unsworn.worker"
 protocol = "framed"
 
+[defaults]
+auth = "none"
+
 [auth.key]
 type = "api_key"
 keys = ["secret"]

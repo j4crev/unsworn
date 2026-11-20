@@ -7,6 +7,10 @@
 listen   = "127.0.0.1:8080"
 max_body = "16MB"
 
+# Every route says who may call it: anyone, unless it names a scheme.
+[defaults]
+auth = "none"
+
 [auth.jwt]
 type   = "jwt"
 secret = "bench-secret-0123456789abcdef-0123456789"

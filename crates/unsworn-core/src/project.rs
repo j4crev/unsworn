@@ -4183,9 +4183,13 @@ impl<'h> Compiler<'h> {
             }
             let first = self.diags.items.len();
             let mut whole_route = None;
+            let mut auth_unset: Vec<&str> = Vec::new();
             for method in methods {
-                let eff =
-                    merged_layer(r, entries, method, &probe).finalize(Duration::from_secs(30), 0);
+                let layer = merged_layer(r, entries, method, &probe);
+                if layer.auth.is_none() {
+                    auth_unset.push(method);
+                }
+                let eff = layer.finalize(Duration::from_secs(30), 0);
                 whole_route.get_or_insert_with(|| eff.clone());
                 if let Some(shadow) = &r.shadow {
                     if eff.stream_body {
@@ -4329,6 +4333,22 @@ impl<'h> Compiler<'h> {
                 }
                 false
             });
+            // In a project with auth schemes, a route without `auth` is
+            // as likely forgotten as meant to be public, and nothing else
+            // tells the two apart. So each route says which it is.
+            if !self.schemes.is_empty() && !auth_unset.is_empty() {
+                let methods = match auth_unset.contains(&"*") {
+                    true => r.method_label(),
+                    false => auth_unset.join(","),
+                };
+                self.diags.push(
+                    Diagnostic::error(
+                        r.source.loc(),
+                        format!("`auth` isn't set for {methods} {}", r.path),
+                    )
+                    .hint("say who may call it: `auth = \"<scheme>\"`, or `auth = \"none\"` if anyone may. `[defaults]` can say either for every route, and a `[[route]]` entry for a path or a prefix for the routes under it"),
+                );
+            }
             let Some(eff) = whole_route else { continue };
 
             // A catch-all hands every path under it to an app that does its

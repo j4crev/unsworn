@@ -123,6 +123,9 @@ params = {{ id = {{ type = "integer", min = 1 }} }}
 fn route_files_nested_and_flat_with_a_folders_before_handler() {
     let cfg = format!(
         r#"{RUNTIMES}
+[defaults]
+auth = "none"
+
 [routes]
 dir = "routes"
 
@@ -177,6 +180,9 @@ use = ["cached"]
 fn catch_all_takes_unmatched_methods_and_paths() {
     let cfg = format!(
         r#"{RUNTIMES}
+[defaults]
+auth = "none"
+
 [auth.jwt]
 type = "jwt"
 secret = "s"
@@ -390,6 +396,73 @@ ip = {{ allow = ["10.0.0.0/8"] }}
 }
 
 #[test]
+fn with_auth_schemes_every_route_says_who_may_call_it() {
+    let cfg = |defaults: &str, rest: &str| {
+        format!(
+            r#"{RUNTIMES}
+[auth.jwt]
+type = "jwt"
+secret = "s"
+{defaults}
+[[route]]
+path = "/health"
+respond = {{ status = 200 }}
+
+[[route]]
+path = "/admin/export"
+method = ["GET", "POST"]
+respond = {{ status = 200 }}
+{rest}"#
+        )
+    };
+    // Nothing says: both routes are reported, each once.
+    let errs = errors(&[("unsworn.toml", &cfg("", ""))]);
+    assert_eq!(errs.len(), 2, "{errs:?}");
+    assert!(
+        errs[0].contains("`auth` isn't set for * /health"),
+        "{errs:?}"
+    );
+    assert!(
+        errs[1].contains("`auth` isn't set for GET,POST /admin/export"),
+        "{errs:?}"
+    );
+    assert!(errs[1].contains("auth = \"none\""), "{errs:?}");
+
+    // `[defaults]` can say it for all of them, either way.
+    for defaults in [
+        "[defaults]\nauth = \"none\"\n",
+        "[defaults]\nauth = \"jwt\"\n",
+    ] {
+        project(&[("unsworn.toml", &cfg(defaults, ""))]);
+    }
+    // So can entries: here one of them leaves a method out.
+    let rest = r#"
+[[route]]
+path = "/health"
+auth = "none"
+
+[[route]]
+path = "/admin/{*rest}"
+method = "GET"
+auth = "jwt"
+"#;
+    let errs = errors(&[("unsworn.toml", &cfg("", rest))]);
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(
+        errs[0].contains("`auth` isn't set for POST /admin/export"),
+        "{errs:?}"
+    );
+    project(&[(
+        "unsworn.toml",
+        &cfg("", &rest.replace("method = \"GET\"\n", "")),
+    )]);
+
+    // A project without schemes has nothing to forget.
+    let open = cfg("", "").replace("[auth.jwt]\ntype = \"jwt\"\nsecret = \"s\"\n", "");
+    project(&[("unsworn.toml", &open)]);
+}
+
+#[test]
 fn an_entry_for_one_method_leaves_the_others_alone() {
     let cfg = format!(
         r#"{RUNTIMES}
@@ -575,6 +648,9 @@ auth = "none"
 fn openapi_source() {
     let cfg = format!(
         r#"{RUNTIMES}
+[defaults]
+auth = "none"
+
 [auth.jwt]
 type = "jwt"
 secret = "s"
@@ -823,6 +899,7 @@ secret = "0123456789abcdef0123456789abcdef"
 [[route]]
 path = "/{*rest}"
 proxy = "http://127.0.0.1:3000"
+auth = "none"
 
 [[route]]
 path = "/admin/{*rest}"
@@ -878,6 +955,9 @@ auth = { scheme = "jwt", scopes = ["admin"] }
 #[test]
 fn warns_about_rate_limit_keys_the_client_sets() {
     let cfg = r#"
+[defaults]
+auth = "none"
+
 [auth.key]
 type = "api_key"
 header = "X-Customer-Key"
@@ -1460,6 +1540,9 @@ fn mcp_warnings() {
 fn routes_as_tools() {
     let cfg = format!(
         r#"{RUNTIMES}{MCP_AUTH}
+[defaults]
+auth = "none"
+
 [routes]
 dir = "routes"
 

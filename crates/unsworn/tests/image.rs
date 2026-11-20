@@ -14,6 +14,9 @@ extensions = [".go"]
 build = "go build -o .unsworn/go-worker ./handlers"
 command = ".unsworn/go-worker"
 
+[defaults]
+auth = "none"
+
 [auth.key]
 type = "api_key"
 keys = "{env.IMAGE_TEST_KEY_THAT_IS_NOT_SET}"

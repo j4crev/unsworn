@@ -159,8 +159,19 @@ mark: a different schema, a different scheme, a handler that moved to
 another file. Unsworn doesn't try to decide whether one JSON Schema
 accepts more than another, so read those.
 
-An added route is printed whole, since everything about it is new. A
-change inside a catch-all is listed under the path it applies to:
+An added route is printed whole, since everything about it is new. One
+that anyone may call counts as looser too, on all of its paths or some:
+before it existed, nothing answered there.
+
+```
++ POST /reports
+    handler            src/reports.ts (ts)
+  ! auth               none  (looser: anyone may call it)
+
+1 added (1 open to anyone)
+```
+
+A change inside a catch-all is listed under the path it applies to:
 
 ```
 ~ * /{*rest}
@@ -179,7 +190,7 @@ change inside a catch-all is listed under the path it applies to:
 ```
 
 `--fail-on looser` makes `diff` exit with an error when any change is
-marked looser, and `--fail-on any` when the rules changed at all. Use one
+marked looser, a new public route included, and `--fail-on any` when the rules changed at all. Use one
 on a job a second reviewer has to approve, or on branches where the rules
 aren't meant to move.
 
