@@ -74,25 +74,27 @@ fn together(server: &Server, path: &'static str, n: usize) -> Vec<u16> {
 
 /// The processes a server started that are still running.
 fn children(server: &Server) -> Vec<u32> {
-    let parent = server.pid().to_string();
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
-        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
-            continue;
-        };
-        // "pid (command) state ppid ...", and a zombie isn't running.
-        let Some(rest) = stat.rfind(')').map(|i| &stat[i + 1..]) else {
-            continue;
-        };
-        let mut fields = rest.split_ascii_whitespace();
-        if fields.next() != Some("Z") && fields.next() == Some(parent.as_str()) {
-            out.push(pid);
-        }
-    }
-    out
+    // `pgrep -P` lists a process's children, on Linux and macOS alike.
+    let out = std::process::Command::new("pgrep")
+        .args(["-P", &server.pid().to_string()])
+        .output()
+        .expect("pgrep");
+    let pids = String::from_utf8_lossy(&out.stdout).into_owned();
+    pids.split_ascii_whitespace()
+        .filter_map(|pid| pid.parse::<u32>().ok())
+        .filter(|pid| !zombie(*pid))
+        .collect()
+}
+
+/// Whether a process has exited and is only waiting to be reaped.
+fn zombie(pid: u32) -> bool {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps");
+    String::from_utf8_lossy(&out.stdout)
+        .trim_start()
+        .starts_with('Z')
 }
 
 #[test]
@@ -145,6 +147,9 @@ fn a_number_is_exactly_that_many() {
     assert_eq!(workers(admin, "raw"), 2);
 }
 
+// Whether the others have room is worked out from CPU time, read from
+// `/proc`, which only Linux has.
+#[cfg(target_os = "linux")]
 #[test]
 fn retires_the_workers_it_can_do_without() {
     if !common::has("python3") {
@@ -196,6 +201,8 @@ fn a_reload_stops_the_workers_it_replaces() {
 
 /// A worker that takes many requests at once never makes a call wait, so
 /// it's its CPU time that says it's busy.
+// CPU time is read from `/proc`, which only Linux has.
+#[cfg(target_os = "linux")]
 #[test]
 fn adds_a_worker_when_one_uses_a_whole_core() {
     if !common::has("python3") {

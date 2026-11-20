@@ -1,8 +1,13 @@
 //! The `unsworn` binary: HTTP ingress, worker supervision and the CLI,
 //! wrapped around `unsworn-core`. See `docs/architecture.md`.
 
-#[cfg(not(target_os = "linux"))]
-compile_error!("the unsworn server runs on Linux only");
+// Linux is where Unsworn is deployed. It also builds for macOS, to
+// develop on: there, what reads `/proc` has nothing to read (pools grow
+// only when calls wait, and `unsworn top` has no CPU or memory figures),
+// and a handler isn't kept from reading the server's environment, which
+// macOS shows to any process of the same user.
+#[cfg(not(unix))]
+compile_error!("the unsworn server runs on Linux, and on macOS for development");
 
 // The released binary is a static musl build, and musl's allocator takes
 // one lock for every thread, which cost 25 to 40% of throughput under
@@ -220,6 +225,7 @@ fn init_logging(format: &str, dev: bool) {
 /// only be read that way by one with `CAP_SYS_PTRACE`, which a worker has
 /// only when the server runs as root outside a container. It also writes
 /// no core dump, which would hold the same credentials.
+#[cfg(target_os = "linux")]
 fn close_to_workers() {
     use rustix::process::{DumpableBehavior, set_dumpable_behavior};
     if let Err(e) = set_dumpable_behavior(DumpableBehavior::NotDumpable) {
@@ -228,6 +234,11 @@ fn close_to_workers() {
         );
     }
 }
+
+/// macOS has no such switch: a process's environment can be read by any
+/// other of its user. It's a place to develop, and the docs say so.
+#[cfg(not(target_os = "linux"))]
+fn close_to_workers() {}
 
 fn main() -> ExitCode {
     // Before anything else starts: a worker is a process this one starts.

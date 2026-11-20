@@ -347,11 +347,22 @@ a config needs on that target before you deploy.
 
 ## Getting started
 
-Unsworn runs on Linux (x86_64 and arm64). Install the latest release:
+Unsworn runs on Linux (x86_64 and arm64), and on macOS for development.
+Install the latest release:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/j4crev/unsworn/main/install.sh | sh
 ```
+
+On macOS everything works that doesn't read Linux's `/proc`. What differs:
+
+- **A handler isn't kept from the server's secrets.** macOS shows a
+  process's environment to any other process of the same user, and has
+  no switch for it as Linux has. Develop there; deploy on Linux.
+- **Pools grow only when calls wait.** A worker that takes many requests
+  at once is added to on Linux when it uses a whole core, which is read
+  from `/proc`. Set `workers` to a number to try more on a Mac.
+- **`unsworn top` has no CPU or memory figures,** for the same reason.
 
 By default, the installer verifies the release's build attestation if the
 GitHub CLI is installed and signed in. Otherwise, it installs without

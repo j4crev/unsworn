@@ -1142,6 +1142,7 @@ impl Pool {
         // SAFETY: between `fork` and `exec` only async-signal-safe calls
         // are allowed, and this is one system call (`prctl`), which
         // allocates nothing and takes no lock.
+        #[cfg(target_os = "linux")]
         unsafe {
             cmd.pre_exec(|| {
                 rustix::process::set_parent_process_death_signal(Some(
@@ -2133,11 +2134,24 @@ fn signal_group(pid: Option<u32>, signal: rustix::process::Signal) {
 /// to as they end, so several can arrive together, and a second one that
 /// found the shell back at its default would end it before it had told
 /// anyone.
+///
+/// Where there's no such signal (macOS), the shell looks once a second
+/// at who its parent is, and stops everything once that isn't Unsworn. A
+/// killed Unsworn's children are handed to another process at once,
+/// whether or not anyone has collected the dead one, which asking after
+/// Unsworn itself would wait for.
 fn server_shell(command: &str) -> Command {
+    #[cfg(target_os = "linux")]
     const PASS_IT_ON: &str =
         r#"trap 'trap "" TERM; kill -TERM 0; exit 143' TERM; sh -c "$1" & wait $!"#;
+    #[cfg(not(target_os = "linux"))]
+    const PASS_IT_ON: &str = r#"trap 'trap "" TERM; kill -TERM 0; exit 143' TERM; (while [ "$(ps -o ppid= -p $$ | tr -d ' ')" = "$2" ]; do sleep 1; done; kill -TERM 0) & sh -c "$1" & wait $!"#;
     let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg(PASS_IT_ON).arg("sh").arg(command);
+    cmd.arg("-c")
+        .arg(PASS_IT_ON)
+        .arg("sh")
+        .arg(command)
+        .arg(std::process::id().to_string());
     cmd
 }
 

@@ -620,6 +620,9 @@ environment either, and Unsworn writes no core dump. What that leaves:
 - **A server running as root.** Its workers are root as well, and root
   can usually read any process. The official image runs as the user
   `unsworn` for this reason.
+- **macOS.** It shows a process's environment to any other process of
+  the same user, and has no way to close one. Unsworn builds for it to
+  develop on; what's above is about Linux, where it's deployed.
 
 ## Routes
 

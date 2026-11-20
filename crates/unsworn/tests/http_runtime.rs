@@ -97,7 +97,12 @@ fn serve(p: &Project) -> common::Server {
 }
 
 fn alive(pid: u64) -> bool {
-    std::path::Path::new(&format!("/proc/{pid}")).exists()
+    // Signal 0 asks whether the process is there, and sends nothing.
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// Waits until `check` holds, for a few seconds.
