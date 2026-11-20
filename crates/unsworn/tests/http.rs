@@ -1084,6 +1084,79 @@ handler = "worker.py#env"
     );
 }
 
+/// Keeping a variable out of a worker's environment isn't enough when the
+/// worker can read the server's: both run as one user.
+#[test]
+fn workers_cant_read_the_servers_environment() {
+    if !needs_python() {
+        return;
+    }
+    // A worker that looks for the server among its ancestors and tries to
+    // read its environment and its memory.
+    let worker = r#"
+import json, os, sys
+out = sys.stdout.buffer
+def send(message):
+    out.write(json.dumps(message).encode() + b"\n")
+    out.flush()
+def server():
+    pid = os.getppid()
+    while pid > 1:
+        with open(f"/proc/{pid}/stat") as f:
+            comm, rest = f.read().rsplit(")", 1)
+        if comm.endswith("(unsworn"):
+            return pid
+        pid = int(rest.split()[1])
+    return None
+def attempt(path):
+    try:
+        with open(path, "rb") as f:
+            return "read: " + ("has the secret" if b"JWT_SECRET" in f.read(1 << 20) else "no secret")
+    except OSError as e:
+        return type(e).__name__
+send({"type": "ready", "protocol": 1})
+for line in sys.stdin.buffer:
+    msg = json.loads(line)
+    if msg["type"] == "request":
+        pid = server()
+        send({"type": "response", "id": msg["id"], "status": 200, "json": {
+            "found": pid is not None,
+            "root": os.geteuid() == 0,
+            "environ": attempt(f"/proc/{pid}/environ"),
+            "mem": attempt(f"/proc/{pid}/mem"),
+        }})
+"#;
+    let cfg = r#"
+[runtimes.py]
+extensions = [".py"]
+command = "python3 worker.py"
+
+[auth.users]
+type = "jwt"
+secret = "{env.JWT_SECRET}"
+
+[[route]]
+path = "/look"
+method = "GET"
+handler = "worker.py#look"
+"#;
+    let p = Project::new(&[("unsworn.toml", cfg), ("worker.py", worker)]);
+    let s = p.start_with_env(
+        &["serve"],
+        &[("JWT_SECRET", "0123456789abcdef0123456789abcdef")],
+    );
+    let r = s.get("/look");
+    assert_eq!(r.status, 200, "{}\n{}", r.text(), s.logs());
+    let seen = r.json();
+    assert_eq!(seen["found"], true, "{seen}");
+    // Root can read any process, which is why the image doesn't run as it.
+    if seen["root"] == true {
+        return;
+    }
+    assert_eq!(seen["environ"], "PermissionError", "{seen}");
+    assert_eq!(seen["mem"], "PermissionError", "{seen}");
+}
+
 #[test]
 fn connections_are_limited() {
     use std::io::{Read, Write};

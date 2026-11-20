@@ -120,6 +120,11 @@ compile error.
   a handler from reaching anything else, run Unsworn where the platform
   limits outbound traffic (a network policy, a firewall rule, a container
   with no route out), and give handlers `ctx.fetch` as their way out.
+- **It doesn't hold when Unsworn runs as root.** A handler can't read the
+  key from Unsworn's own environment, because Unsworn closes its process
+  to the others its user runs. Root can usually read any process, though,
+  and workers run as whoever Unsworn does. See
+  [`{env.NAME}`](config.md#envname).
 - **It doesn't hide what the service answers.** If the service echoes the
   key back, the handler sees that.
 - **It's for request and response, not streams.** The whole body is sent

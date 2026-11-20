@@ -2700,6 +2700,7 @@ dependencies = [
  "notify",
  "percent-encoding",
  "redis",
+ "rustix",
  "rustls",
  "rustls-pki-types",
  "serde",

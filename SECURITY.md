@@ -29,8 +29,10 @@ that matter most are ways around them:
 - anything that runs code or reads files outside what the config allows
 
 Handlers are the project's own code and are trusted. A handler reading
-what its own process can read isn't a vulnerability in Unsworn, though
-Unsworn does keep its own credentials out of their environment.
+what its own process can read isn't a vulnerability in Unsworn. Unsworn
+does keep its own credentials out of their environment, and closes its own
+process to them, so a handler reading a credential from Unsworn's
+environment or memory is one (unless the server runs as root).
 
 ## Checking a release
 

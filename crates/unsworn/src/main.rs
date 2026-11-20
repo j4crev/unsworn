@@ -209,7 +209,28 @@ fn init_logging(format: &str, dev: bool) {
     server::access::init(format, format == "json" || !(dev || terminal));
 }
 
+/// Closes this process to the others its user runs, which is what workers
+/// are.
+///
+/// Linux lets a process read the environment and memory of another one
+/// with the same user (`/proc/<pid>/environ`, `/proc/<pid>/mem`, `ptrace`),
+/// so a handler could read the credentials Unsworn keeps out of its
+/// environment from Unsworn's own. A process that isn't "dumpable" can
+/// only be read that way by one with `CAP_SYS_PTRACE`, which a worker has
+/// only when the server runs as root outside a container. It also writes
+/// no core dump, which would hold the same credentials.
+fn close_to_workers() {
+    use rustix::process::{DumpableBehavior, set_dumpable_behavior};
+    if let Err(e) = set_dumpable_behavior(DumpableBehavior::NotDumpable) {
+        eprintln!(
+            "! can't close this process to others running as its user ({e}): handlers can read the credentials in its environment"
+        );
+    }
+}
+
 fn main() -> ExitCode {
+    // Before anything else starts: a worker is a process this one starts.
+    close_to_workers();
     let cli = Cli::parse();
     let root = match std::fs::canonicalize(&cli.dir) {
         Ok(r) => r,
