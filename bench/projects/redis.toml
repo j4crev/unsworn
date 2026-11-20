@@ -9,7 +9,7 @@ backend = "redis"
 url     = "redis://127.0.0.1:6390"
 
 [defaults]
-headers = { set = { "x-bench" = "1" } }
+response_headers = { set = { "x-bench" = "1" } }
 
 [[route]]
 path       = "/p/rate-limit"

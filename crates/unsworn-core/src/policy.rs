@@ -136,7 +136,7 @@ pub struct Layer {
     pub timeout: Option<Duration>,
     pub max_body: Option<u64>,
     pub stream_body: Option<bool>,
-    pub headers: Option<OrOff<HeaderRules>>,
+    pub response_headers: Option<OrOff<HeaderRules>>,
     /// Accumulates across layers; `Off` clears what came before.
     pub before: Option<OrOff<Vec<HandlerRef>>>,
 }
@@ -158,7 +158,7 @@ impl Layer {
         take(&mut self.timeout, &other.timeout);
         take(&mut self.max_body, &other.max_body);
         take(&mut self.stream_body, &other.stream_body);
-        take(&mut self.headers, &other.headers);
+        take(&mut self.response_headers, &other.response_headers);
         match (&mut self.before, &other.before) {
             (_, None) => {}
             (slot, Some(OrOff::Off)) => *slot = Some(OrOff::Off),
@@ -189,7 +189,7 @@ impl Layer {
             ("timeout", self.timeout.is_some()),
             ("max_body", self.max_body.is_some()),
             ("stream_body", self.stream_body.is_some()),
-            ("headers", self.headers.is_some()),
+            ("response_headers", self.response_headers.is_some()),
             ("before", self.before.is_some()),
         ]
         .into_iter()
@@ -215,7 +215,7 @@ impl Layer {
             timeout: self.timeout.unwrap_or(default_timeout),
             max_body: self.max_body.unwrap_or(default_max_body),
             stream_body: self.stream_body.unwrap_or(false),
-            headers: on(&self.headers).unwrap_or_default(),
+            response_headers: on(&self.response_headers).unwrap_or_default(),
             before: on(&self.before).unwrap_or_default(),
         }
     }
@@ -233,7 +233,7 @@ pub struct Effective {
     pub timeout: Duration,
     pub max_body: u64,
     pub stream_body: bool,
-    pub headers: HeaderRules,
+    pub response_headers: HeaderRules,
     pub before: Vec<HandlerRef>,
 }
 

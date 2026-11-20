@@ -140,9 +140,9 @@ fn layer_summary(layer: &Layer) -> Vec<String> {
         matches!(layer.cache, Some(OrOff::Off)),
     );
     onoff(
-        "headers",
-        matches!(layer.headers, Some(OrOff::On(_))),
-        matches!(layer.headers, Some(OrOff::Off)),
+        "response_headers",
+        matches!(layer.response_headers, Some(OrOff::On(_))),
+        matches!(layer.response_headers, Some(OrOff::Off)),
     );
     if let Some(t) = layer.timeout {
         out.push(format!(

@@ -1399,7 +1399,7 @@ fn endpoint_only_keys(layer: &Layer) -> Vec<&'static str> {
         ("origin", layer.origin.is_some()),
         ("ip", layer.ip.is_some()),
         ("max_body", layer.max_body.is_some()),
-        ("headers", layer.headers.is_some()),
+        ("response_headers", layer.response_headers.is_some()),
     ]
     .into_iter()
     .filter(|(_, set)| *set)
@@ -2586,7 +2586,7 @@ impl<'h> Compiler<'h> {
         own.timeout = raw.timeout.map(|d| d.0);
         own.max_body = raw.max_body.map(|b| b.0);
         own.stream_body = raw.stream_body;
-        own.headers = raw.headers.as_ref().map(|h| match h {
+        own.response_headers = raw.response_headers.as_ref().map(|h| match h {
             OrOff::Off => OrOff::Off,
             OrOff::On(h) => OrOff::On(HeaderRules {
                 set: h
@@ -2697,13 +2697,8 @@ impl<'h> Compiler<'h> {
         if let Some(q) = &r.query {
             v.query = Some(convert(self, q, "query", false));
         }
-        match r.split_headers() {
-            Ok(split) => {
-                if let Some(h) = &split.validation {
-                    v.headers = Some(convert(self, h, "headers", false));
-                }
-            }
-            Err(e) => self.diags.error(format!("{loc}.headers"), e),
+        if let Some(h) = &r.headers {
+            v.headers = Some(convert(self, h, "headers", false));
         }
         if let Some(b) = &r.body {
             v.body = self.schema(b, &format!("{loc}.body")).map(|s| (s, true));
@@ -2727,13 +2722,7 @@ impl<'h> Compiler<'h> {
             return;
         }
         let methods = self.methods(r.method.as_ref().map(|m| m.to_vec()), &loc);
-        let policies = match r.policies() {
-            Ok(p) => p,
-            Err(e) => {
-                self.diags.error(&loc, e);
-                return;
-            }
-        };
+        let policies = r.policies();
         let layer = self.layer(&policies, &loc, None);
         let validation = self.raw_validation(r, &loc);
         let has_catch_all = parse_pattern(&r.path)

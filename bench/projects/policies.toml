@@ -14,7 +14,7 @@ keys = ["bench-key-0123456789"]
 
 [defaults]
 # Not a policy under test: just the same answer everywhere.
-headers = { set = { "x-bench" = "1" } }
+response_headers = { set = { "x-bench" = "1" } }
 
 [[route]]
 path    = "/p/none"

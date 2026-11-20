@@ -378,7 +378,7 @@ const POLICY_KEYS: &[&str] = &[
     "timeout",
     "max_body",
     "stream_body",
-    "headers",
+    "response_headers",
 ];
 
 fn is_policy(key: &str) -> bool {
@@ -627,20 +627,20 @@ fn policies(e: &mut Entry, eff: &Effective, project: &Project) {
         e.plain("stream_body", "yes");
     }
     let mut headers = Vec::new();
-    if !eff.headers.set.is_empty() {
+    if !eff.response_headers.set.is_empty() {
         let set: Vec<String> = eff
-            .headers
+            .response_headers
             .set
             .iter()
             .map(|(k, v)| format!("{k}: {v}"))
             .collect();
         headers.push(format!("set {}", set.join(", ")));
     }
-    if !eff.headers.remove.is_empty() {
-        headers.push(format!("remove {}", eff.headers.remove.join(", ")));
+    if !eff.response_headers.remove.is_empty() {
+        headers.push(format!("remove {}", eff.response_headers.remove.join(", ")));
     }
     if !headers.is_empty() {
-        e.plain("headers", headers.join("; "));
+        e.plain("response_headers", headers.join("; "));
     }
 }
 

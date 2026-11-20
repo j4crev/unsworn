@@ -615,16 +615,6 @@
             }
           ]
         },
-        "headers": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RawHeadersOrOff"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "instructions": {
           "description": "Guidance for the model on how to use this server's tools.",
           "type": [
@@ -705,6 +695,16 @@
           "anyOf": [
             {
               "$ref": "#/$defs/RawRateLimitOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "response_headers": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawHeadersOrOff"
             },
             {
               "type": "null"
@@ -1092,7 +1092,7 @@
     },
     "RawPolicies": {
       "additionalProperties": false,
-      "description": "Policy keys, as used in `[defaults]`, `[policies.*]` and\n`_policies.toml` files. Route entries repeat these fields.",
+      "description": "Policy keys, as used in `[defaults]` and `[policies.*]`. Route entries\nrepeat these fields.",
       "properties": {
         "auth": {
           "anyOf": [
@@ -1128,16 +1128,6 @@
           "anyOf": [
             {
               "$ref": "#/$defs/RawCorsOrOff"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "headers": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RawHeadersOrOff"
             },
             {
               "type": "null"
@@ -1183,6 +1173,17 @@
               "type": "null"
             }
           ]
+        },
+        "response_headers": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawHeadersOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Headers to set on, or remove from, the response."
         },
         "stream_body": {
           "description": "Pass the request body to the handler as it arrives, instead of\nreading it first.",
@@ -1428,7 +1429,14 @@
           ]
         },
         "headers": {
-          "description": "Either request-header validation (a table of param rules) or the\n`headers` policy (`{ set = ..., remove = ... }`). See\n[`RawRoute::split_headers`]."
+          "additionalProperties": {
+            "$ref": "#/$defs/RawParam"
+          },
+          "description": "Rules for request headers, by name.",
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "host": {
           "type": [
@@ -1557,6 +1565,17 @@
               "type": "null"
             }
           ]
+        },
+        "response_headers": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawHeadersOrOff"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Headers to set on, or remove from, the response."
         },
         "runtime": {
           "type": [
