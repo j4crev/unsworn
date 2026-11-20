@@ -38,7 +38,7 @@ settings:
 POST /api/summarize
   handler            routes/api.summarize.post.py (py)
   auth               key
-  rate_limit         60 per 1m by ip
+  rate_limit         60 per 1m by ip, counted for * /api/{*rest}
   before             src/tenant.ts#tenant
   body               {
                        "properties": {
@@ -56,7 +56,7 @@ POST /api/summarize
 GET /api/users/{id}
   handler            routes/api.users.[id].get.ts (ts)
   auth               key
-  rate_limit         60 per 1m by ip
+  rate_limit         60 per 1m by ip, counted for * /api/{*rest}
   cache              30s; vary x-api-key
   before             src/tenant.ts#tenant
   params.id          {"minimum":1,"type":"integer"}
@@ -70,7 +70,7 @@ GET /api/users/{id}
   auth               none
   at /api/{*rest}
     auth               key
-    rate_limit         60 per 1m by ip
+    rate_limit         60 per 1m by ip, counted for * /api/{*rest}
     before             src/tenant.ts#tenant
 ```
 
@@ -146,7 +146,7 @@ changed. A `!` marks a change that lets more requests through:
 | Change | Looser when |
 |---|---|
 | `auth` | it's removed, a scheme is added as another way in, or fewer scopes are asked for |
-| `rate_limit` | it's removed, or allows more requests in the same time |
+| `rate_limit` | it's removed, or allows more requests in the same time. A limit that's now counted somewhere else (in `[defaults]` before, on the route now) is listed without a mark: which is looser depends on what else counts there |
 | `origin`, `ip` | removed; for `origin`, more origins allowed |
 | `cors` | added, more origins allowed, or credentials allowed |
 | `before` | a handler is removed |

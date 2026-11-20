@@ -24,7 +24,7 @@ use crate::mcp::{McpEndpoint, McpTool};
 use crate::pipeline::host::{Body, CallError, Host, ProxyRequest, Reply};
 use crate::pipeline::{header_map, query_pairs, retry_secs};
 use crate::policy::{AuthReq, Effective};
-use crate::project::{Project, Proxy, Route};
+use crate::project::{Project, Proxy};
 use crate::store::RateLimit;
 
 /// The time a request to the endpoint may take: the longest of the
@@ -41,7 +41,6 @@ pub(super) fn longest_timeout(project: &Project, eff: &Effective) -> Duration {
 /// Handles one request to the MCP endpoint.
 pub(super) async fn serve<H: Host>(
     ctx: &Ctx<'_, H>,
-    route: &Route,
     eff: &Effective,
     prepared: Prepared<H>,
 ) -> Resp<H> {
@@ -73,10 +72,7 @@ pub(super) async fn serve<H: Host>(
     let trusted = rpc::trusted_headers(&parts.headers, call.as_ref().map(|(t, _)| *t));
 
     if let Some(limit) = &eff.rate_limit
-        && let Err(resp) = rate_limited(
-            ctx.rate_limit(route.id, limit, &trusted, claims.as_ref())
-                .await,
-        )
+        && let Err(resp) = rate_limited(ctx.rate_limit(limit, &trusted, claims.as_ref()).await)
     {
         return resp;
     }
@@ -262,7 +258,7 @@ impl ToolCall<'_> {
                     if resp.status() != StatusCode::SERVICE_UNAVAILABLE
                         && let Some(OrOff::On(limit)) = &tool.own.rate_limit
                         && let RateLimit::Limited { retry_after } =
-                            ctx.rate_limit(tool.route, limit, &self.trusted, None).await
+                            ctx.rate_limit(limit, &self.trusted, None).await
                     {
                         return Err(super::problem_response(crate::pipeline::too_many_requests(
                             retry_after,
@@ -281,10 +277,7 @@ impl ToolCall<'_> {
 
         // The rest are reported to the model as tool errors.
         if let Some(OrOff::On(limit)) = &tool.own.rate_limit {
-            match ctx
-                .rate_limit(tool.route, limit, &self.trusted, claims.as_ref())
-                .await
-            {
+            match ctx.rate_limit(limit, &self.trusted, claims.as_ref()).await {
                 RateLimit::Allowed => {}
                 RateLimit::Limited { retry_after } => {
                     return Err(self.error(format!(

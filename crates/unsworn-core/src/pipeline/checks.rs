@@ -349,13 +349,12 @@ pub fn rate_limit_ip(client_ip: IpAddr) -> String {
     }
 }
 
-/// The rate-limit bucket a request counts against. `route_id` keeps each
-/// route's (and each MCP tool's) counts separate. A key the request lacks
-/// falls back to the client's IP. A header's value is hashed, since the
+/// The rate-limit bucket a request counts against: the limit's counter,
+/// which is where the limit is written, and the caller. A key the request
+/// lacks falls back to the client's IP. A header's value is hashed, since the
 /// header may well carry a credential (`header.x-api-key`), and the store
 /// shouldn't hold one.
 pub fn rate_limit_bucket(
-    route_id: usize,
     limit: &RateLimit,
     client_ip: IpAddr,
     headers: &HeaderMap,
@@ -374,7 +373,7 @@ pub fn rate_limit_bucket(
         key => key_value(key, client_ip, headers, claims),
     }
     .unwrap_or_else(|| rate_limit_ip(client_ip));
-    format!("{route_id}|{}|{key}", limit.key.describe())
+    format!("{}|{}|{key}", limit.counter, limit.key.describe())
 }
 
 /// The cache key for a request, or `None` when it mustn't be cached: a
@@ -631,39 +630,40 @@ mod tests {
             requests: 1,
             per: Duration::from_secs(1),
             key,
+            counter: "* /api/{*rest}".into(),
         };
+        // The counter is where the limit is written, so every request
+        // the limit applies to counts in one place.
         assert_eq!(
-            rate_limit_bucket(3, &limit(KeySource::Ip), client, &headers, None),
-            "3|ip|192.0.2.1"
+            rate_limit_bucket(&limit(KeySource::Ip), client, &headers, None),
+            "* /api/{*rest}|ip|192.0.2.1"
         );
         // An IPv6 client is its /64, whatever the rest of the address.
         for v6 in ["2001:db8:1:2:3:4:5:6", "2001:db8:1:2::1"] {
             assert_eq!(
-                rate_limit_bucket(3, &limit(KeySource::Ip), ip(v6), &headers, None),
-                "3|ip|2001:db8:1:2::/64"
+                rate_limit_bucket(&limit(KeySource::Ip), ip(v6), &headers, None),
+                "* /api/{*rest}|ip|2001:db8:1:2::/64"
             );
         }
         assert_eq!(
             rate_limit_bucket(
-                3,
                 &limit(KeySource::Header("x-tenant".into())),
                 client,
                 &headers,
                 None
             ),
             // sha256("acme"): the store never holds a header's value.
-            "3|header.x-tenant|sha256:822b33ad87c148a0a20a5ba7cd5ebcaa68d36a18e7aad165554903f52ca82757"
+            "* /api/{*rest}|header.x-tenant|sha256:822b33ad87c148a0a20a5ba7cd5ebcaa68d36a18e7aad165554903f52ca82757"
         );
         // Missing keys fall back to the IP.
         assert_eq!(
             rate_limit_bucket(
-                3,
                 &limit(KeySource::Claim("sub".into())),
                 client,
                 &headers,
                 None
             ),
-            "3|auth.sub|192.0.2.1"
+            "* /api/{*rest}|auth.sub|192.0.2.1"
         );
         assert_eq!(
             key_value(

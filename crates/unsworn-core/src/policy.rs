@@ -90,6 +90,12 @@ pub struct RateLimit {
     pub requests: u32,
     pub per: Duration,
     pub key: KeySource,
+    /// The count requests are taken from, named for where the limit is
+    /// written: `[defaults]`, `[policies.free]`, `* /api/{*rest}`. Every
+    /// request the limit applies to shares it, whichever route serves the
+    /// request, so a limit in `[defaults]` is one count for the API and a
+    /// route's own limit is that route's alone.
+    pub counter: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

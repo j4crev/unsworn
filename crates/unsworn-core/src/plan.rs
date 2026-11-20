@@ -605,8 +605,15 @@ fn policies(e: &mut Entry, eff: &Effective, project: &Project) {
         let key = rl.key.describe();
         e.push(
             "rate_limit",
-            format!("{} per {} by {key}", rl.requests, format_duration(rl.per)),
-            Weigh::Rate(rl.requests, rl.per, key),
+            format!(
+                "{} per {} by {key}, counted for {}",
+                rl.requests,
+                format_duration(rl.per),
+                rl.counter
+            ),
+            // A limit that moves to another counter is another limit:
+            // how the two compare depends on what else counts there.
+            Weigh::Rate(rl.requests, rl.per, format!("{key} on {}", rl.counter)),
         );
     }
     if let Some(cache) = &eff.cache {

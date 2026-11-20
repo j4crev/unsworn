@@ -860,6 +860,107 @@ rate_limit = { requests = 2, per = "1m" }
     assert_eq!(closed.get("/a").status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
+/// A limit is counted where it's written: one count for everything it
+/// applies to, whichever route serves the request.
+#[test]
+fn a_rate_limit_is_one_count_for_everything_its_written_for() {
+    let t = Test::new(
+        r#"
+[defaults]
+rate_limit = { requests = 3, per = "1m" }
+
+[policies.reports]
+rate_limit = { requests = 2, per = "1m" }
+
+[[route]]
+path = "/a"
+respond = { status = 200 }
+
+[[route]]
+path = "/b"
+respond = { status = 200 }
+
+[[route]]
+path = "/login"
+respond = { status = 200 }
+rate_limit = { requests = 1, per = "1m" }
+
+[[route]]
+path = "/reports/daily"
+respond = { status = 200 }
+use = ["reports"]
+
+[[route]]
+path = "/reports/weekly"
+respond = { status = 200 }
+use = ["reports"]
+
+[[route]]
+path = "/unlimited"
+respond = { status = 200 }
+rate_limit = "off"
+"#,
+        &[],
+        TestHost::new(),
+    );
+    let status = |path: &str| t.get(path).status;
+    let (ok, limited) = (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS);
+
+    // A route's own limit replaces the wider one, and is its own count.
+    assert_eq!(status("/login"), ok);
+    assert_eq!(status("/login"), limited);
+    // A named set's limit is one count for the routes that use it.
+    assert_eq!(status("/reports/daily"), ok);
+    assert_eq!(status("/reports/weekly"), ok);
+    assert_eq!(status("/reports/daily"), limited);
+    assert_eq!(status("/reports/weekly"), limited);
+    // None of that counted against `[defaults]`, which is one count for
+    // every route that takes its limit from there.
+    assert_eq!(status("/a"), ok);
+    assert_eq!(status("/b"), ok);
+    assert_eq!(status("/a"), ok);
+    assert_eq!(status("/b"), limited);
+    assert_eq!(status("/a"), limited);
+    assert_eq!(status("/unlimited"), ok);
+}
+
+/// Two limits on one catch-all route used to share a count: a request to
+/// one part used up the other part's allowance.
+#[test]
+fn limits_for_parts_of_a_catch_all_count_apart() {
+    let t = Test::new(
+        r#"
+[[route]]
+path = "/{*rest}"
+respond = { status = 200 }
+rate_limit = { requests = 3, per = "1m" }
+
+[[route]]
+path = "/api/{*rest}"
+rate_limit = { requests = 2, per = "1m" }
+
+[[route]]
+path = "/api/users/{id}"
+respond = { status = 200 }
+"#,
+        &[],
+        TestHost::new(),
+    );
+    let status = |path: &str| t.get(path).status;
+    let (ok, limited) = (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS);
+    // The entry for `/api` is one count for every request under it: those
+    // the catch-all serves, and the route for one user.
+    assert_eq!(status("/api/x"), ok);
+    assert_eq!(status("/api/users/7"), ok);
+    assert_eq!(status("/api/y"), limited);
+    assert_eq!(status("/api/users/8"), limited);
+    // The rest of the catch-all still has all of its own.
+    assert_eq!(status("/other"), ok);
+    assert_eq!(status("/other"), ok);
+    assert_eq!(status("/elsewhere"), ok);
+    assert_eq!(status("/other"), limited);
+}
+
 #[test]
 fn caching() {
     let counter = Arc::new(AtomicU64::new(0));

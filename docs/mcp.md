@@ -553,7 +553,7 @@ it doesn't have to. Replies map to tool results as for
   `before` handlers. Its `timeout` applies, or `[mcp]`'s if the route sets
   none.
 - **REST requests and tool calls share the route's rate limit.** One limit
-  covers both ways in.
+  covers both ways in, on one count.
 - Policies that describe HTTP requests (`origin`, `ip`, `cors`,
   `response_headers`, `max_body`, `cache`) don't apply to tool calls; the MCP endpoint has its
   own.

@@ -316,16 +316,14 @@ impl<H: Host> Ctx<'_, H> {
             .map_err(problem_response)
     }
 
-    /// Counts a request against a rate limit. `route_id` keeps each route's
-    /// (and each MCP tool's) counts separate.
+    /// Counts a request against a rate limit, on the limit's own counter.
     async fn rate_limit(
         &self,
-        route_id: usize,
         limit: &RateLimitRule,
         headers: &http::HeaderMap,
         claims: Option<&Map<String, Value>>,
     ) -> RateLimit {
-        let bucket = rate_limit_bucket(route_id, limit, self.client_ip, headers, claims);
+        let bucket = rate_limit_bucket(limit, self.client_ip, headers, claims);
         let store = self.host.store();
         rate_limit(
             &store,
@@ -367,7 +365,7 @@ async fn serve_route<H: Host>(
     if matches!(route.action, Action::Mcp) {
         // On the heap, so that the other routes, which are most of them,
         // don't each carry the room an MCP request needs.
-        return Box::pin(mcp::serve(ctx, route, eff, prepared)).await;
+        return Box::pin(mcp::serve(ctx, eff, prepared)).await;
     }
     let deadline = ctx.deadline(eff.timeout);
     let befores = run_befores(
@@ -424,7 +422,7 @@ async fn prepare<H: Host>(
     // never asked more often than the limit allows.
     let before_auth = |l: &&RateLimitRule| !matches!(l.key, KeySource::Claim(_));
     if let Some(limit) = limit.filter(before_auth) {
-        rate_limited(ctx.rate_limit(route.id, limit, req.headers(), None).await)?;
+        rate_limited(ctx.rate_limit(limit, req.headers(), None).await)?;
     }
 
     let (context, claims) = match ctx.authenticate(req.headers(), eff, &query_pairs).await {
@@ -443,16 +441,13 @@ async fn prepare<H: Host>(
                     .filter(|l| is_mcp || !before_auth(l))
             {
                 let headers = crate::mcp::rpc::trusted_headers(req.headers(), None);
-                rate_limited(ctx.rate_limit(route.id, limit, &headers, None).await)?;
+                rate_limited(ctx.rate_limit(limit, &headers, None).await)?;
             }
             return Err(resp);
         }
     };
     if let Some(limit) = limit.filter(|l| !before_auth(l)) {
-        rate_limited(
-            ctx.rate_limit(route.id, limit, req.headers(), claims.as_ref())
-                .await,
-        )?;
+        rate_limited(ctx.rate_limit(limit, req.headers(), claims.as_ref()).await)?;
     }
 
     let (params, query) = validate_inputs(route, &raw_params, &query_pairs, req.headers())

@@ -55,6 +55,9 @@ struct Written {
     /// Handler files, or `None` for `"off"`.
     before: Option<Option<Vec<String>>>,
     sets: Vec<usize>,
+    /// Where `rate_limit` was written, once a table's sets are merged
+    /// into it: see `table`. Not part of what's written.
+    counter: Option<String>,
 }
 
 impl Written {
@@ -303,6 +306,8 @@ struct Outcome {
     timeout: u64,
     max_body: u64,
     rate_limit: Option<u32>,
+    /// What the rate limit is counted for: where it's written.
+    counter: Option<String>,
     cache: Option<u64>,
     before: Vec<String>,
 }
@@ -314,6 +319,7 @@ struct Merging {
     timeout: Option<u64>,
     max_body: Option<u64>,
     rate_limit: Option<Option<u32>>,
+    counter: Option<String>,
     cache: Option<Option<u64>>,
     before: Option<Option<Vec<String>>>,
 }
@@ -333,6 +339,7 @@ impl Merging {
         }
         if w.rate_limit.is_some() {
             self.rate_limit = w.rate_limit;
+            self.counter = w.counter.clone();
         }
         if w.cache.is_some() {
             self.cache = w.cache;
@@ -353,14 +360,27 @@ impl Merging {
 }
 
 /// A table is its sets, in the order `use` lists them, then its own keys.
-/// What that adds up to is then applied as one layer.
-fn table(w: &Written, sets: &[Written]) -> Written {
+/// What that adds up to is then applied as one layer. A rate limit is
+/// counted for the table it's written in, `name`, or for the set it came
+/// from, which every table that uses the set then shares.
+fn table(w: &Written, sets: &[Written], name: &str) -> Written {
     let mut merged = Merging::default();
     for &i in &w.sets {
-        merged.keys(&sets[i]);
+        let set = Written {
+            counter: Some(format!("[policies.set{i}]")),
+            ..sets[i].clone()
+        };
+        merged.keys(&set);
     }
-    merged.keys(w);
+    let own = Written {
+        counter: Some(name.to_string()),
+        ..w.clone()
+    };
+    merged.keys(&own);
     Written {
+        counter: merged
+            .counter
+            .filter(|_| matches!(merged.rate_limit, Some(Some(_)))),
         auth: merged.auth,
         timeout: merged.timeout,
         max_body: merged.max_body,
@@ -455,15 +475,25 @@ fn expected(m: &Model, route: usize, method: &str, path: &str) -> Outcome {
     about.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
 
     let mut merged = Merging::default();
-    merged.keys(&table(&m.defaults, &m.sets));
+    merged.keys(&table(&m.defaults, &m.sets, "[defaults]"));
     for (_, _, s) in about {
-        merged.keys(&table(&s.written, &m.sets));
+        // A route or an entry is named by its methods and its path.
+        let methods = match &s.methods {
+            Some(list) => list.join(","),
+            None => "*".to_string(),
+        };
+        merged.keys(&table(
+            &s.written,
+            &m.sets,
+            &format!("{methods} {}", s.path),
+        ));
     }
     Outcome {
         auth: merged.auth.unwrap_or_else(|| "none".to_string()),
         timeout: merged.timeout.unwrap_or(30),
         max_body: merged.max_body.map_or(1024 * 1024, |kb| kb * 1024),
         rate_limit: merged.rate_limit.flatten(),
+        counter: merged.counter,
         cache: merged.cache.flatten(),
         before: merged.before.flatten().unwrap_or_default(),
     }
@@ -479,6 +509,7 @@ fn actual(eff: &Effective) -> Outcome {
         timeout: eff.timeout.as_secs(),
         max_body: eff.max_body,
         rate_limit: eff.rate_limit.as_ref().map(|r| r.requests),
+        counter: eff.rate_limit.as_ref().map(|r| r.counter.clone()),
         cache: eff.cache.as_ref().map(|c| c.ttl.as_secs()),
         before: eff.before.iter().map(|h| h.raw.clone()).collect(),
     }

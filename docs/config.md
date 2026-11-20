@@ -724,11 +724,39 @@ body can't also have `body` validation, and `before` handlers don't see it.
 Each upload holds a worker slot while it arrives, so consider a separate
 runtime for upload routes.
 
-Rate limits use a token bucket per route and key, so `requests` can arrive in
-a burst and then refill evenly over `per`. A request over the limit gets
-`429` with `Retry-After`. The client IP is the connection's address, or the
+Rate limits use a token bucket, so `requests` can arrive in a burst and
+then refill evenly over `per`. A request over the limit gets `429` with
+`Retry-After`. The client IP is the connection's address, or the
 `X-Forwarded-For` address when the connection comes from one of
 `[server].trusted_proxies`.
+
+**A limit is counted where it's written.** Every request it applies to
+takes from one count for each caller, whichever route serves the request:
+
+| Written in | One count for |
+|---|---|
+| `[defaults]` | every route that takes its limit from there: the whole API, less the routes with a limit of their own |
+| an entry for a prefix, `/api/{*rest}` | everything under `/api` |
+| a route, or an entry for its path | that route |
+| a named set, `[policies.free]` | every route that uses the set |
+
+```toml
+[defaults]
+rate_limit = { requests = 1000, per = "1h", key = "auth.sub" }   # 1,000 an hour for each user, across the API
+
+[[route]]
+path       = "/login"
+method     = "POST"
+auth       = "none"
+handler    = "src/login.ts"
+rate_limit = { requests = 5, per = "1m", key = "ip" }            # its own count, in place of the one above
+```
+
+A narrower limit replaces a wider one, as any policy does: a request to
+`/login` counts against its 5 a minute and not against the 1,000 an hour.
+For a count several routes share that isn't a path, put the limit in a
+named set and `use` it. [`unsworn plan`](plan.md) says what each route's
+limit is counted for.
 
 - **Requests that fail `auth` count too,** so guessing credentials is
   limited like anything else. A limit keyed on `ip` or a header is counted
