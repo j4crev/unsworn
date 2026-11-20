@@ -135,13 +135,11 @@ copied large bodies several times on their way through Unsworn and the JS
 SDK, and had the Rust SDK read stdin through a thread pool.
 
 **Against v0.3.1.** The same suite on this machine three days apart.
-v0.3.1's figures are from
-[its run](../bench/results/2026-11-16-v0.3.1-intel-core-i5-1145g7.json)
-and, for the "hello" handler rows,
-[a second run of the handler groups](../bench/results/2026-11-16-v0.3.1-handlers-intel-core-i5-1145g7.json)
-that day. The rows that don't involve Unsworn (Go, Bun and Node on
-their own, the app directly, Caddy, nginx) moved by 7% at most between
-the two.
+v0.3.1's figures are from its run and, for the "hello" handler rows, a
+second run of the handler groups that day; both files are in this
+repository's history under `bench/results/`. The rows that don't involve
+Unsworn (Go, Bun and Node on their own, the app directly, Caddy, nginx)
+moved by 7% at most between the two.
 
 | Scenario | v0.3.1 req/s | v0.4.0 req/s | v0.3.1 CPU µs/req | v0.4.0 CPU µs/req |
 |---|--:|--:|--:|--:|
