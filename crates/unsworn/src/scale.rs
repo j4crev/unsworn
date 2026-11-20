@@ -471,9 +471,14 @@ mod tests {
         assert_eq!(stat_idle(stat, &[0, 1]), 920);
         assert_eq!(stat_idle(stat, &[1]), 510);
         assert_eq!(stat_idle(stat, &[7]), 0);
+        // The live reading is from `/proc`, which only Linux has.
+        #[cfg(target_os = "linux")]
         assert!(idle_ticks().is_some_and(|t| t > 0));
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(idle_ticks(), None);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn reads_this_processs_own_cpu_time() {
         let before = tree_ticks(std::process::id()).expect("/proc is readable");

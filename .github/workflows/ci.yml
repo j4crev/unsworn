@@ -78,7 +78,8 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: sdk/go/go.mod
-      - run: cargo test -p unsworn-core -p unsworn-proto -p unsworn
+      # Every test binary runs, so one failure doesn't hide the next.
+      - run: cargo test --no-fail-fast -p unsworn-core -p unsworn-proto -p unsworn
 
   # The core and the protocol must keep building for wasm32, where the edge
   # and serverless hosts run them. See docs/architecture.md.
