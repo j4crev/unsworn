@@ -9,7 +9,9 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header};
 use serde_json::{Map, Value};
 
 use super::Problem;
-use crate::policy::{CacheRule, Cors, Effective, IpRules, KeySource, RateLimit};
+use crate::policy::{
+    CacheRule, Cors, Effective, IpRules, KeySource, Operand, RateLimit, Requirement,
+};
 use crate::project::Route;
 use crate::rules;
 
@@ -334,6 +336,59 @@ pub fn key_value(
             other => other.to_string(),
         }),
     }
+}
+
+/// The first `require` rule a request doesn't meet, if any: its two values
+/// differ, or the request lacks one of them. `path` is the normalized
+/// request path.
+pub fn unmet<'a>(
+    rules: &'a [Requirement],
+    path: &str,
+    query: &[(String, String)],
+    headers: &HeaderMap,
+    claims: Option<&Map<String, Value>>,
+) -> Option<&'a Requirement> {
+    let value = |side: &Operand| -> Option<String> {
+        match side {
+            // A claim that's a list or an object equals nothing: comparing
+            // its JSON text with a path segment would be a guess.
+            Operand::Claim(name) => match claims?.get(name)? {
+                Value::String(s) => Some(s.clone()),
+                Value::Number(n) => Some(n.to_string()),
+                Value::Bool(b) => Some(b.to_string()),
+                _ => None,
+            },
+            Operand::Header(name) => {
+                let mut values = headers.get_all(name.as_str()).iter();
+                let first = values.next()?.to_str().ok()?;
+                // Sent twice, it has no one value to compare.
+                values.next().is_none().then(|| first.to_string())
+            }
+            Operand::Query(name) => {
+                let mut values = query.iter().filter(|(k, _)| k == name);
+                let first = values.next()?;
+                values.next().is_none().then(|| first.1.clone())
+            }
+            Operand::Param {
+                segment: Some(at),
+                rest,
+                ..
+            } => {
+                let mut parts = path.split('/').filter(|s| !s.is_empty()).skip(*at);
+                match rest {
+                    false => parts.next().map(decode_param),
+                    true => Some(decode_param(&parts.collect::<Vec<_>>().join("/"))),
+                }
+            }
+            Operand::Param { segment: None, .. } => None,
+        }
+    };
+    rules
+        .iter()
+        .find(|rule| match (value(&rule.left), value(&rule.right)) {
+            (Some(left), Some(right)) => left != right,
+            _ => true,
+        })
 }
 
 /// The client's address as a rate-limit key. An IPv6 client counts by its

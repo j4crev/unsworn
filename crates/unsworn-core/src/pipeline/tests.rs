@@ -1471,6 +1471,185 @@ auth = "users"
     assert_eq!(me(&before, &token(b"leaked")), StatusCode::OK);
 }
 
+/// `require`: the organization in the path has to be the one in the
+/// caller's token, for every route under the path and for the same route
+/// called as an MCP tool.
+#[test]
+fn require_keeps_a_caller_to_what_their_token_names() {
+    const SECRET: &str = "0123456789abcdef0123456789abcdef";
+    let host = TestHost::new().handler("src/h.ts#invoice", echo);
+    let t = Test::new(
+        &format!(
+            r#"{TS}
+[auth.users]
+type = "jwt"
+secret = "{SECRET}"
+
+[defaults]
+auth = "users"
+
+[mcp]
+
+# One rule for everything under an organization.
+[[route]]
+path = "/orgs/{{org}}/{{*rest}}"
+require = {{ "params.org" = "auth.org" }}
+
+[[route]]
+path = "/orgs/{{organization}}/invoices/{{id}}"
+method = "GET"
+handler = "src/h.ts#invoice"
+params = {{ id = {{ type = "integer" }} }}
+mcp = {{ tool = "get_invoice", description = "An invoice" }}
+
+# An app behind a catch-all is covered too.
+[[route]]
+path = "/{{*rest}}"
+respond = {{ status = 200, text = "app" }}
+
+# One organization has a rule more.
+[[route]]
+path = "/orgs/vault/{{*rest}}"
+require = {{ "header.x-approved-by" = "auth.sub" }}
+
+[[route]]
+path = "/files/{{*path}}"
+respond = {{ status = 200 }}
+require = {{ "params.path" = "auth.home" }}
+
+[[route]]
+path = "/as"
+respond = {{ status = 200 }}
+require = {{ "query.user" = "auth.sub", "header.x-tenant" = "auth.org" }}
+"#
+        ),
+        &["src/h.ts"],
+        host,
+    );
+    let exp = t.host.clock.now() / 1000 + 3600;
+    let token = |claims: Value| {
+        let mut claims = claims;
+        claims["exp"] = json!(exp);
+        claims["sub"] = json!("u1");
+        jwt(SECRET.as_bytes(), None, claims)
+    };
+    let acme = token(json!({ "org": "acme", "home": "u1/docs" }));
+    let get = |token: &str, uri: &str| t.send("GET", uri, &[("authorization", token)], b"");
+    let (ok, forbidden) = (StatusCode::OK, StatusCode::FORBIDDEN);
+
+    // The caller's own organization, and someone else's.
+    assert_eq!(get(&acme, "/orgs/acme/invoices/7").status, ok);
+    let r = get(&acme, "/orgs/globex/invoices/7");
+    assert_eq!(r.status, forbidden);
+    // The answer names the rule, which is in the config, and no value.
+    assert_eq!(
+        r.json()["detail"],
+        "`params.org` and `auth.org` have to be the same for this request, and they aren't"
+    );
+    assert_eq!(t.host.calls().len(), 1, "the handler ran once, for acme");
+    // It's decided before the request's own values are looked at.
+    assert_eq!(get(&acme, "/orgs/globex/invoices/abc").status, forbidden);
+    assert_eq!(
+        get(&acme, "/orgs/acme/invoices/abc").status,
+        StatusCode::BAD_REQUEST
+    );
+    // A path the catch-all serves is under the same rule.
+    assert_eq!(get(&acme, "/orgs/acme/settings").status, ok);
+    assert_eq!(get(&acme, "/orgs/globex/settings").status, forbidden);
+    assert_eq!(get(&acme, "/elsewhere").status, ok);
+    // No token is still `401`: who the caller is comes first.
+    assert_eq!(
+        t.get("/orgs/acme/invoices/7").status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // The path is compared as it's routed, escapes resolved.
+    assert_eq!(get(&acme, "/orgs/%61cme/settings").status, ok);
+    let slash = token(json!({ "org": "a/b" }));
+    assert_eq!(get(&slash, "/orgs/a%2Fb/settings").status, ok);
+    assert_eq!(get(&slash, "/orgs/a/b/settings").status, forbidden);
+    // A number in the token equals its digits in the path. A missing
+    // claim, a list or an object equals nothing.
+    assert_eq!(
+        get(&token(json!({ "org": 42 })), "/orgs/42/settings").status,
+        ok
+    );
+    assert_eq!(
+        get(&token(json!({})), "/orgs/acme/settings").status,
+        forbidden
+    );
+    assert_eq!(
+        get(&token(json!({ "org": ["acme"] })), "/orgs/acme/settings").status,
+        forbidden
+    );
+
+    // A `{*rest}` parameter is all of the rest.
+    assert_eq!(get(&acme, "/files/u1/docs").status, ok);
+    assert_eq!(get(&acme, "/files/u1").status, forbidden);
+    assert_eq!(get(&acme, "/files/u1/docs/more").status, forbidden);
+
+    // Query and header values, each sent once.
+    let as_user = |uri: &str, tenant: &[&str]| {
+        let mut headers = vec![("authorization", acme.as_str())];
+        headers.extend(tenant.iter().map(|t| ("x-tenant", *t)));
+        t.send("GET", uri, &headers, b"").status
+    };
+    assert_eq!(as_user("/as?user=u1", &["acme"]), ok);
+    assert_eq!(as_user("/as?user=u2", &["acme"]), forbidden);
+    assert_eq!(as_user("/as?user=u1&user=u2", &["acme"]), forbidden);
+    assert_eq!(as_user("/as?user=u1", &[]), forbidden);
+    assert_eq!(as_user("/as?user=u1", &["acme", "globex"]), forbidden);
+
+    // The same route as a tool: the rule is checked against the request
+    // the arguments make.
+    let call = |token: &str, organization: &str| {
+        let body = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "get_invoice",
+                "arguments": { "organization": organization, "id": 7 },
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                }
+            }
+        });
+        let headers = [
+            ("content-type", "application/json"),
+            ("mcp-protocol-version", "2026-07-28"),
+            ("mcp-method", "tools/call"),
+            ("mcp-name", "get_invoice"),
+            ("authorization", token),
+        ];
+        let r = t.send("POST", "/mcp", &headers, body.to_string().as_bytes());
+        assert_eq!(r.status, ok, "{:?}", r.body);
+        r.json()["result"].clone()
+    };
+    let mine = call(&acme, "acme");
+    assert_eq!(mine["isError"], json!(null), "{mine}");
+    assert_eq!(mine["structuredContent"]["params"]["organization"], "acme");
+    let theirs = call(&acme, "globex");
+    assert_eq!(theirs["isError"], true, "{theirs}");
+    assert_eq!(
+        theirs["content"][0]["text"],
+        "Not allowed: `params.org` and `auth.org` have to be the same for this call."
+    );
+    assert_eq!(t.host.calls().len(), 2, "the handler ran for acme only");
+
+    // A call gets the policies of the path its arguments make: here an
+    // entry for one organization's part of the route, which a request for
+    // the route's pattern as a whole doesn't match.
+    let vault = token(json!({ "org": "vault" }));
+    assert_eq!(get(&vault, "/orgs/vault/invoices/7").status, forbidden);
+    let unapproved = call(&vault, "vault");
+    assert_eq!(unapproved["isError"], true, "{unapproved}");
+    assert_eq!(
+        unapproved["content"][0]["text"],
+        "Not allowed: `header.x-approved-by` and `auth.sub` have to be the same for this call."
+    );
+    assert_eq!(t.host.calls().len(), 2);
+}
+
 #[test]
 fn rate_limits_count_requests_that_fail_auth() {
     let host = TestHost::new().fetch_answer(

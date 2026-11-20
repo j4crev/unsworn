@@ -534,8 +534,25 @@ pub struct RawPolicies {
     /// Headers to set on, or remove from, the response.
     pub response_headers: Option<OrOff<RawHeaders>>,
     pub before: Option<OrOff<Vec<String>>>,
+    /// Pairs of values that have to be the same, such as
+    /// `{ "params.org" = "auth.org" }`.
+    pub require: Option<OrOff<RawRequire>>,
     #[serde(rename = "use")]
     pub use_sets: Option<Vec<String>>,
+}
+
+/// `require` as written: each key is one value and what it's set to is the
+/// other. `"params.org" = "auth.org"` and, with TOML's dotted keys,
+/// `params.org = "auth.org"` say the same.
+pub type RawRequire = BTreeMap<String, RawRequireValue>;
+
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum RawRequireValue {
+    Name(String),
+    /// What an unquoted dotted key turns into: `params.org = "auth.org"`
+    /// is `{ params = { org = "auth.org" } }`.
+    Dotted(BTreeMap<String, String>),
 }
 
 /// One inline parameter rule: `{ type = "integer", min = 1 }`.
@@ -658,6 +675,9 @@ pub struct RawRoute {
     /// Headers to set on, or remove from, the response.
     pub response_headers: Option<OrOff<RawHeaders>>,
     pub before: Option<OrOff<Vec<String>>>,
+    /// Pairs of values that have to be the same, such as
+    /// `{ "params.org" = "auth.org" }`.
+    pub require: Option<OrOff<RawRequire>>,
     #[serde(rename = "use")]
     pub use_sets: Option<Vec<String>>,
 
@@ -842,6 +862,7 @@ impl RawRoute {
             stream_body: self.stream_body,
             response_headers: self.response_headers.clone(),
             before: self.before.clone(),
+            require: self.require.clone(),
             use_sets: self.use_sets.clone(),
         }
     }

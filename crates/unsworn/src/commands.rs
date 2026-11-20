@@ -167,6 +167,18 @@ fn layer_summary(layer: &Layer) -> Vec<String> {
         Some(OrOff::Off) => out.push("before=off".into()),
         None => {}
     }
+    match &layer.require {
+        Some(OrOff::On(rules)) => out.push(format!(
+            "require=[{}]",
+            rules
+                .iter()
+                .map(|r| r.describe())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        Some(OrOff::Off) => out.push("require=off".into()),
+        None => {}
+    }
     out
 }
 

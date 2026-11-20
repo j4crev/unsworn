@@ -21,7 +21,7 @@ use crate::mcp::{self, BodyArgs, McpEndpoint, McpTool, RouteBinding, ServerInfo}
 use crate::openapi;
 use crate::policy::{
     AuthAlt, AuthReq, CacheRule, Cors, Effective, HandlerRef, HeaderRules, KeySource, Layer,
-    RateLimit,
+    Operand, RateLimit, Requirement,
 };
 use crate::routefiles::{self, METHODS};
 use crate::rules;
@@ -920,12 +920,21 @@ impl Project {
     /// route's policies as a REST request sees them, with `[mcp]`'s `before`
     /// handlers first, and `[mcp]`'s `timeout` unless the route sets one.
     pub fn tool_effective(&self, tool: &McpTool) -> Effective {
+        self.tool_effective_at(tool, None)
+    }
+
+    /// [`Project::tool_effective`] for one call to a route offered as a
+    /// tool, whose arguments make the request for `path`. An entry for
+    /// part of the route's paths applies to the calls that land there, as
+    /// it does to a REST request for the same path.
+    pub fn tool_effective_at(&self, tool: &McpTool, path: Option<&str>) -> Effective {
         let route = &self.routes[tool.route];
         let Some(b) = &tool.binding else {
             return self.route_effective(route);
         };
         let probe = b.pattern.replace("{*", "{");
-        let layer = merged_layer(route, &self.entries, &b.method, &probe);
+        let path = path.unwrap_or(&probe);
+        let layer = merged_layer(route, &self.entries, &b.method, path);
         let mut eff = layer.finalize(self.server.timeout, self.server.max_body);
         if let Some(mcp) = &self.mcp {
             let endpoint = merged_layer(&self.routes[mcp.route], &self.entries, "POST", &mcp.path);
@@ -1456,7 +1465,8 @@ impl<'h> Compiler<'h> {
             let layer = self.layer(set, &loc, &loc);
             self.sets.insert(name.clone(), layer);
         }
-        let defaults = self.layer(&raw.defaults, "[defaults]", "[defaults]");
+        let mut defaults = self.layer(&raw.defaults, "[defaults]", "[defaults]");
+        self.place_params(&mut defaults, None, "[defaults]");
 
         let mut drafts: Vec<Draft> = Vec::new();
         let mut exacts: Vec<ExactEntry> = Vec::new();
@@ -2623,8 +2633,86 @@ impl<'h> Compiler<'h> {
                 Some(OrOff::On(refs))
             }
         };
+        own.require = match &raw.require {
+            None => None,
+            Some(OrOff::Off) => Some(OrOff::Off),
+            Some(OrOff::On(pairs)) => {
+                // `"params.org" = "auth.org"`, or the same with an unquoted
+                // key, which TOML reads as a table inside a table.
+                let mut written: Vec<(String, &String)> = Vec::new();
+                for (key, value) in pairs {
+                    match value {
+                        config::RawRequireValue::Name(other) => written.push((key.clone(), other)),
+                        config::RawRequireValue::Dotted(inner) => {
+                            written.extend(inner.iter().map(|(k, v)| (format!("{key}.{k}"), v)));
+                        }
+                    }
+                }
+                let mut rules = Vec::new();
+                for (left, right) in written {
+                    let at = format!("{loc}.require.\"{left}\"");
+                    match (Operand::parse(&left), Operand::parse(right)) {
+                        (Ok(left), Ok(right)) if left == right => {
+                            self.diags.error(at, "both sides are the same value")
+                        }
+                        (Ok(left), Ok(right)) => rules.push(Requirement { left, right }),
+                        (Err(e), _) | (_, Err(e)) => self.diags.error(at, e),
+                    }
+                }
+                Some(OrOff::On(rules))
+            }
+        };
         layer.merge_from(&own);
         layer
+    }
+
+    /// Finds where each `params.<name>` of a layer's `require` rules is in
+    /// `path`, the path the layer is written for. `[defaults]`, `[mcp]`
+    /// and a tool have none, so such a rule can't be written there: on a
+    /// route without that parameter it would have nothing to compare.
+    fn place_params(&mut self, layer: &mut Layer, path: Option<&str>, loc: &str) {
+        let Some(OrOff::On(rules)) = &mut layer.require else {
+            return;
+        };
+        let segs = path.map(parse_pattern);
+        for rule in rules {
+            for side in [&mut rule.left, &mut rule.right] {
+                let Operand::Param {
+                    name,
+                    segment,
+                    rest,
+                } = side
+                else {
+                    continue;
+                };
+                let found = segs
+                    .iter()
+                    .flatten()
+                    .enumerate()
+                    .find_map(|(i, seg)| match seg {
+                        Seg::Param(n) if n == name => Some((i, false)),
+                        Seg::CatchAll(n) if n == name => Some((i, true)),
+                        _ => None,
+                    });
+                match (found, path) {
+                    (Some((i, all)), _) => (*segment, *rest) = (Some(i), all),
+                    (None, Some(path)) => self.diags.push(
+                        Diagnostic::error(
+                            format!("{loc}.require"),
+                            format!("the path {path} has no parameter named \"{name}\""),
+                        )
+                        .hint(format!("`params.{name}` is a `{{{name}}}` in the path of the entry the rule is written in")),
+                    ),
+                    (None, None) => self.diags.push(
+                        Diagnostic::error(
+                            format!("{loc}.require"),
+                            format!("`params.{name}` needs a path, and this table has none"),
+                        )
+                        .hint(format!("write the rule in a `[[route]]` entry for the paths that have it, such as `path = \"/orgs/{{{name}}}/{{*rest}}\"`")),
+                    ),
+                }
+            }
+        }
     }
 
     fn methods(&mut self, raw: Option<Vec<String>>, loc: &str) -> Option<Vec<String>> {
@@ -2746,7 +2834,8 @@ impl<'h> Compiler<'h> {
             r.host.as_deref().unwrap_or_default().to_ascii_lowercase(),
             r.path
         );
-        let layer = self.layer(&policies, &loc, &counter);
+        let mut layer = self.layer(&policies, &loc, &counter);
+        self.place_params(&mut layer, Some(&r.path), &loc);
         let validation = self.raw_validation(r, &loc);
         let has_catch_all = parse_pattern(&r.path)
             .last()
@@ -2968,7 +3057,8 @@ impl<'h> Compiler<'h> {
             .proxy
             .as_ref()
             .map(|p| self.proxy(p, &format!("{loc}.proxy")));
-        let layer = self.layer(&raw.policies(), &loc, "[mcp]");
+        let mut layer = self.layer(&raw.policies(), &loc, "[mcp]");
+        self.place_params(&mut layer, None, &loc);
         for (key, set) in [
             ("cache", layer.cache.is_some()),
             ("stream_body", layer.stream_body.is_some()),
@@ -3059,7 +3149,8 @@ impl<'h> Compiler<'h> {
         drafts: &mut Vec<Draft>,
     ) -> Option<McpTool> {
         let loc = source.loc();
-        let own = self.layer(&t.policies(), &loc, &format!("[[mcp.tool]] {}", t.name));
+        let mut own = self.layer(&t.policies(), &loc, &format!("[[mcp.tool]] {}", t.name));
+        self.place_params(&mut own, None, &loc);
         for key in endpoint_only_keys(&own)
             .into_iter()
             .chain(own.cache.is_some().then_some("cache"))
@@ -4155,8 +4246,9 @@ impl<'h> Compiler<'h> {
                     }
                 };
                 for key in a.layer.keys() {
-                    // `before` lists add up, so two of them don't clash.
-                    if key == "before" || !b.layer.keys().contains(&key) {
+                    // `before` and `require` lists add up, so two of
+                    // them don't clash.
+                    if matches!(key, "before" | "require") || !b.layer.keys().contains(&key) {
                         continue;
                     }
                     self.diags.push(
@@ -4195,12 +4287,20 @@ impl<'h> Compiler<'h> {
             let first = self.diags.items.len();
             let mut whole_route = None;
             let mut auth_unset: Vec<&str> = Vec::new();
+            let mut callerless: Vec<(&str, Requirement)> = Vec::new();
             for method in methods {
                 let layer = merged_layer(r, entries, method, &probe);
                 if layer.auth.is_none() {
                     auth_unset.push(method);
                 }
                 let eff = layer.finalize(Duration::from_secs(30), 0);
+                if eff.auth == AuthReq::Public {
+                    for rule in eff.require.iter().filter(|rule| rule.needs_caller()) {
+                        if !callerless.iter().any(|(_, seen)| seen == rule) {
+                            callerless.push((method, rule.clone()));
+                        }
+                    }
+                }
                 whole_route.get_or_insert_with(|| eff.clone());
                 if let Some(shadow) = &r.shadow {
                     if eff.stream_body {
@@ -4344,6 +4444,21 @@ impl<'h> Compiler<'h> {
                 }
                 false
             });
+            // A rule that compares with the caller's claims can never
+            // hold where there is no caller.
+            for (method, rule) in &callerless {
+                self.diags.push(
+                    Diagnostic::error(
+                        r.source.loc(),
+                        format!(
+                            "`require` has `{}`, but {method} {} is public: a request there has no caller to compare with",
+                            rule.describe(),
+                            r.path
+                        ),
+                    )
+                    .hint("set `auth` for it, or `require = \"off\"` to leave the rule out there"),
+                );
+            }
             // In a project with auth schemes, a route without `auth` is
             // as likely forgotten as meant to be public, and nothing else
             // tells the two apart. So each route says which it is.

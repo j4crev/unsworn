@@ -17,7 +17,7 @@ use super::host::{Body, CallError, Deadline, Host, ProxyRequest, Reply, Response
 use super::{
     JsonBody, Problem, access, cache_key, check_body, check_content_length, decode_param,
     finish_headers, header_map, normalize_path, preflight_headers, query_pairs, rate_limit_bucket,
-    redirect_location, response_head, validate_inputs,
+    redirect_location, response_head, unmet, validate_inputs,
 };
 use crate::config::{ResponseValidation, TrailingSlash};
 use crate::policy::{CacheRule, Effective, HandlerRef, KeySource, RateLimit as RateLimitRule};
@@ -450,6 +450,18 @@ async fn prepare<H: Host>(
         rate_limited(ctx.rate_limit(limit, req.headers(), claims.as_ref()).await)?;
     }
 
+    // Before the request's own values are looked at any further: a caller
+    // who may not be here learns nothing about what the route expects.
+    if let Some(rule) = unmet(
+        &eff.require,
+        req.uri().path(),
+        &query_pairs,
+        req.headers(),
+        claims.as_ref(),
+    ) {
+        return Err(problem_response(not_allowed(rule)));
+    }
+
     let (params, query) = validate_inputs(route, &raw_params, &query_pairs, req.headers())
         .map_err(problem_response)?;
 
@@ -556,6 +568,19 @@ async fn prepare<H: Host>(
         context,
         claims,
     })
+}
+
+/// The `403` for a request that doesn't meet a `require` rule. It names
+/// the rule, which is in the config, and neither of the values.
+pub(super) fn not_allowed(rule: &crate::policy::Requirement) -> Problem {
+    Problem::new(
+        StatusCode::FORBIDDEN,
+        format!(
+            "`{}` and `{}` have to be the same for this request, and they aren't",
+            rule.left.describe(),
+            rule.right.describe()
+        ),
+    )
 }
 
 /// The answer to a request over its rate limit, if it is.

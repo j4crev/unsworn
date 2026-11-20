@@ -150,6 +150,7 @@ changed. A `!` marks a change that lets more requests through:
 | `origin`, `ip` | removed; for `origin`, more origins allowed |
 | `cors` | added, more origins allowed, or credentials allowed |
 | `before` | a handler is removed |
+| `require` | a rule is removed |
 | `max_body` | raised |
 | `params`, `query`, `headers`, `body`, a tool's or function's `input` | the check is removed |
 | an outbound service's `methods`, `paths` | removed, or more allowed |
