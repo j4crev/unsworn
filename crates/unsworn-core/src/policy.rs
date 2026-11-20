@@ -1,8 +1,9 @@
 //! Resolved policies, layers and how they merge.
 //!
-//! Policies come from several layers, merged from broadest to most
-//! specific: `[defaults]`, the OpenAPI spec, `_policies.toml` files, prefix
-//! entries, then exact entries. Each layer only sets the keys it mentions.
+//! Policies come from several layers, merged from the widest to the
+//! narrowest: `[defaults]`, the OpenAPI spec, then every `[[route]]` entry
+//! about the request, the route's own among them. Each layer only sets
+//! the keys it mentions. The order is in `crate::project::Width`.
 
 use std::time::Duration;
 

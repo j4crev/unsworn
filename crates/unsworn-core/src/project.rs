@@ -254,9 +254,6 @@ pub enum Source {
         location: String,
     },
     Defaults,
-    FolderPolicies {
-        path: String,
-    },
     /// The `[mcp]` table.
     Mcp {
         file: String,
@@ -310,7 +307,6 @@ impl fmt::Display for Source {
             Source::RouteFile { path } => write!(f, "{path}"),
             Source::OpenApi { file, location } => write!(f, "{file}:{location}"),
             Source::Defaults => write!(f, "[defaults]"),
-            Source::FolderPolicies { path } => write!(f, "{path}"),
             Source::Mcp {
                 file,
                 line: Some(line),
@@ -3558,20 +3554,6 @@ impl<'h> Compiler<'h> {
             }
         };
         let mut folder_layers: Vec<(Vec<String>, String, Layer)> = Vec::new();
-        for p in &scan.policies {
-            let path = format!("{dir}/{}", p.file);
-            self.files.push(path.clone());
-            let Some(text) = self.host.read(&path) else {
-                continue;
-            };
-            match config::parse_document::<RawPolicies>(&text, Format::Toml) {
-                Ok(raw) => {
-                    let layer = self.layer(&raw, &path, None);
-                    folder_layers.push((p.scope.clone(), path, layer));
-                }
-                Err(e) => self.diags.error(&path, e),
-            }
-        }
         for b in &scan.befores {
             let path = format!("{dir}/{}", b.file);
             if let Some(h) = self.handler_ref(&path, None, &path) {
@@ -3585,7 +3567,7 @@ impl<'h> Compiler<'h> {
                 ));
             }
         }
-        // Outermost folders first; policies before `_before` handlers at the same depth.
+        // Outermost folders first.
         folder_layers.sort_by_key(|(scope, _, _)| scope.len());
 
         for fr in scan.routes {

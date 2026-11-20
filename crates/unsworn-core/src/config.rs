@@ -515,8 +515,8 @@ pub struct RawHeaders {
     pub remove: Vec<String>,
 }
 
-/// Policy keys, as used in `[defaults]`, `[policies.*]` and
-/// `_policies.toml` files. Route entries repeat these fields.
+/// Policy keys, as used in `[defaults]` and `[policies.*]`. Route entries
+/// repeat these fields.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawPolicies {
@@ -918,7 +918,7 @@ impl Format {
     }
 }
 
-/// Deserializes any config-like document (config, `_policies.toml`, schemas).
+/// Deserializes any config-like document (config, schemas).
 pub fn parse_document<T: serde::de::DeserializeOwned>(
     text: &str,
     format: Format,

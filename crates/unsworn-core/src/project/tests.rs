@@ -120,7 +120,7 @@ params = {{ id = {{ type = "integer", min = 1 }} }}
 }
 
 #[test]
-fn route_files_nested_and_flat_with_folder_policies() {
+fn route_files_nested_and_flat_with_a_folders_before_handler() {
     let cfg = format!(
         r#"{RUNTIMES}
 [routes]
@@ -132,20 +132,23 @@ secret = "s"
 
 [policies.cached]
 cache = {{ ttl = "5m" }}
+
+# Policies for a folder's routes are an entry for the folder's path.
+[[route]]
+path = "/admin/{{*rest}}"
+auth = "jwt"
+use = ["cached"]
 "#
     );
-    let p = project(&[
-        ("unsworn.toml", &cfg),
+    let files = [
+        ("unsworn.toml", cfg.as_str()),
         ("routes/users.get.ts", ""),
         ("routes/users/[id]/put.go", ""),
-        (
-            "routes/admin/_policies.toml",
-            "auth = \"jwt\"\nuse = [\"cached\"]\n",
-        ),
         ("routes/admin/_before.ts", ""),
         ("routes/admin/stats.get.ts", ""),
         ("routes/lib/db.ts", ""),
-    ]);
+    ];
+    let p = project(&files);
     assert_eq!(p.routes.len(), 3);
     let put = found(&p, "PUT", "/users/7");
     assert_eq!(put.route.handler().unwrap().runtime, "go");
@@ -160,6 +163,14 @@ cache = {{ ttl = "5m" }}
     let users = found(&p, "GET", "/users");
     let eff = p.effective(users.route, "GET", "/users");
     assert_eq!(eff.auth, AuthReq::Public);
+
+    // A policies file in the folder isn't read: it would cover the route
+    // files there and not a config route under the same path.
+    let mut with_file = files.to_vec();
+    with_file.push(("routes/admin/_policies.toml", "auth = \"jwt\"\n"));
+    let errs = errors(&with_file);
+    assert!(errs[0].contains("routes/admin/_policies.toml"), "{errs:?}");
+    assert!(errs[0].contains("path = \"/admin/{*rest}\""), "{errs:?}");
 }
 
 #[test]
