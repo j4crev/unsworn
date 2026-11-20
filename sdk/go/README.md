@@ -242,7 +242,7 @@ routes/
   main.go                  # unsworn.Serve(GetUsers, GetUser, ...)
   users.get.go             # GET /users
   users.[id].get.go        # GET /users/{id}
-  users._before.go         # before handler for /users and below
+  guard.go                 # a before handler, listed in unsworn.toml
 ```
 
 ```toml
@@ -253,10 +253,10 @@ command    = ".unsworn/go-worker"
 protocol   = "framed"
 ```
 
-`main.go` has no HTTP method in its name, so Unsworn doesn't treat it as a
-route. The Go toolchain skips files whose names start with `_`, so a root
-`_before.go` is never compiled; list Go before handlers with `before = [...]`
-in `unsworn.toml` instead.
+`main.go` and `guard.go` have no HTTP method in their names, so Unsworn
+doesn't treat them as routes. A `before` handler runs for the routes an
+entry in `unsworn.toml` lists it for, such as
+`path = "/users/{*rest}"` with `before = ["routes/guard.go#Guard"]`.
 
 ## Production
 

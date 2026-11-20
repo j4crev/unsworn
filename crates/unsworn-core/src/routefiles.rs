@@ -4,8 +4,9 @@
 //! file name split on `.`, where the last part before the extension is the
 //! HTTP method. `[name]` is a parameter, `[...name]` matches the rest of the
 //! path, `(name)` is a group that doesn't appear in the URL, and `[.]` is a
-//! literal dot. A `_before.<ext>` file is a `before` handler for every
-//! route file in its folder and below.
+//! literal dot. A folder's policies and `before` handlers are in the
+//! config, as an entry for the folder's path: a `_policies.toml` or
+//! `_before.<ext>` file here is an error that says so.
 
 pub const METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
@@ -17,23 +18,16 @@ pub struct FileRoute {
     pub path: String,
     /// Path of the file relative to the routes directory.
     pub file: String,
-    /// The logical folder chain: directories plus file-name parts before the
-    /// method, as written (`["(admin)", "users", "[id]"]`).
-    pub chain: Vec<String>,
-}
-
-/// A `_before.<ext>` file and the folder it covers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScopedFile {
-    pub file: String,
-    pub scope: Vec<String>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Scan {
     pub routes: Vec<FileRoute>,
-    pub befores: Vec<ScopedFile>,
 }
+
+/// Stands for the routes directory in an error from [`scan`] that gives
+/// a file's path from the project, which only the caller knows.
+pub const ROUTES_DIR: &str = "<routes>";
 
 /// Classifies files from a routes directory. Paths are relative to the
 /// directory and use `/`. Files that aren't routes, such as shared helper
@@ -43,16 +37,13 @@ pub fn scan(files: &[String]) -> Result<Scan, Vec<(String, String)>> {
     let mut errors = Vec::new();
     for file in files {
         match classify(file) {
-            Ok(Some(Item::Route(r))) => out.routes.push(r),
-            Ok(Some(Item::Before(s))) => out.befores.push(s),
+            Ok(Some(r)) => out.routes.push(r),
             Ok(None) => {}
             Err(e) => errors.push((file.clone(), e)),
         }
     }
     out.routes
         .sort_by(|a, b| a.path.cmp(&b.path).then(a.method.cmp(&b.method)));
-    // Outermost scopes first, so they merge first.
-    out.befores.sort_by_key(|s| s.scope.len());
     if errors.is_empty() {
         Ok(out)
     } else {
@@ -60,12 +51,7 @@ pub fn scan(files: &[String]) -> Result<Scan, Vec<(String, String)>> {
     }
 }
 
-enum Item {
-    Route(FileRoute),
-    Before(ScopedFile),
-}
-
-fn classify(file: &str) -> Result<Option<Item>, String> {
+fn classify(file: &str) -> Result<Option<FileRoute>, String> {
     let mut components: Vec<&str> = file.split('/').filter(|c| !c.is_empty()).collect();
     let Some(name) = components.pop() else {
         return Ok(None);
@@ -99,22 +85,31 @@ fn classify(file: &str) -> Result<Option<Item>, String> {
         ));
     }
     if last == "_before" {
-        return Ok(Some(Item::Before(ScopedFile {
-            file: file.to_string(),
-            scope: chain,
-        })));
+        // The same goes for a `before` handler picked up by its name: it
+        // would run for the route files beside it, and not for another
+        // route under the same path.
+        let folder = chain_to_path(&chain).unwrap_or_else(|_| "/<folder>".into());
+        // Listed under this name it would be this error again, so the
+        // advice comes with another one.
+        let renamed = match file.rfind("_before") {
+            Some(at) => format!("{}guard{}", &file[..at], &file[at + "_before".len()..]),
+            None => file.to_string(),
+        };
+        return Err(format!(
+            "a `before` handler for a folder isn't picked up by its name; give the file another name and list it in the config, in an entry for the folder's path: `[[route]]` with `path = \"{}/{{*rest}}\"` and `before = [\"{ROUTES_DIR}/{renamed}\"]`",
+            folder.trim_end_matches('/')
+        ));
     }
     let method = last.to_ascii_uppercase();
     if !METHODS.contains(&method.as_str()) || last.chars().any(|c| c.is_ascii_uppercase()) {
         return Ok(None);
     }
     let path = chain_to_path(&chain)?;
-    Ok(Some(Item::Route(FileRoute {
+    Ok(Some(FileRoute {
         method,
         path,
         file: file.to_string(),
-        chain,
-    })))
+    }))
 }
 
 /// Splits a file name on `.`, keeping dots inside `[...]` and turning
@@ -191,11 +186,6 @@ fn check_param(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// True if `scope` is a prefix of `chain`.
-pub fn in_scope(scope: &[String], chain: &[String]) -> bool {
-    scope.len() <= chain.len() && scope.iter().zip(chain).all(|(a, b)| a == b)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,20 +231,40 @@ mod tests {
     }
 
     #[test]
-    fn helpers_are_ignored_and_scoped_files_found() {
-        let files: Vec<String> = [
-            "users/db.ts",
-            "users/_before.ts",
-            "admin/stats.get.ts",
-            ".hidden.get.ts",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    fn helpers_are_ignored() {
+        let files: Vec<String> = ["users/db.ts", "admin/stats.get.ts", ".hidden.get.ts"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let scan = scan(&files).unwrap();
         assert_eq!(scan.routes.len(), 1);
-        assert_eq!(scan.befores[0].scope, vec!["users"]);
-        assert!(!in_scope(&scan.befores[0].scope, &scan.routes[0].chain));
+    }
+
+    /// A file that used to apply to its folder's routes by its name is
+    /// reported, with the entry that says the same in the config: left
+    /// unread, it would stop applying without a word.
+    #[test]
+    fn a_folders_own_files_are_errors_that_name_the_entry() {
+        for (file, wanted) in [
+            (
+                "users/[id]/_before.ts",
+                "`path = \"/users/{id}/{*rest}\"` and `before = [\"<routes>/users/[id]/guard.ts\"]`",
+            ),
+            (
+                "admin._before.py",
+                "`path = \"/admin/{*rest}\"` and `before = [\"<routes>/admin.guard.py\"]`",
+            ),
+            (
+                "_before.ts",
+                "`path = \"/{*rest}\"` and `before = [\"<routes>/guard.ts\"]`",
+            ),
+            ("admin/_policies.toml", "`path = \"/admin/{*rest}\"`"),
+        ] {
+            let errors = scan(&[file.to_string(), "users/get.ts".to_string()]).unwrap_err();
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert_eq!(errors[0].0, file);
+            assert!(errors[0].1.contains(wanted), "{:?}", errors[0]);
+        }
     }
 
     #[test]

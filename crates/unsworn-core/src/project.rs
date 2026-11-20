@@ -394,8 +394,8 @@ pub struct Route {
     pub action: Action,
     pub source: Source,
     pub validation: Validation,
-    /// What applies before any policy entry: defaults, the OpenAPI spec,
-    /// a folder's `_before` handlers.
+    /// What applies before any policy entry: defaults and the OpenAPI
+    /// spec.
     pub low: Layer,
     /// The route's own policies, which count as an entry for the route's
     /// path and methods (see [`Width`]).
@@ -1448,7 +1448,6 @@ struct Draft {
     inherit: Vec<(String, Layer)>,
     validation: RawValidation,
     openapi_layer: Option<Layer>,
-    folder_layers: Vec<(String, Layer)>,
     op: Option<OpInfo>,
     /// `mcp = {...}` on the route's own `[[route]]` entry, or an OpenAPI
     /// operation picked by `[openapi] mcp_tools` (the flag).
@@ -3286,7 +3285,6 @@ impl<'h> Compiler<'h> {
                         inherit: Vec::new(),
                         validation,
                         openapi_layer: None,
-                        folder_layers: Vec::new(),
                         op: None,
                         mcp: r.mcp.clone().map(|m| (m, false)),
                         shadow: r.shadow.clone(),
@@ -3526,7 +3524,6 @@ impl<'h> Compiler<'h> {
             inherit: Vec::new(),
             validation: RawValidation::default(),
             openapi_layer: None,
-            folder_layers: Vec::new(),
             op: None,
             mcp: None,
             shadow: None,
@@ -3704,7 +3701,6 @@ impl<'h> Compiler<'h> {
                 ..Default::default()
             },
             openapi_layer: None,
-            folder_layers: Vec::new(),
             op: None,
             mcp: None,
             shadow: None,
@@ -4090,38 +4086,18 @@ impl<'h> Compiler<'h> {
             Ok(s) => s,
             Err(errors) => {
                 for (file, e) in errors {
+                    let e = e.replace(routefiles::ROUTES_DIR, dir);
                     self.diags.error(format!("{dir}/{file}"), e);
                 }
                 return;
             }
         };
-        let mut folder_layers: Vec<(Vec<String>, String, Layer)> = Vec::new();
-        for b in &scan.befores {
-            let path = format!("{dir}/{}", b.file);
-            if let Some(h) = self.handler_ref(&path, None, &path) {
-                folder_layers.push((
-                    b.scope.clone(),
-                    path,
-                    Layer {
-                        before: Some(OrOff::On(vec![h])),
-                        ..Default::default()
-                    },
-                ));
-            }
-        }
-        // Outermost folders first.
-        folder_layers.sort_by_key(|(scope, _, _)| scope.len());
 
         for fr in scan.routes {
             let path = format!("{dir}/{}", fr.file);
             let Some(h) = self.handler_ref(&path, None, &path) else {
                 continue;
             };
-            let layers = folder_layers
-                .iter()
-                .filter(|(scope, _, _)| routefiles::in_scope(scope, &fr.chain))
-                .map(|(_, p, l)| (p.clone(), l.clone()))
-                .collect();
             drafts.push(Draft {
                 methods: Some(vec![fr.method]),
                 path: fr.path,
@@ -4132,7 +4108,6 @@ impl<'h> Compiler<'h> {
                 inherit: Vec::new(),
                 validation: RawValidation::default(),
                 openapi_layer: None,
-                folder_layers: layers,
                 op: None,
                 mcp: None,
                 shadow: None,
@@ -4330,7 +4305,6 @@ impl<'h> Compiler<'h> {
                 inherit: Vec::new(),
                 validation,
                 openapi_layer: layer,
-                folder_layers: Vec::new(),
                 op: Some(info),
                 mcp: tool.map(|t| (t, true)),
                 shadow: None,
@@ -4365,7 +4339,6 @@ impl<'h> Compiler<'h> {
             };
             layers.push((name, l.clone()));
         }
-        layers.extend(d.folder_layers.iter().cloned());
         let mut low = Layer::default();
         for (_, l) in &layers {
             low.merge_from(l);
