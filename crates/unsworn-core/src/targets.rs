@@ -200,6 +200,18 @@ fn no_unix_upstreams(project: &Project, target: &str, out: &mut Vec<Diagnostic>)
             .any(|u| u.starts_with(crate::project::UNIX_UPSTREAM))
     };
     let hint = "use the upstream's http:// or https:// URL";
+    // An `http` runtime is a server the binary starts beside itself.
+    for (name, runtime) in &project.runtimes {
+        if runtime.protocol == crate::config::Protocol::Http {
+            out.push(
+                Diagnostic::error(
+                    format!("[runtimes.{name}]"),
+                    format!("an `http` runtime is a process the server starts, and {target} can't run one"),
+                )
+                .hint("deploy its server on its own and `proxy` to its URL, or use the server target"),
+            );
+        }
+    }
     for route in &project.routes {
         if let crate::project::Action::Proxy(proxy) = &route.action
             && unix(proxy)

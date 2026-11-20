@@ -3,6 +3,10 @@
 //! Each runtime gets a [`Pool`] of worker processes. Requests go to the
 //! least busy worker that has capacity. Workers speak the protocol in
 //! `unsworn-proto`, over stdin/stdout (Tier 1) or a Unix socket (Tier 2).
+//!
+//! An `http` runtime's workers are HTTP servers instead: the pool starts
+//! and supervises them the same way, and hands out where each one listens
+//! (see [`Pool::http_lease`]) for the proxy to forward to.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -18,9 +22,9 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::process::{Child, Command};
 use tokio::sync::{Notify, Semaphore, mpsc, oneshot};
 use unsworn_core::Project;
-use unsworn_core::config::Protocol;
 use unsworn_core::config::ResponseValidation;
-use unsworn_core::project::{Function, Outbound, Runtime};
+use unsworn_core::config::{Listen, Protocol};
+use unsworn_core::project::{Function, Outbound, Runtime, Target};
 use unsworn_core::trace::TraceContext;
 use unsworn_core::{calls, outbound};
 use unsworn_proto::{
@@ -183,6 +187,40 @@ struct Worker {
     /// Whether `subcalls` has ever held anything, so a request that calls
     /// nothing doesn't take its lock.
     made_calls: AtomicBool,
+    /// Where it listens, for the worker of an `http` runtime.
+    http: Option<HttpAt>,
+}
+
+/// Where an `http` runtime's worker listens for Unsworn.
+struct HttpAt {
+    /// As a proxy's upstream is written: `unix:/path`, or
+    /// `http://127.0.0.1:<port>`.
+    upstream: Arc<str>,
+    target: Target,
+}
+
+/// One request's hold on an `http` runtime's worker: where to send the
+/// request. The worker counts as busy with it until this is dropped.
+pub struct HttpLease {
+    worker: Arc<Worker>,
+}
+
+impl HttpLease {
+    /// Where the worker listens, as a proxy's upstream is written.
+    pub fn upstream(&self) -> &str {
+        self.worker.http.as_ref().map_or("", |at| &at.upstream)
+    }
+
+    pub fn target(&self) -> &Target {
+        const NOWHERE: &Target = &Target::Url;
+        self.worker.http.as_ref().map_or(NOWHERE, |at| &at.target)
+    }
+}
+
+impl Drop for HttpLease {
+    fn drop(&mut self) {
+        self.worker.inflight.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// The credit window for one streamed request body. Permits are bytes the
@@ -943,7 +981,10 @@ impl Pool {
     async fn spawn_worker(self: &Arc<Self>, index: usize) -> Result<Arc<Worker>, String> {
         let rt = &self.runtime;
         let worker_id = format!("{}-{index}", rt.name);
-        let mut cmd = shell(&rt.command);
+        let mut cmd = match rt.protocol {
+            Protocol::Http => server_shell(&rt.command),
+            _ => shell(&rt.command),
+        };
         self.withhold_env(&mut cmd);
         cmd.current_dir(&self.opts.root)
             .env("UNSWORN_PROTOCOL", PROTOCOL_VERSION.to_string())
@@ -970,11 +1011,18 @@ impl Pool {
             "{worker_id}-{}.sock",
             self.next_id.fetch_add(1, Ordering::Relaxed)
         ));
+        if rt.protocol == Protocol::Http {
+            return self
+                .spawn_http_worker(cmd, worker_id.clone(), index, socket_path)
+                .await
+                .map_err(|e| format!("worker {worker_id}: {e}"));
+        }
         let listener = match rt.protocol {
             Protocol::Jsonl => {
                 cmd.env("UNSWORN_TRANSPORT", "stdio").stdin(Stdio::piped());
                 None
             }
+            Protocol::Http => unreachable!("an http runtime's worker is started above"),
             Protocol::Framed | Protocol::Binary => {
                 let _ = std::fs::remove_file(&socket_path);
                 let l = tokio::net::UnixListener::bind(&socket_path)
@@ -1055,6 +1103,183 @@ impl Pool {
         result.map_err(|e| format!("worker {worker_id}: {e}"))
     }
 
+    /// Starts the server of an `http` runtime and waits until it listens.
+    ///
+    /// Here the worker listens and Unsworn connects, the other way round
+    /// from Tier 2: on a Unix socket in the directory only Unsworn's user
+    /// can open (`UNSWORN_SOCKET`), or on a port Unsworn picks (`PORT`)
+    /// for a server that can't use a socket.
+    async fn spawn_http_worker(
+        self: &Arc<Self>,
+        mut cmd: Command,
+        worker_id: String,
+        index: usize,
+        socket_path: PathBuf,
+    ) -> Result<Arc<Worker>, String> {
+        let rt = &self.runtime;
+        let upstream: Arc<str> = match rt.listen {
+            Listen::Socket => {
+                let _ = std::fs::remove_file(&socket_path);
+                cmd.env("UNSWORN_SOCKET", &socket_path);
+                format!("unix:{}", socket_path.display()).into()
+            }
+            Listen::Port => {
+                let port = free_port().map_err(|e| format!("can't find a free port: {e}"))?;
+                cmd.env("PORT", port.to_string())
+                    .env("UNSWORN_PORT", port.to_string());
+                format!("http://127.0.0.1:{port}").into()
+            }
+        };
+        cmd.env("UNSWORN_TRANSPORT", "http")
+            .stdin(Stdio::null())
+            // A group of its own, so that asking it to stop reaches the
+            // server when the command leaves a shell in between.
+            .process_group(0);
+        // A server has no input to see closed when Unsworn is gone, as a
+        // protocol worker has: without this, one would outlive an Unsworn
+        // that was killed. The signal goes to the shell `server_shell`
+        // starts, which passes it on.
+        // SAFETY: between `fork` and `exec` only async-signal-safe calls
+        // are allowed, and this is one system call (`prctl`), which
+        // allocates nothing and takes no lock.
+        unsafe {
+            cmd.pre_exec(|| {
+                rustix::process::set_parent_process_death_signal(Some(
+                    rustix::process::Signal::TERM,
+                ))
+                .map_err(std::io::Error::from)
+            });
+        }
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("can't start `{}`: {e}", rt.command))?;
+        let pid = child.id();
+        let calls = Calls::default();
+        for (stream, name) in [
+            (child.stderr.take().map(Output::Err), "stderr"),
+            (child.stdout.take().map(Output::Out), "stdout"),
+        ] {
+            match stream {
+                Some(Output::Err(s)) => {
+                    spawn_log_reader(s, rt.name.clone(), worker_id.clone(), name, calls.clone())
+                }
+                Some(Output::Out(s)) => {
+                    spawn_log_reader(s, rt.name.clone(), worker_id.clone(), name, calls.clone())
+                }
+                None => {}
+            }
+        }
+
+        let target = Target::of(&upstream);
+        let startup = rt.startup_timeout;
+        let listening = async {
+            while !accepts(&target).await {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        };
+        let place = match rt.listen {
+            Listen::Socket => "the socket in UNSWORN_SOCKET".to_string(),
+            Listen::Port => "the port in PORT".to_string(),
+        };
+        let started = tokio::select! {
+            _ = listening => Ok(()),
+            status = child.wait() => Err(format!(
+                "exited before listening on {place} ({})",
+                status.map(|s| s.to_string()).unwrap_or_default()
+            )),
+            _ = tokio::time::sleep(startup) => Err(format!(
+                "didn't listen on {place} within {}s",
+                startup.as_secs()
+            )),
+        };
+        if let Err(e) = started {
+            signal_group(pid, rustix::process::Signal::KILL);
+            let _ = std::fs::remove_file(&socket_path);
+            return Err(e);
+        }
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<Option<Frame>>();
+        let worker = Arc::new(Worker {
+            id: worker_id,
+            index,
+            pid,
+            tx,
+            retired: AtomicBool::new(false),
+            pending: Mutex::new(HashMap::new()),
+            calls,
+            inflight: AtomicUsize::new(0),
+            // The server decides how many requests it takes at once.
+            max_in_flight: usize::MAX,
+            alive: AtomicBool::new(true),
+            verify: false,
+            stream_body: true,
+            raw_json: false,
+            can_call: false,
+            can_fetch: false,
+            credits: Mutex::new(HashMap::new()),
+            subcalls: Mutex::new(HashMap::new()),
+            made_calls: AtomicBool::new(false),
+            http: Some(HttpAt { upstream, target }),
+        });
+
+        let pool = self.clone();
+        let w = worker.clone();
+        tokio::spawn(async move {
+            // The pool asks a worker to stop by sending `None`.
+            let asked = async {
+                while let Some(message) = rx.recv().await {
+                    if message.is_none() {
+                        break;
+                    }
+                }
+            };
+            tokio::select! {
+                _ = child.wait() => {}
+                _ = asked => {
+                    // A server stops on SIGTERM, finishing what it has.
+                    signal_group(pid, rustix::process::Signal::TERM);
+                    if tokio::time::timeout(Duration::from_secs(2), child.wait()).await.is_err() {
+                        signal_group(pid, rustix::process::Signal::KILL);
+                        let _ = child.wait().await;
+                    }
+                }
+            }
+            w.alive.store(false, Ordering::Relaxed);
+            let _ = std::fs::remove_file(&socket_path);
+            pool.worker_gone(&w);
+        });
+
+        self.workers.lock().unwrap().push(worker.clone());
+        self.capacity.notify_waiters();
+        Ok(worker)
+    }
+
+    /// A worker of an `http` runtime to send a request to, starting the
+    /// runtime if this is its first. Waits up to `wait` for one, which a
+    /// restart may take.
+    pub async fn http_lease(self: &Arc<Self>, wait: Duration) -> Result<HttpLease, CallError> {
+        self.ensure_started()
+            .await
+            .map_err(CallError::Unavailable)?;
+        let deadline = Instant::now() + wait;
+        loop {
+            if let Some(worker) = self.pick() {
+                return Ok(HttpLease { worker });
+            }
+            let again = self.capacity.notified();
+            if let Some(worker) = self.pick() {
+                return Ok(HttpLease { worker });
+            }
+            if tokio::time::timeout_at(deadline.into(), again)
+                .await
+                .is_err()
+            {
+                return Err(CallError::Unavailable("its server isn't running".into()));
+            }
+        }
+    }
+
     async fn connect<R, W>(
         self: &Arc<Self>,
         worker_id: String,
@@ -1124,6 +1349,7 @@ impl Pool {
             credits: Mutex::new(HashMap::new()),
             subcalls: Mutex::new(HashMap::new()),
             made_calls: AtomicBool::new(false),
+            http: None,
         });
         tokio::spawn(write_loop(writer, rx, protocol));
 
@@ -1861,6 +2087,60 @@ impl Drop for CancelGuard {
     }
 }
 
+/// A worker's two outputs, which are different types to read from.
+enum Output {
+    Out(tokio::process::ChildStdout),
+    Err(tokio::process::ChildStderr),
+}
+
+/// A port on this machine that nothing listens on right now.
+fn free_port() -> std::io::Result<u16> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    Ok(listener.local_addr()?.port())
+}
+
+/// Whether something accepts connections at `target`.
+async fn accepts(target: &Target) -> bool {
+    match target {
+        Target::Unix(path) => tokio::net::UnixStream::connect(&**path).await.is_ok(),
+        Target::Origin(origin) => tokio::net::TcpStream::connect(origin.authority.as_str())
+            .await
+            .is_ok(),
+        Target::Url => false,
+    }
+}
+
+/// Sends a signal to a worker and everything it started.
+fn signal_group(pid: Option<u32>, signal: rustix::process::Signal) {
+    let Some(pid) = pid.and_then(|p| rustix::process::Pid::from_raw(p as i32)) else {
+        return;
+    };
+    let _ = rustix::process::kill_process_group(pid, signal);
+}
+
+/// The shell for an `http` runtime's command: one that, told to stop,
+/// tells everything it started.
+///
+/// The signal sent when Unsworn dies reaches only the process Unsworn
+/// started, which is a shell. Some shells become the command they run
+/// (bash, for a simple one) and some stay in front of it (dash, always),
+/// and a shell that stays ends without a word to the server behind it.
+/// This one runs the command in the background and waits, so that it can
+/// answer `SIGTERM` by sending it to its whole process group.
+///
+/// It ignores `SIGTERM` itself from then on. Linux sends the signal for
+/// Unsworn's death once for each of Unsworn's threads the shell passes
+/// to as they end, so several can arrive together, and a second one that
+/// found the shell back at its default would end it before it had told
+/// anyone.
+fn server_shell(command: &str) -> Command {
+    const PASS_IT_ON: &str =
+        r#"trap 'trap "" TERM; kill -TERM 0; exit 143' TERM; sh -c "$1" & wait $!"#;
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(PASS_IT_ON).arg("sh").arg(command);
+    cmd
+}
+
 fn shell(command: &str) -> Command {
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(command);
@@ -2003,6 +2283,7 @@ async fn write_loop<W: AsyncWrite + Unpin>(
         let encoded = match protocol {
             Protocol::Jsonl => proto::jsonl::encode_head(&frame, &mut buf),
             Protocol::Framed | Protocol::Binary => proto::framed::encode_head(&frame, &mut buf),
+            Protocol::Http => unreachable!("an http runtime's worker gets no messages"),
         };
         if let Err(e) = encoded {
             tracing::error!("can't encode message: {e}");
@@ -2052,6 +2333,7 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
                 Protocol::Framed | Protocol::Binary => {
                     Decoder::Framed(proto::framed::Decoder::default())
                 }
+                Protocol::Http => unreachable!("an http runtime's worker sends no messages"),
             },
             eof: false,
         }

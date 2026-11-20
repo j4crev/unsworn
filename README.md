@@ -278,10 +278,14 @@ All of this can be configured in `unsworn.toml`, with no code:
   each route's params, query and body as types in the handler's language,
   and `unsworn dev` keeps them current. Change a rule and the handlers it
   breaks stop compiling.
-- **Any language can join.** The universal protocol is JSON lines over
-  stdin/stdout, so a language with no SDK, even one that doesn't exist yet,
-  works on day one. Official SDKs also speak a framed protocol over a Unix
-  socket, which handles large bodies faster.
+- **Any language can join.** A language with no SDK joins as an
+  [HTTP runtime](docs/http-runtime.md): Unsworn starts its ordinary HTTP
+  server (ASP.NET, Spring, Rails, Phoenix, anything) on a socket only
+  Unsworn can open, and sends it requests that have passed the rules,
+  with who the caller is. For a function-style worker without an SDK,
+  the universal protocol is JSON lines over stdin/stdout. Official SDKs
+  also speak a framed protocol over a Unix socket, which handles large
+  bodies faster.
 - **Custom middleware is just more handlers.** A `before` handler, in any
   language, can add context such as the current tenant, or reject a request.
 - **Mistakes surface early.** `unsworn check` validates config and routes
@@ -297,6 +301,7 @@ Details: [architecture](docs/architecture.md), [config](docs/config.md),
 [functions](docs/functions.md), [outbound services](docs/outbound.md),
 [tracing](docs/tracing.md), [`top`](docs/top.md), [`shadow`](docs/shadow.md),
 [container image](docs/image.md),
+[HTTP runtimes](docs/http-runtime.md),
 [protocol](docs/protocol.md),
 [conformance](docs/conformance.md), [MCP](docs/mcp.md),
 [benchmarks](docs/benchmarks.md) and [roadmap](docs/roadmap.md).
@@ -390,9 +395,14 @@ Handler SDKs:
 | Go | `github.com/j4crev/unsworn/sdk/go` | [`sdk/go`](sdk/go) |
 | Rust | `unsworn-sdk` on crates.io | [`sdk/rust`](sdk/rust) |
 
+Any other language runs as an [HTTP runtime](docs/http-runtime.md), with
+its own server and no SDK.
+
 [`examples/polyglot`](examples/polyglot) is a TypeScript and Python API in
-front of an existing app, and [`examples/raw-python`](examples/raw-python)
-is a worker written without an SDK.
+front of an existing app, [`examples/http-runtime`](examples/http-runtime)
+is a plain HTTP server run as a runtime, and
+[`examples/raw-python`](examples/raw-python) is a worker written without
+an SDK.
 
 ## Roadmap
 

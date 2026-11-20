@@ -241,6 +241,10 @@ pub enum Protocol {
     Jsonl,
     /// Tier 2: length-prefixed frames over a Unix socket.
     Framed,
+    /// An HTTP server of the runtime's own: any language's, with no SDK.
+    /// Unsworn starts it and forwards requests to it once they've passed
+    /// their route's rules. Routes reach it with `proxy = { runtime = ... }`.
+    Http,
     /// Deprecated: the old name for `framed`.
     #[schemars(extend("deprecated" = true))]
     Binary,
@@ -271,6 +275,9 @@ pub struct RawWorkerRange {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawRuntime {
+    /// The file extensions of the handlers it runs. An `http` runtime
+    /// has none: routes name it.
+    #[serde(default)]
     pub extensions: Vec<String>,
     pub command: String,
     pub build: Option<String>,
@@ -285,6 +292,21 @@ pub struct RawRuntime {
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     pub startup_timeout: Option<ConfigDuration>,
+    /// Where an `http` runtime's server listens. Default: `"socket"`.
+    pub listen: Option<Listen>,
+}
+
+/// Where an `http` runtime's server listens for Unsworn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Listen {
+    /// A Unix socket only Unsworn's user can open, at the path in
+    /// `UNSWORN_SOCKET`. Nothing else can reach the server.
+    #[default]
+    Socket,
+    /// A port on this machine that Unsworn picks, in `PORT`, for a server
+    /// that can't listen on a socket. Anything on the machine can reach it.
+    Port,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -628,7 +650,11 @@ pub enum RawProxy {
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawProxyFull {
+    /// Where to forward: one or more URLs, or `unix:/path`.
+    #[serde(default)]
     pub upstreams: Vec<String>,
+    /// Or an `http` runtime, whose server Unsworn starts itself.
+    pub runtime: Option<String>,
     pub strip_prefix: Option<String>,
     pub sticky: Option<String>,
     #[serde(default)]

@@ -3,12 +3,18 @@
 use http::{Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
-use unsworn_core::pipeline::proxy::{ForwardInfo, is_upgrade, response_headers, rewrite};
+use unsworn_core::pipeline::proxy::{
+    ForwardInfo, is_upgrade, response_headers, rewrite, rewrite_to,
+};
 use unsworn_core::project::{Proxy, Target};
 
 use super::Shared;
 use super::support::{Body, BoxError, Tunnel, problem, problem_response};
 use super::upstream::Peer;
+
+/// How long a request waits for an `http` runtime's server, which may be
+/// starting for the first time or again after it stopped.
+const RUNTIME_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Forwards a request to one of the proxy's upstreams.
 pub fn forward(
@@ -30,16 +36,48 @@ async fn forward_inner(
     let tunnel = req.extensions().get::<Tunnel>().cloned();
     let client_upgrade = upgrade.then(|| hyper::upgrade::on(&mut req));
     let (mut parts, body) = req.into_parts();
-    let index = match rewrite(&proxy, &mut parts, &info) {
-        Ok(index) => index,
+    // An `http` runtime's server is wherever its pool started it, and
+    // counts as busy with this request until it has answered.
+    let lease = match &proxy.runtime {
+        None => None,
+        Some(name) => {
+            let pools = shared.generation.load().pools.clone();
+            let Some(pool) = pools.get(name) else {
+                return problem(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "the route's runtime is unavailable",
+                );
+            };
+            match pool.http_lease(RUNTIME_WAIT).await {
+                Ok(lease) => Some(lease),
+                Err(e) => {
+                    tracing::error!(runtime = %name, "{e}");
+                    return problem(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        match shared.dev {
+                            true => format!("the route's runtime is unavailable: {e}"),
+                            false => "the route's runtime is unavailable".to_string(),
+                        },
+                    );
+                }
+            }
+        }
+    };
+    let rewritten = match &lease {
+        Some(lease) => rewrite_to(&proxy, lease.target(), lease.upstream(), &mut parts, &info)
+            .map(|()| (lease.target(), lease.upstream())),
+        None => rewrite(&proxy, &mut parts, &info)
+            .map(|index| (proxy.target(index), proxy.upstreams[index].as_str())),
+    };
+    let (to, upstream) = match rewritten {
+        Ok(found) => found,
         Err(p) => return problem_response(p),
     };
-    let upstream = &proxy.upstreams[index];
     let req = Request::from_parts(parts, body);
 
     // Plain HTTP/1.1 goes over a connection this thread keeps. The general
     // client has TLS and HTTP/2.
-    let peer = match proxy.target(index) {
+    let peer = match to {
         Target::Unix(path) => Some(Peer::Unix(path.clone())),
         _ if req.uri().scheme() == Some(&http::uri::Scheme::HTTP) => {
             req.uri().authority().cloned().map(Peer::Tcp)

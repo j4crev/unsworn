@@ -137,7 +137,16 @@ workers    = 2
 extensions = [".nl"]
 command    = "newlang run worker.nl"
 protocol   = "jsonl"              # no SDK needed
+
+[runtimes.api]
+command    = "dotnet Api.dll --urls http://unix:$UNSWORN_SOCKET"
+protocol   = "http"               # an HTTP server of its own; see http-runtime.md
 ```
+
+A runtime with `protocol = "http"` is an ordinary HTTP server, in any
+language, that Unsworn starts and forwards requests to. It has no
+`extensions`: routes reach it with `proxy = { runtime = "api" }`. See
+[`http-runtime.md`](http-runtime.md).
 
 Runtime names are arbitrary. Unsworn knows nothing about any specific language.
 With an SDK either `protocol` works, and the handler code is the same. `"jsonl"`
@@ -554,7 +563,7 @@ encoded slash (`%2F`) stays encoded and never separates segments.
 | `respond` | `respond = { status = 200, json = { ok = true } }` | No |
 | `redirect` | `redirect = { to = "/v2/users/{id}", status = 308 }` | No |
 | `static` | `static = { dir = "public", spa_fallback = "index.html" }` | No |
-| `proxy` | `proxy = "http://old-api:8080"` or `{ upstreams = [...], strip_prefix = "/legacy", sticky = "header:x-tenant-id", context = false }` | No |
+| `proxy` | `proxy = "http://old-api:8080"`, `{ upstreams = [...], strip_prefix = "/legacy", sticky = "header:x-tenant-id", context = false }`, or `{ runtime = "api" }` for an [HTTP runtime](http-runtime.md) | No |
 | `handler` | `handler = "src/users.ts#getUser"` | Yes |
 
 An upstream on the same machine can listen on a Unix socket instead of a
