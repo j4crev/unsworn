@@ -82,8 +82,9 @@ enum Command {
         target: Option<String>,
     },
     /// Bundle the project for a deployment target: `image` (a Dockerfile
-    /// for the server and its workers), `cloudflare` (a Worker), or
-    /// `vercel`, `netlify` or `lambda` (a function on each).
+    /// for the server and its workers), `lambda` (the same, for AWS
+    /// Lambda), `cloudflare` (a Worker), or `vercel` or `netlify` (a
+    /// function on each).
     Build {
         /// The deployment target.
         #[arg(long)]

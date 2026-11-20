@@ -407,14 +407,33 @@ fn base_image(tool: Tool, version: &str) -> String {
     }
 }
 
-fn dockerfile(image: &Image) -> String {
+/// Where an image is meant to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum For {
+    /// Anything that runs a container and sends it HTTP.
+    Containers,
+    /// AWS Lambda, which invokes a function instead. AWS's Lambda Web
+    /// Adapter, an extension in the image, turns each invocation into an
+    /// HTTP request to the server, so the server is the same one.
+    Lambda,
+}
+
+/// The Lambda Web Adapter this was written against. It's a line in a
+/// Dockerfile that's the project's to change.
+const LAMBDA_ADAPTER: &str = "public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1";
+
+fn dockerfile(image: &Image, target: For) -> String {
     let mut out = format!(
         "# syntax=docker/dockerfile:1\n\
-         # Written by `unsworn build --target image` from {}. It's yours to keep\n\
+         # Written by `unsworn build --target {}` from {}. It's yours to keep\n\
          # and change; run the command again to start over from the config.\n\
          #\n\
          # Build it from the project directory:\n\
          #   docker build -f <this file> -t <name> .\n",
+        match target {
+            For::Containers => "image",
+            For::Lambda => "lambda",
+        },
         image.config
     );
 
@@ -527,6 +546,21 @@ fn dockerfile(image: &Image) -> String {
              # that needs. Install it here, as root."
         );
     }
+    if target == For::Lambda {
+        let _ = write!(
+            out,
+            "\n# AWS's Lambda Web Adapter. Lambda starts it beside the server, and it\n\
+             # sends each invocation to the server as an HTTP request. Anywhere\n\
+             # else it isn't started, and this is an ordinary image.\n\
+             COPY --from={LAMBDA_ADAPTER} /lambda-adapter /opt/extensions/lambda-adapter\n\
+             # Where the server listens, and what answers once it does.\n\
+             ENV AWS_LWA_PORT=8080\n\
+             ENV AWS_LWA_READINESS_CHECK_PATH=/_unsworn/health\n\
+             # Lambda's filesystem can only be written under /tmp, and it runs\n\
+             # the image as a user of its own choosing.\n\
+             ENV HOME=/tmp\n"
+        );
+    }
     out.push_str(
         "\nUSER unsworn\n\
          ENV UNSWORN_LOG=info\n\
@@ -559,7 +593,7 @@ fn dockerignore(out_dir: &str) -> String {
     )
 }
 
-pub fn build(opts: &BuildOptions, unsworn_image: Option<&str>) -> Result<(), String> {
+pub fn build(opts: &BuildOptions, unsworn_image: Option<&str>, target: For) -> Result<(), String> {
     let root = &opts.root;
     let host = FsHost { root: root.clone() };
     // The image doesn't depend on this machine's environment.
@@ -580,10 +614,13 @@ pub fn build(opts: &BuildOptions, unsworn_image: Option<&str>) -> Result<(), Str
     );
     let image = plan(&project, &config_text, &Disk { root }, unsworn);
 
-    let out = opts
-        .out
-        .clone()
-        .unwrap_or_else(|| Path::new("dist/image").to_path_buf());
+    let out = opts.out.clone().unwrap_or_else(|| {
+        Path::new(match target {
+            For::Containers => "dist/image",
+            For::Lambda => "dist/lambda",
+        })
+        .to_path_buf()
+    });
     let shown = out.display().to_string();
     let dir = if out.is_absolute() {
         out
@@ -595,7 +632,7 @@ pub fn build(opts: &BuildOptions, unsworn_image: Option<&str>) -> Result<(), Str
         let path = dir.join(name);
         std::fs::write(&path, text).map_err(|e| format!("can't write {}: {e}", path.display()))
     };
-    write("Dockerfile", dockerfile(&image))?;
+    write("Dockerfile", dockerfile(&image, target))?;
     // BuildKit reads this one for a Dockerfile of that name.
     write("Dockerfile.dockerignore", dockerignore(&shown))?;
 
@@ -647,9 +684,32 @@ pub fn build(opts: &BuildOptions, unsworn_image: Option<&str>) -> Result<(), Str
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
         .unwrap_or_else(|| "api".into());
-    println!("  build    docker build -f {shown}/Dockerfile -t {name} .");
     let env: String = image.env.iter().map(|e| format!(" -e {e}")).collect();
-    println!("  run      docker run -p 8080:8080{env} {name}");
+    match target {
+        For::Containers => {
+            println!("  build    docker build -f {shown}/Dockerfile -t {name} .");
+            println!("  run      docker run -p 8080:8080{env} {name}");
+        }
+        For::Lambda => {
+            // Lambda takes one image, not the index Docker writes when it
+            // adds a provenance record.
+            println!(
+                "  build    docker build --provenance=false -f {shown}/Dockerfile -t {name} ."
+            );
+            println!(
+                "  try it   docker run -p 8080:8080{env} {name}    (the same server, without Lambda)"
+            );
+            println!(
+                "  deploy   push it to Amazon ECR, create a function from the image, and give it a function URL or an HTTP API"
+            );
+            if !image.env.is_empty() {
+                println!(
+                    "  set      {} in the function's environment variables",
+                    image.env.join(", ")
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -850,7 +910,28 @@ proxy = "{env.APP_URL}"
             ]),
             installed: BTreeMap::new(),
         };
-        let text = dockerfile(&image(&look));
+        let text = dockerfile(&image(&look), For::Containers);
+        // For Lambda it's the same image, with AWS's adapter beside the
+        // server and the two things Lambda's sandbox needs.
+        let lambda = dockerfile(&image(&look), For::Lambda);
+        assert!(!text.contains("lambda"), "{text}");
+        for wanted in [
+            "# Written by `unsworn build --target lambda` from",
+            "COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 /lambda-adapter /opt/extensions/lambda-adapter\n",
+            "ENV AWS_LWA_PORT=8080\nENV AWS_LWA_READINESS_CHECK_PATH=/_unsworn/health\n",
+            "ENV HOME=/tmp\n\nUSER unsworn\n",
+            "CMD [\"serve\", \"--listen\", \"0.0.0.0:8080\"]\n",
+        ] {
+            assert!(lambda.contains(wanted), "missing {wanted:?} in\n{lambda}");
+        }
+        // Everything else is the same, in the same order.
+        let mut rest = lambda.lines().skip(2);
+        for line in text.lines().skip(2) {
+            assert!(
+                rest.any(|l| l == line),
+                "{line:?} is missing or moved in\n{lambda}"
+            );
+        }
         for wanted in [
             "FROM golang:1.27.1-bookworm AS build-go\nWORKDIR /app\nCOPY . .\nRUN go build -o .unsworn/go-worker ./handlers\n",
             "FROM rust:1.97.1-bookworm AS build-rs\nWORKDIR /app\nCOPY . .\nRUN cargo build --release\n",
@@ -890,7 +971,10 @@ proxy = "{env.APP_URL}"
             files: BTreeMap::from([("package.json", "{}"), ("package-lock.json", "")]),
             installed: BTreeMap::new(),
         };
-        let text = dockerfile(&plan(&project, config, &look, "unsworn:dev".into()));
+        let text = dockerfile(
+            &plan(&project, config, &look, "unsworn:dev".into()),
+            For::Containers,
+        );
         assert!(
             text.contains("FROM debian:bookworm-slim\nRUN apt-get update"),
             "{text}"

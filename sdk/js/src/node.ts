@@ -1,5 +1,5 @@
 // Runs an Unsworn project in Node: the host under the serverless targets
-// (vercel.ts, netlify.ts, lambda.ts). The core (WebAssembly) matches,
+// (vercel.ts, netlify.ts). The core (WebAssembly) matches,
 // authenticates, validates and rate-limits each request, and calls your
 // handlers in this process.
 //

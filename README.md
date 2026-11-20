@@ -297,7 +297,7 @@ Details: [architecture](docs/architecture.md), [config](docs/config.md),
 [plan and diff](docs/plan.md), [generated types](docs/types.md),
 [functions](docs/functions.md), [outbound services](docs/outbound.md),
 [tracing](docs/tracing.md), [`top`](docs/top.md), [`shadow`](docs/shadow.md),
-[container image](docs/image.md),
+[container image](docs/image.md), [AWS Lambda](docs/lambda.md),
 [HTTP runtimes](docs/http-runtime.md),
 [protocol](docs/protocol.md),
 [conformance](docs/conformance.md), [MCP](docs/mcp.md),
@@ -318,19 +318,32 @@ portals, billing, key issuance) or a web framework.
 
 ## Where Unsworn runs
 
-Unsworn is designed to run on three kinds of platforms. The router core does no
-I/O and compiles to WebAssembly, so each target hosts the same core in a
-different way. See [`docs/architecture.md`](docs/architecture.md).
+Unsworn runs in two ways, and what it promises differs between them.
 
-| Platform type | Examples | How Unsworn runs | Version |
-|---|---|---|---|
-| **Servers and containers** | Any VPS or bare metal, Docker, Kubernetes, Fly.io, Railway, Render, Google Cloud Run, AWS ECS/Fargate, Cloudflare Containers | The `unsworn` binary plus worker processes. `unsworn build --target image` writes the Dockerfile ([guide](docs/image.md)) | v1 (available) |
-| **Edge isolates** | Cloudflare Workers | `unsworn build --target cloudflare`: the core runs as WebAssembly in the Worker, and JS/TS handlers are bundled in and called directly ([guide](docs/cloudflare.md)) | v2 (v0.3.0) |
-| **Serverless functions** | Vercel Functions, AWS Lambda, Netlify Functions | `unsworn build --target vercel`, `netlify` or `lambda`: one function runs the whole project, with the core as WebAssembly and JS/TS handlers bundled in and called directly ([guide](docs/serverless.md)) | v3 (v0.3.0) |
+**As a server, with handlers in processes of their own.** This is all of
+Unsworn: handlers in any language, and rules that handler code can't read
+the secrets of or change.
 
-Some features need shared state on stateless platforms, such as rate limits
-and caches. `unsworn check --target <platform>` reports what a config needs on
-that target before you deploy.
+| Where | How |
+|---|---|
+| Any VPS or bare metal, Docker, Kubernetes, Fly.io, Railway, Render, Google Cloud Run, AWS ECS/Fargate, Cloudflare Containers | The `unsworn` binary plus worker processes. `unsworn build --target image` writes the Dockerfile ([guide](docs/image.md)) |
+| AWS Lambda | The same image, with AWS's Lambda Web Adapter in it: `unsworn build --target lambda` ([guide](docs/lambda.md)) |
+
+**Inside a JavaScript platform, with handlers in the same process.** The
+router core does no I/O and compiles to WebAssembly, so it runs where a
+server can't. Every request still passes the same rules before its handler
+is called. But handlers are JavaScript or TypeScript only, and they share
+an isolate or a process with the core, so a handler can read the secrets
+the rules use, as far as the platform lets it.
+
+| Where | How |
+|---|---|
+| Cloudflare Workers | `unsworn build --target cloudflare`: the core in the Worker, with JS/TS handlers bundled in and called directly ([guide](docs/cloudflare.md)) |
+| Vercel Functions, Netlify Functions | `unsworn build --target vercel` or `netlify`: one function runs the whole project ([guide](docs/serverless.md)) |
+
+Some features need shared state on platforms that run many instances, such
+as rate limits and caches. `unsworn check --target <platform>` reports what
+a config needs on that target before you deploy.
 
 ## Getting started
 
@@ -379,7 +392,7 @@ unsworn dev         # serves it, reloads on changes, verifies handler names
 | `unsworn top` | Show each route's requests, latency and its handler's share of time and CPU on a running server, costliest first |
 | `unsworn gen` | Write typed request models for handlers (TypeScript, Python, Go, Rust) from each route's schemas; `--check` fails when one is out of date |
 | `unsworn openapi` | Print the OpenAPI document for what Unsworn serves |
-| `unsworn build` | Bundle the project for a deployment target: `--target image` writes a Dockerfile for the server and its workers, `cloudflare` makes a Cloudflare Worker, and `vercel`, `netlify` and `lambda` make a function for each |
+| `unsworn build` | Bundle the project for a deployment target: `--target image` writes a Dockerfile for the server and its workers, `lambda` writes one for AWS Lambda, `cloudflare` makes a Cloudflare Worker, and `vercel` and `netlify` make a function for each |
 | `unsworn conformance` | Test a runtime's workers against the protocol |
 | `unsworn schema` | Print the config's JSON Schema (also at [`schema/unsworn.schema.json`](schema/unsworn.schema.json)) |
 

@@ -114,7 +114,7 @@ A host combines an ingress, a dispatcher and a store around the core.
 
 | Host | Ingress | Dispatch | Store |
 |---|---|---|---|
-| `unsworn` binary (servers, containers) | hyper on tokio, HTTP/1.1 and HTTP/2, TLS | worker process pools over Tier 1 or Tier 2 | in memory, optionally external |
+| `unsworn` binary (servers, containers, AWS Lambda) | hyper on tokio, HTTP/1.1 and HTTP/2, TLS | worker process pools over Tier 1 or Tier 2, and HTTP runtimes | in memory, optionally external |
 | Cloudflare Worker (v2) | the Worker's `fetch` event | direct calls to bundled JS/TS handlers in the isolate | a Durable Object per rate-limit bucket, the Cache API |
 | Serverless function (v3) | the platform's request or event, in one Node function | direct calls to bundled JS/TS handlers in the process | Redis through a REST API |
 
@@ -303,12 +303,15 @@ a rate limit of its own, validation, `before` handlers and `unsworn routes
   JavaScript *bridge* for its I/O, the way the binary implements `Host`; the
   Cloudflare bridge is `@unswornjs/sdk/cloudflare`. Languages that can't run
   there need a container target instead. See [`cloudflare.md`](cloudflare.md).
-- **v3: serverless functions** (`--target vercel`, `--target netlify`,
-  `--target lambda`). One Node function runs the whole project: the same
-  wasm core, with the Node bridge in `@unswornjs/sdk/node` and a thin entry
-  per platform. The platform's routing only sends every path to that
-  function, so a route behaves the same on every target. See
-  [`serverless.md`](serverless.md).
+- **v3: serverless functions** (`--target vercel`, `--target netlify`).
+  One Node function runs the whole project: the same wasm core, with the
+  Node bridge in `@unswornjs/sdk/node` and a thin entry per platform. The
+  platform's routing only sends every path to that function, so a route
+  behaves the same on every target. See [`serverless.md`](serverless.md).
+- **AWS Lambda** (`--target lambda`) is the v1 host: the binary and its
+  workers in a container image, with AWS's Lambda Web Adapter turning
+  invocations into HTTP requests to the server. See
+  [`lambda.md`](lambda.md).
 
 Features that need shared state (rate limits, caches) need a store on
 stateless targets: Cloudflare brings its own, and serverless functions use
@@ -323,7 +326,7 @@ from a per-target capability table (`unsworn-core/src/targets.rs`).
 | `crates/unsworn-proto` | The message model and both encodings, shared by the server and the Rust SDK. |
 | `crates/unsworn` | The binary: the `Host` for servers (hyper, worker pools, proxying, static files, the memory and Redis stores), compression, metrics, CLI. |
 | `crates/unsworn-wasm` | The core as a WebAssembly module for JavaScript hosts, with the `Bridge` interface they implement. Built into `sdk/js/wasm`. |
-| `sdk/js` | JS/TS SDK for Bun, Node and Deno, plus the runtimes for built targets: the Cloudflare Worker (`@unswornjs/sdk/cloudflare`), and Node functions (`@unswornjs/sdk/node`, with `vercel`, `netlify` and `lambda` entries). |
+| `sdk/js` | JS/TS SDK for Bun, Node and Deno, plus the runtimes for built targets: the Cloudflare Worker (`@unswornjs/sdk/cloudflare`), and Node functions (`@unswornjs/sdk/node`, with `vercel` and `netlify` entries). |
 | `sdk/python` | Python SDK (asyncio). |
 | `sdk/go` | Go SDK, including an `http.Handler` adapter. |
 | `sdk/rust` | Rust SDK (`unsworn-sdk`, Tokio). |
@@ -342,7 +345,7 @@ from a per-target capability table (`unsworn-core/src/targets.rs`).
 | `unsworn openapi` | Emit the OpenAPI document. |
 | `unsworn gen [<lang>] [--check]` | Write typed request and response models for handlers, from each route's schemas, to the files `[gen]` lists. See [`types.md`](types.md). |
 | `unsworn conformance --runtime <r> --handlers <file>` | Run the protocol conformance suite against a runtime. |
-| `unsworn build --target <t>` | Write a Dockerfile for the server and its workers (`image`), or bundle the project into a Cloudflare Worker (`cloudflare`) or a serverless function (`vercel`, `netlify`, `lambda`). |
+| `unsworn build --target <t>` | Write a Dockerfile for the server and its workers (`image`, or `lambda` for AWS Lambda), or bundle the project into a Cloudflare Worker (`cloudflare`) or a serverless function (`vercel`, `netlify`). |
 | `unsworn schema` | Print the config's JSON Schema. |
 | `unsworn init` | Write a starter config. |
 

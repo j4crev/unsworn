@@ -15,8 +15,7 @@
     "./cloudflare": "./src/cloudflare.ts",
     "./node": "./src/node.ts",
     "./vercel": "./src/vercel.ts",
-    "./netlify": "./src/netlify.ts",
-    "./lambda": "./src/lambda.ts"
+    "./netlify": "./src/netlify.ts"
   },
   "files": [
     "src",

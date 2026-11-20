@@ -166,12 +166,11 @@ Unsworn core compiled to WebAssembly. `unsworn build --target cloudflare`
 generates the Worker, which imports `@unswornjs/sdk/cloudflare`. See
 [`docs/cloudflare.md`](../../docs/cloudflare.md).
 
-## Vercel, Netlify and AWS Lambda
+## Vercel and Netlify
 
-They also run in a serverless function. `unsworn build --target vercel`,
-`--target netlify` or `--target lambda` bundles the project into one
-function that imports `@unswornjs/sdk/vercel`, `/netlify` or `/lambda`, all
-built on `@unswornjs/sdk/node`. See
+They also run in a serverless function. `unsworn build --target vercel` or
+`--target netlify` bundles the project into one function that imports
+`@unswornjs/sdk/vercel` or `/netlify`, both built on `@unswornjs/sdk/node`. See
 [`docs/serverless.md`](../../docs/serverless.md).
 
 ## Notes

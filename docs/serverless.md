@@ -1,7 +1,7 @@
-# Serverless functions: Vercel, Netlify and AWS Lambda
+# Serverless functions: Vercel and Netlify
 
-`unsworn build --target vercel`, `--target netlify` and `--target lambda`
-turn a project into a serverless function. The core runs inside the function
+`unsworn build --target vercel` and `--target netlify` turn a project into
+a serverless function. The core runs inside the function
 as WebAssembly, so routing, validation, auth, CORS, rate limits, caching and
 MCP behave as they do on the server. Your JavaScript and TypeScript handlers
 are bundled into the same function and called directly, with no worker
@@ -9,8 +9,11 @@ processes.
 
 > These targets are tested by running the built functions in Node, called
 > the way each platform calls them. The Vercel target has also been
-> deployed and checked on Vercel itself. The Netlify and Lambda targets
-> haven't been run on their platforms yet.
+> deployed and checked on Vercel itself. The Netlify target hasn't been
+> run on Netlify yet.
+
+AWS Lambda isn't one of these: it runs the server itself, in a container,
+with handlers in any language. See [`lambda.md`](lambda.md).
 
 ## One function per project
 
@@ -119,56 +122,6 @@ Responses stream. The client IP, the request id and `waitUntil` come from
 Netlify's context, which a handler that's an app with `fetch()` also gets
 as its second argument.
 
-## AWS Lambda
-
-```sh
-unsworn build --target lambda         # writes dist/lambda
-```
-
-`dist/lambda` holds the function's code and nothing else: `index.mjs`,
-`unsworn_bg.wasm` and `assets/`. Zip it, or point your infrastructure code
-at the directory. The function, its URL or API and its settings are yours to
-define. With SAM:
-
-```yaml
-Resources:
-  Api:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: dist/lambda
-      Handler: index.handler
-      Runtime: nodejs22.x
-      MemorySize: 512
-      Timeout: 30
-      FunctionUrlConfig:
-        AuthType: NONE
-      Environment:
-        Variables:
-          JWT_SECRET: "{{resolve:secretsmanager:api/jwt}}"
-```
-
-The bundle exports two handlers. Pick the one that matches how the function
-is invoked:
-
-| Handler | Answers | Use with |
-|---|---|---|
-| `index.handler` | Whole, once the response is complete | API Gateway HTTP APIs and REST APIs, and function URLs in the default `BUFFERED` mode |
-| `index.streamHandler` | As the response is produced | Function URLs with `InvokeMode: RESPONSE_STREAM` |
-
-Send every path to the function: a function URL does, as does the
-`$default` route of an HTTP API, or `/{proxy+}` plus `/` on a REST API. On
-an API's own `execute-api` domain with a named stage, the stage is taken off
-the front of the path.
-
-With `index.handler`, a streamed response such as server-sent events is
-collected and sent at the end. Lambda limits requests and whole responses to
-6 MB. Text responses go out as text and anything else as base64, which a
-REST API only decodes if it has binary media types configured.
-
-The client IP is the event's source IP, and the request id is the
-invocation's `awsRequestId`. A handler that's an app with `fetch()` gets the
-event and the Lambda context as its second and third arguments.
-
 ## Handlers
 
 Handlers have the same shape as on the server (see
@@ -240,8 +193,7 @@ verdicts) is kept in each instance's memory, which is fine.
   through a function, and answer `501`. Compressed upstream responses are
   decompressed on the way through.
 - **Work after the response,** such as a cache write, uses the platform's
-  `waitUntil` where there is one. On Lambda it finishes before the handler
-  returns.
+  `waitUntil`.
 - **Timeouts and sizes:** `timeout` and `max_body` work as on the server,
   but the platform's own limits on duration and on request and response
   size apply too.
@@ -260,6 +212,6 @@ handlers, their dependencies and your static files.
 `crates/unsworn-wasm` compiles the core to WebAssembly, as for
 [Cloudflare Workers](cloudflare.md). `sdk/js/src/node.ts` is the bridge for
 Node: handlers are called in the process, files are read from disk, and the
-store is `sdk/js/src/store.ts`. `vercel.ts`, `netlify.ts` and `lambda.ts`
-adapt each platform's request and response to it. See
+store is `sdk/js/src/store.ts`. `vercel.ts` and `netlify.ts` adapt each
+platform's request and response to it. See
 [`architecture.md`](architecture.md).

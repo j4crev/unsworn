@@ -24,6 +24,9 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
     let mut out = match target {
         "server" => return Vec::new(),
         "cloudflare" => cloudflare(project),
+        // The server itself runs there, in a container, so what's
+        // reported is the little that differs, and nothing after it.
+        "lambda" => return lambda(project),
         _ => functions(project, target),
     };
     // Functions, outbound services and shadows run on every target. What
@@ -141,6 +144,71 @@ fn functions(project: &Project, target: &str) -> Vec<Diagnostic> {
     );
     js_handlers_only(project, target, "a Node function", &mut out);
     no_unix_upstreams(project, target, &mut out);
+    out
+}
+
+/// What differs on AWS Lambda, where the `unsworn` binary runs in a
+/// container image behind AWS's Lambda Web Adapter. Handlers in any
+/// language, HTTP runtimes and Unix-socket upstreams all work as they do
+/// on a server: it is one.
+fn lambda(project: &Project) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    let store = &project.store;
+    match store.backend {
+        crate::config::StoreBackend::Redis if store.is_rest() => out.push(
+            Diagnostic::error(
+                "[store].url",
+                "on lambda the server speaks Redis itself, as it does anywhere: a REST API's URL is for the function targets",
+            )
+            .hint("set `url` to a redis:// or rediss:// URL the function can reach, and drop `token`"),
+        ),
+        crate::config::StoreBackend::Redis => {}
+        crate::config::StoreBackend::Memory => {
+            let hint = "set [store] backend = \"redis\" with a redis:// or rediss:// `url`, or remove it";
+            for route in &project.routes {
+                let eff = project.route_effective(route);
+                if eff.rate_limit.is_some() {
+                    out.push(
+                        Diagnostic::error(
+                            format!("{}.rate_limit", route.source.loc()),
+                            "needs a shared store on this target: each instance of the function would count on its own",
+                        )
+                        .hint(hint),
+                    );
+                }
+                if eff.cache.is_some() {
+                    out.push(
+                        Diagnostic::error(
+                            format!("{}.cache", route.source.loc()),
+                            "needs a shared store on this target: each instance of the function would fill its own cache",
+                        )
+                        .hint(hint),
+                    );
+                }
+            }
+        }
+    }
+    let server = &project.server;
+    if server.tls.is_some() {
+        out.push(Diagnostic::warning(
+            "[server.tls]",
+            "not needed on lambda: the function's URL or API terminates TLS, and the adapter reaches the server over plain HTTP",
+        ));
+    }
+    // Every request arrives from the adapter, beside the server.
+    let loopback = server
+        .trusted_proxies
+        .iter()
+        .any(|p| p == "all" || p.starts_with("127."));
+    if !loopback {
+        out.push(
+            Diagnostic::warning(
+                "[server].trusted_proxies",
+                "on lambda every request arrives from the adapter at 127.0.0.1, so that's the address `ip` rules, rate limits by `ip` and the access log see",
+            )
+            .hint("set trusted_proxies = [\"127.0.0.1\"] to read the client's address from X-Forwarded-For, which Lambda sets"),
+        );
+    }
     out
 }
 
@@ -338,8 +406,31 @@ rate_limit = { requests = 1, per = "1s" }
             .collect();
         assert_eq!(errors, ["[store].url"]);
 
-        assert_eq!(check(&rest, "lambda"), vec![]);
         assert_eq!(check(&rest, "netlify"), vec![]);
+
+        // Lambda runs the server itself, which speaks Redis and runs any
+        // language. What it asks for is a store instances share, and to
+        // be told the adapter is where requests arrive from.
+        let errors = |p: &Project| -> Vec<String> {
+            let found = check(p, "lambda").into_iter().filter(|d| d.is_error());
+            found.map(|d| d.location).collect()
+        };
+        assert_eq!(errors(&rest), ["[store].url"]);
+        assert_eq!(errors(&tcp), Vec::<String>::new());
+        let python = project("[[route]]\npath = \"/b\"\nhandler = \"src/b.py\"\n");
+        assert_eq!(errors(&python), Vec::<String>::new());
+        let memory = project(route);
+        assert_eq!(errors(&memory).len(), 1);
+        let warned = |p: &Project| {
+            check(p, "lambda")
+                .iter()
+                .any(|d| d.location == "[server].trusted_proxies")
+        };
+        assert!(warned(&tcp));
+        let trusting = project(&format!(
+            "[server]\ntrusted_proxies = [\"127.0.0.1\"]\n\n[store]\nbackend = \"redis\"\nurl = \"rediss://cache:6380\"\n{route}"
+        ));
+        assert_eq!(check(&trusting, "lambda"), vec![]);
 
         let python = project("[[route]]\npath = \"/b\"\nhandler = \"src/b.py\"\n");
         assert!(check(&python, "vercel").iter().any(|d| d.is_error()));
