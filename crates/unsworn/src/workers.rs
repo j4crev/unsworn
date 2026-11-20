@@ -981,7 +981,10 @@ impl Pool {
     async fn spawn_worker(self: &Arc<Self>, index: usize) -> Result<Arc<Worker>, String> {
         let rt = &self.runtime;
         let worker_id = format!("{}-{index}", rt.name);
-        let mut cmd = shell(&rt.command);
+        let mut cmd = match rt.protocol {
+            Protocol::Http => server_shell(&rt.command),
+            _ => shell(&rt.command),
+        };
         self.withhold_env(&mut cmd);
         cmd.current_dir(&self.opts.root)
             .env("UNSWORN_PROTOCOL", PROTOCOL_VERSION.to_string())
@@ -1134,7 +1137,8 @@ impl Pool {
             .process_group(0);
         // A server has no input to see closed when Unsworn is gone, as a
         // protocol worker has: without this, one would outlive an Unsworn
-        // that was killed.
+        // that was killed. The signal goes to the shell `server_shell`
+        // starts, which passes it on.
         // SAFETY: between `fork` and `exec` only async-signal-safe calls
         // are allowed, and this is one system call (`prctl`), which
         // allocates nothing and takes no lock.
@@ -2112,6 +2116,22 @@ fn signal_group(pid: Option<u32>, signal: rustix::process::Signal) {
         return;
     };
     let _ = rustix::process::kill_process_group(pid, signal);
+}
+
+/// The shell for an `http` runtime's command: one that, told to stop,
+/// tells everything it started.
+///
+/// The signal sent when Unsworn dies reaches only the process Unsworn
+/// started, which is a shell. Some shells become the command they run
+/// (bash, for a simple one) and some stay in front of it (dash, always),
+/// and a shell that stays ends without a word to the server behind it.
+/// This one runs the command in the background and waits, so that it can
+/// answer `SIGTERM` by sending it to its whole process group.
+fn server_shell(command: &str) -> Command {
+    const PASS_IT_ON: &str = r#"trap 'trap - TERM; kill -TERM 0' TERM; sh -c "$1" & wait $!"#;
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(PASS_IT_ON).arg("sh").arg(command);
+    cmd
 }
 
 fn shell(command: &str) -> Command {

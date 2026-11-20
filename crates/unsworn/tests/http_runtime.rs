@@ -60,8 +60,10 @@ server.serve_forever()
 fn config(runtime: &str) -> String {
     format!(
         r#"
+# With `&& true` the shell has to stay in front of the server, as some
+# shells do for any command: stopping has to reach the server behind it.
 [runtimes.api]
-command = "python3 app.py"
+command = "python3 app.py && true"
 protocol = "http"
 {runtime}
 
@@ -193,7 +195,8 @@ fn a_server_that_cant_use_a_socket_gets_a_port() {
 
 #[test]
 fn a_server_that_doesnt_start_is_a_503_that_says_why() {
-    let cfg = config("startup_timeout = \"1s\"").replace("python3 app.py", "echo no server here");
+    let cfg =
+        config("startup_timeout = \"1s\"").replace("python3 app.py && true", "echo no server here");
     let p = Project::new(&[("unsworn.toml", &cfg)]);
     let s = serve(&p);
     let r = s.request("GET", "/api/x", &[("x-api-key", "k1")], b"");
