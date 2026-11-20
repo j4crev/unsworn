@@ -237,6 +237,7 @@ impl Host for TestHost {
         let echo = json!({
             "upstream": request.proxy.upstreams,
             "path": parts.uri.path(),
+            "headers": super::header_map(&parts.headers),
             "client_ip": request.client_ip.to_string(),
             "body": String::from_utf8_lossy(&bytes_of(body)),
         });
@@ -1648,6 +1649,85 @@ require = {{ "query.user" = "auth.sub", "header.x-tenant" = "auth.org" }}
         "Not allowed: `header.x-approved-by` and `auth.sub` have to be the same for this call."
     );
     assert_eq!(t.host.calls().len(), 2);
+}
+
+/// An app behind `proxy` is told who the caller is, as a handler is, in
+/// a header a client can't send itself.
+#[test]
+fn a_proxied_app_gets_the_requests_context() {
+    use base64::Engine;
+    const SECRET: &str = "0123456789abcdef0123456789abcdef";
+    let host = TestHost::new()
+        .handler("src/h.ts#tenant", |_, _| {
+            let mut more = Map::new();
+            more.insert("tenant".into(), json!("acme"));
+            Ok(Reply::Continue(more))
+        })
+        .handler("src/h.ts#echo", |req, _| {
+            ok_json(json!({ "headers": req.headers }))
+        });
+    let t = Test::new(
+        &format!(
+            r#"{TS}
+[auth.users]
+type = "jwt"
+secret = "{SECRET}"
+
+[defaults]
+auth = "users"
+
+[[route]]
+path = "/app/{{*rest}}"
+proxy = "http://app"
+before = ["src/h.ts#tenant"]
+
+[[route]]
+path = "/public/{{*rest}}"
+proxy = "http://app"
+auth = "none"
+
+[[route]]
+path = "/elsewhere/{{*rest}}"
+proxy = {{ upstreams = ["https://api.example"], context = false }}
+
+[[route]]
+path = "/handled"
+auth = "none"
+handler = "src/h.ts#echo"
+"#
+        ),
+        &["src/h.ts"],
+        host,
+    );
+    let exp = t.host.clock.now() / 1000 + 3600;
+    let token = jwt(SECRET.as_bytes(), None, json!({ "sub": "Zoë", "exp": exp }));
+    // What the upstream was sent, decoded.
+    let context = |uri: &str, headers: &[(&str, &str)]| -> Option<Value> {
+        let r = t.send("GET", uri, headers, b"");
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+        let sent = r.json()["headers"]["unsworn-context"].as_str()?.to_string();
+        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(sent)
+            .expect("base64url without padding");
+        Some(serde_json::from_slice(&json).expect("JSON"))
+    };
+    let auth = ("authorization", token.as_str());
+    let forged = ("unsworn-context", "eyJhdXRoIjp7InN1YiI6ImFkbWluIn19");
+
+    // The verified claims and what the `before` handler added: what a
+    // handler gets as `ctx`.
+    let sent = context("/app/x", &[auth]).expect("a context header");
+    assert_eq!(
+        sent,
+        json!({ "auth": { "sub": "Zoë", "exp": exp, "scheme": "users" }, "tenant": "acme" })
+    );
+    // A client's own header never gets through: not in place of Unsworn's,
+    // not where Unsworn has nothing to say, and not to a handler.
+    assert_eq!(context("/app/x", &[auth, forged]), Some(sent));
+    assert_eq!(context("/public/x", &[forged]), None);
+    assert_eq!(context("/handled", &[forged]), None);
+    // An upstream that isn't yours can go without.
+    assert_eq!(context("/elsewhere/x", &[auth]), None);
 }
 
 #[test]

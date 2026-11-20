@@ -773,6 +773,9 @@ fn proxy(e: &mut Entry, p: &crate::project::Proxy) {
     if p.preserve_host {
         parts.push("preserve_host".into());
     }
+    if !p.context {
+        parts.push("no context sent".into());
+    }
     e.plain("proxy", parts.join("; "));
 }
 

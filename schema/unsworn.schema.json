@@ -1284,6 +1284,13 @@
     "RawProxyFull": {
       "additionalProperties": false,
       "properties": {
+        "context": {
+          "description": "Whether the upstream is told who the caller is, in the\n`Unsworn-Context` header. Default: true.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "preserve_host": {
           "default": false,
           "type": "boolean"

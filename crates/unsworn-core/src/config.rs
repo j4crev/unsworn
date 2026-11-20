@@ -633,6 +633,9 @@ pub struct RawProxyFull {
     pub sticky: Option<String>,
     #[serde(default)]
     pub preserve_host: bool,
+    /// Whether the upstream is told who the caller is, in the
+    /// `Unsworn-Context` header. Default: true.
+    pub context: Option<bool>,
 }
 
 /// A `[[route]]` entry.

@@ -554,7 +554,7 @@ encoded slash (`%2F`) stays encoded and never separates segments.
 | `respond` | `respond = { status = 200, json = { ok = true } }` | No |
 | `redirect` | `redirect = { to = "/v2/users/{id}", status = 308 }` | No |
 | `static` | `static = { dir = "public", spa_fallback = "index.html" }` | No |
-| `proxy` | `proxy = "http://old-api:8080"` or `{ upstreams = [...], strip_prefix = "/legacy", sticky = "header:x-tenant-id" }` | No |
+| `proxy` | `proxy = "http://old-api:8080"` or `{ upstreams = [...], strip_prefix = "/legacy", sticky = "header:x-tenant-id", context = false }` | No |
 | `handler` | `handler = "src/users.ts#getUser"` | Yes |
 
 An upstream on the same machine can listen on a Unix socket instead of a
@@ -578,6 +578,42 @@ Cloudflare and serverless targets, the platform gives the client's
 address, and the upstream gets fresh headers with it. `X-Original-URL` and
 `X-Rewrite-URL` are always removed: some frameworks serve the path they
 name, which would sidestep the policies Unsworn applied to the real one.
+
+#### Who the caller is: `Unsworn-Context`
+
+An app behind `proxy` doesn't have to check the caller's credentials a
+second time. Unsworn sends it what a handler gets as `ctx`: the verified
+claims under `auth` (with `scheme`, the scheme that matched) and whatever
+`before` handlers added, in the `Unsworn-Context` header. The value is
+that JSON, base64url-encoded without padding, since a header can't hold
+every character a claim can:
+
+```
+Unsworn-Context: eyJhdXRoIjp7InN1YiI6InVfMTIzIiwic2NoZW1lIjoidXNlcnMifSwidGVuYW50IjoiYWNtZSJ9
+```
+
+```js
+// {"auth":{"sub":"u_123","scheme":"users"},"tenant":"acme"}
+const ctx = JSON.parse(Buffer.from(req.headers["unsworn-context"], "base64url"));
+```
+
+```python
+raw = request.headers["unsworn-context"]
+ctx = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
+```
+
+- **A client can't send it.** Unsworn removes an `Unsworn-Context` header
+  from every request it receives, so the one an app sees is Unsworn's.
+- **No header means nobody was verified.** A request to a public route,
+  with no `before` handler adding anything, is forwarded without one.
+- **It's only as trustworthy as the way to the app.** The header isn't
+  signed. An app that something other than Unsworn can reach, on a port
+  open to the machine or the network, can be sent a made-up one directly.
+  Give the app a Unix socket only Unsworn's user can open
+  (`proxy = "unix:/run/app.sock"`), or a network only Unsworn is on.
+- **An upstream that isn't yours can go without:**
+  `proxy = { upstreams = ["https://api.example.com"], context = false }`.
+  The client's own credentials are forwarded either way, as it sent them.
 
 A `static` route never serves a dotfile or anything inside a dot directory
 (`.env`, `.git/config`): those answer `404`. `.well-known` is the exception.
