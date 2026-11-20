@@ -200,11 +200,6 @@ rate_limit = { requests = 100, per = "1m", key = "auth.sub" }
 **Later:** one endpoint moved out of the app, into a TypeScript handler.
 
 ```toml
-[runtimes.ts]
-extensions = [".ts"]
-command    = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
-protocol   = "framed"
-
 [gen]
 ts = "src/unsworn.gen.ts"                # types for handlers, from the routes
 
@@ -230,7 +225,9 @@ export const getUser: GetUser = async (req, ctx) => {
 ```
 
 `/api/users/{id}` is more specific than the catch-all, so it now goes to the
-handler. Everything else still goes to the old app.
+handler. Everything else still goes to the old app. There's no runtime to
+configure for it: a TypeScript, Python, Go or Rust handler runs with its
+SDK's worker unless the config says otherwise.
 
 ## Is Unsworn a good fit?
 

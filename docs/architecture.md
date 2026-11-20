@@ -161,7 +161,10 @@ are answered at step 10 without a worker.
 ### Runtimes
 
 A **runtime** is a config entry describing how to start workers for some
-file extensions. Unsworn has no built-in knowledge of any language.
+file extensions. The core takes one as written and knows nothing about
+its language. The four languages with an SDK each have a default one, so
+a project in those writes a runtime only to run things differently (see
+[`config.md`](config.md#runtimesname)).
 
 ```toml
 [runtimes.go]

@@ -17,16 +17,23 @@ export const getUser: Handler<{ params: { id: number } }> = async (req, ctx) => 
 
 ```toml
 # unsworn.toml
-[runtimes.ts]
-extensions = [".ts", ".js"]
-command = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
-protocol = "framed"
-
 [[route]]
 path = "/users/{id}"
 method = "GET"
 handler = "src/users.ts#getUser"
 params = { id = { type = "integer", min = 1 } }
+```
+
+That's all the config a handler needs: with no `[runtimes.*]` for `.ts` or
+`.js`, Unsworn runs the SDK's worker with Bun in a project that has a
+`bun.lock`, and with Node otherwise. Write a runtime to run it another way,
+with Deno for one:
+
+```toml
+[runtimes.ts]
+extensions = [".ts", ".js"]
+command = "deno run --allow-all node_modules/@unswornjs/sdk/src/worker.ts"
+protocol = "framed"
 ```
 
 ## Types from the config

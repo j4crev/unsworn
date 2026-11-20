@@ -18,7 +18,9 @@ func GetUser(req *unsworn.Request) (unsworn.Reply, error) {
 ```
 
 Go can't load a function from a file by name at runtime, so the handlers are
-compiled into one worker program that lists them:
+compiled into one worker program that lists them. `unsworn gen` writes the
+list from the config, as `Handlers()` in the file `[gen].go` names, so
+`main` is this and stays this:
 
 ```go
 // main.go
@@ -26,21 +28,27 @@ package main
 
 import "github.com/j4crev/unsworn/sdk/go/unsworn"
 
-func main() {
-	unsworn.Serve(GetUser, ListUsers)
-}
+func main() { unsworn.Serve(Handlers()...) }
 ```
 
-Unsworn builds and runs it:
+```toml
+[gen]
+go = "unsworn_gen.go"     # beside the handlers: the same package
+```
+
+A handler added to the config is then served without another change, and
+a name in the config that isn't a function fails the build. `Handlers()`
+lists the functions the config names in the generated file's own
+directory; the file says which it left out (a route file, whose reference
+names no function, or a handler in another package). To list them
+yourself, pass them to `Serve` directly: `unsworn.Serve(GetUser, ListUsers)`.
+
+Unsworn builds and runs it. With no `[runtimes.go]`, that's
+`go build -o .unsworn/go-worker` for the handlers' directory, and
+`.unsworn/go-worker`:
 
 ```toml
 # unsworn.toml
-[runtimes.go]
-extensions = [".go"]
-build      = "go build -o .unsworn/go-worker ."
-command    = ".unsworn/go-worker"
-protocol   = "framed"
-
 [[route]]
 path    = "/users/{id}"
 method  = "GET"

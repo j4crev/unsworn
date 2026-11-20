@@ -739,6 +739,102 @@ handler = "h.ts"
 }
 
 #[test]
+fn a_language_with_an_sdk_needs_no_runtime_of_its_own() {
+    let route = |handler: &str| format!("[[route]]\npath = \"/x\"\nhandler = \"{handler}\"\n");
+    let load = |config: &str, files: &[(&str, &str)]| {
+        let mut all = vec![("unsworn.toml", config)];
+        all.extend_from_slice(files);
+        compile(&MemHost::with(&all), "unsworn.toml")
+    };
+    let runtime = |config: &str, files: &[(&str, &str)]| -> Runtime {
+        let p = load(config, files).project.expect("compiles");
+        let handler = p.routes[0].handler().unwrap().runtime.clone();
+        (*p.runtimes[&handler]).clone()
+    };
+
+    // TypeScript: Bun where the project has its lock file, Node otherwise.
+    let ts = runtime(
+        &route("src/users.ts#get"),
+        &[("src/users.ts", ""), ("bun.lock", "")],
+    );
+    assert_eq!(ts.name, "ts");
+    assert_eq!(
+        ts.command,
+        "bun run node_modules/@unswornjs/sdk/src/worker.ts"
+    );
+    assert_eq!(ts.protocol, Protocol::Framed);
+    assert!(ts.extensions.contains(&".js".to_string()));
+    let ts = runtime(&route("src/users.ts#get"), &[("src/users.ts", "")]);
+    assert_eq!(ts.command, "node node_modules/@unswornjs/sdk/src/worker.ts");
+
+    let py = runtime(&route("src/users.py#get"), &[("src/users.py", "")]);
+    assert_eq!(py.command, "python3 -u -m unsworn.worker");
+    let py = runtime(
+        &route("src/users.py#get"),
+        &[("src/users.py", ""), ("uv.lock", "")],
+    );
+    assert_eq!(py.command, "uv run python -u -m unsworn.worker");
+
+    // Go and Rust are built: Go from the handlers' package, Rust into the
+    // binary its manifest names.
+    let go = runtime(&route("routes/users.go#Get"), &[("routes/users.go", "")]);
+    assert_eq!(
+        go.build.as_deref(),
+        Some("go build -o .unsworn/go-worker ./routes")
+    );
+    assert_eq!(go.command, ".unsworn/go-worker");
+    let rs = runtime(
+        &route("src/users.rs#get"),
+        &[
+            ("src/users.rs", ""),
+            ("Cargo.toml", "[package]\nname = \"api\"\n"),
+        ],
+    );
+    assert_eq!(rs.build.as_deref(), Some("cargo build --release"));
+    assert_eq!(rs.command, "target/release/api");
+    let rs = runtime(
+        &route("src/users.rs#get"),
+        &[
+            ("src/users.rs", ""),
+            (
+                "Cargo.toml",
+                "[package]\nname = \"api\"\n\n[[bin]]\nname = \"worker\"\n",
+            ),
+        ],
+    );
+    assert_eq!(rs.command, "target/release/worker");
+
+    // A runtime of the project's own for the extension is the one used,
+    let own = format!(
+        "[runtimes.deno]\nextensions = [\".ts\"]\ncommand = \"deno run -A worker.ts\"\n\n{}",
+        route("src/users.ts#get")
+    );
+    let p = load(&own, &[("src/users.ts", "")])
+        .project
+        .expect("compiles");
+    assert_eq!(p.runtimes.keys().collect::<Vec<_>>(), ["deno"]);
+    // and one that only shares the name is left alone.
+    let named = format!(
+        "[runtimes.ts]\nextensions = [\".tsx\"]\ncommand = \"x\"\n\n{}",
+        route("src/users.ts#get")
+    );
+    let p = load(&named, &[("src/users.ts", "")])
+        .project
+        .expect("compiles");
+    assert_eq!(p.routes[0].handler().unwrap().runtime, "ts-default");
+
+    // Anything else still needs one, and so does Rust without a manifest.
+    for handler in ["src/users.rb#get", "src/users.rs#get"] {
+        let c = load(
+            &route(handler),
+            &[("src/users.rb", ""), ("src/users.rs", "")],
+        );
+        let errors: Vec<String> = c.diagnostics.iter().map(ToString::to_string).collect();
+        assert!(errors[0].contains("no runtime handles"), "{errors:?}");
+    }
+}
+
+#[test]
 fn an_entry_for_one_method_leaves_the_others_alone() {
     let cfg = format!(
         r#"{RUNTIMES}

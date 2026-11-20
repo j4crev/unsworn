@@ -225,6 +225,76 @@ assert "GetUserParams" in str(g.GetUserRequest)
     }
 }
 
+/// A Go project with nothing but handlers: no `[runtimes.go]`, since Go
+/// has a default, and no list of handlers kept by hand, since `gen` writes
+/// one from the config.
+#[test]
+fn a_go_worker_is_built_from_the_generated_list() {
+    if !common::has("go") {
+        eprintln!("skipped: go isn't installed");
+        return;
+    }
+    let config = r#"
+[gen]
+go = "unsworn_gen.go"
+
+[[route]]
+path = "/users/{id}"
+method = "GET"
+handler = "users.go#GetUser"
+params = { id = { type = "integer", min = 1 } }
+before = ["users.go#Tenant"]
+"#;
+    let users = r#"package main
+
+import "github.com/j4crev/unsworn/sdk/go/unsworn"
+
+func GetUser(req *unsworn.Request) (unsworn.Reply, error) {
+	var p GetUserParams
+	if err := req.BindParams(&p); err != nil {
+		return unsworn.Reply{}, err
+	}
+	return unsworn.JSON(map[string]any{"id": p.ID, "tenant": req.Ctx["tenant"]}), nil
+}
+
+func Tenant(req *unsworn.Request) (unsworn.Reply, error) {
+	return unsworn.Next(map[string]any{"tenant": "acme"}), nil
+}
+"#;
+    // All of `main` there is, and it never changes.
+    let main = "package main\n\nimport \"github.com/j4crev/unsworn/sdk/go/unsworn\"\n\nfunc main() { unsworn.Serve(Handlers()...) }\n";
+    let module = format!(
+        "module example.com/app\n\ngo 1.22\n\nrequire github.com/j4crev/unsworn/sdk/go v0.0.0\n\nreplace github.com/j4crev/unsworn/sdk/go => {}\n",
+        common::repo_root().join("sdk/go").display()
+    );
+    let p = Project::new(&[
+        ("unsworn.toml", config),
+        ("users.go", users),
+        ("main.go", main),
+        ("go.mod", &module),
+    ]);
+    let out = p.command(&["gen"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let generated = std::fs::read_to_string(p.path().join("unsworn_gen.go")).unwrap();
+    assert!(
+        generated.contains("func Handlers() []unsworn.HandlerFunc {\n\treturn []unsworn.HandlerFunc{\n\t\tGetUser,\n\t\tTenant,\n\t}\n}\n"),
+        "{generated}"
+    );
+    if common::has("gofmt") {
+        let out = run(Command::new("gofmt").arg("-l").arg(p.path()));
+        assert_eq!(stdout(&out), "", "gofmt would change a file");
+    }
+
+    // The default runtime builds the worker, and the worker has both
+    // handlers the config names.
+    let out = p.command(&["check", "--deep"]);
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    let s = p.serve();
+    let r = s.get("/users/7");
+    assert_eq!(r.status, 200, "{}\n{}", r.text(), s.logs());
+    assert_eq!(r.json(), serde_json::json!({ "id": 7, "tenant": "acme" }));
+}
+
 /// `unsworn dev` keeps the files current: at startup, and when the config
 /// changes.
 #[test]

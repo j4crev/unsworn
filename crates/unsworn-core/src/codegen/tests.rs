@@ -235,6 +235,112 @@ fn rust_structs() {
     );
 }
 
+/// A Go or Rust file that knows where it is lists the handlers the
+/// config names, so the worker's `main` needn't.
+#[test]
+fn compiled_workers_get_a_list_of_their_handlers() {
+    let config = r#"
+[[function]]
+name = "rank"
+handler = "src/rank.EXT#rank"
+
+[[route]]
+path = "/users/{id}"
+handler = "src/users.EXT#get_user"
+before = ["src/gate.EXT#tenant"]
+shadow = "src/api/users.EXT#get_user"
+
+[[route]]
+path = "/files/{*path}"
+handler = "src/files.EXT"
+
+[[route]]
+path = "/elsewhere"
+handler = "other/place.EXT#run"
+"#;
+    let text = |lang: Lang, ext: &str, file: Option<&str>| {
+        let config = config.replace("EXT", ext);
+        let names = [
+            "src/rank",
+            "src/users",
+            "src/gate",
+            "src/api/users",
+            "src/files",
+            "other/place",
+        ];
+        let paths: Vec<String> = names.iter().map(|n| format!("{n}.{ext}")).collect();
+        let mut files = vec![
+            ("unsworn.toml", config.as_str()),
+            ("Cargo.toml", "[package]\nname = \"w\"\n"),
+        ];
+        files.extend(paths.iter().map(|p| (p.as_str(), "")));
+        let project = project_with_files(&files);
+        let options = Options {
+            go_package: None,
+            file: file.map(String::from),
+        };
+        generate(&project, lang, &options)
+    };
+
+    // Rust names each by its module path below the file's own directory:
+    // route handlers, `before` handlers, shadows and functions alike.
+    let rs = text(Lang::Rust, "rs", Some("src/unsworn_gen.rs"));
+    assert!(
+        rs.contains(
+            "#[rustfmt::skip]\npub fn handlers() -> unsworn_sdk::Handlers {\n    unsworn_sdk::handlers![\n        crate::api::users::get_user,\n        crate::gate::tenant,\n        crate::rank::rank,\n        crate::users::get_user,\n    ]\n}\n"
+        ),
+        "{rs}"
+    );
+    // What it can't name, it says.
+    assert!(
+        rs.contains("//   other/place.rs#run: it's outside this file's directory\n"),
+        "{rs}"
+    );
+    assert!(
+        rs.contains("//   src/files.rs: the config names no function in it\n"),
+        "{rs}"
+    );
+
+    // Go names a function as the config does, so only those in the
+    // file's own directory, which is its package.
+    let go = text(Lang::Go, "go", Some("src/unsworn_gen.go"));
+    assert!(
+        go.contains("\nimport \"github.com/j4crev/unsworn/sdk/go/unsworn\"\n"),
+        "{go}"
+    );
+    assert!(
+        go.contains("func Handlers() []unsworn.HandlerFunc {\n\treturn []unsworn.HandlerFunc{\n\t\tget_user,\n\t\trank,\n\t\ttenant,\n\t}\n}\n"),
+        "{go}"
+    );
+    assert!(
+        go.contains(
+            "//\tsrc/api/users.go#get_user: it's in another directory, so another package\n"
+        ),
+        "{go}"
+    );
+
+    // Printed with nowhere to go, a file has no list.
+    for (lang, ext) in [(Lang::Go, "go"), (Lang::Rust, "rs")] {
+        let printed = text(lang, ext, None);
+        assert!(
+            !printed.to_lowercase().contains("fn handlers") && !printed.contains("func Handlers"),
+            "{printed}"
+        );
+    }
+}
+
+fn project_with_files(files: &[(&str, &str)]) -> Project {
+    let compiled = compile_symbolic(&MemHost::with(files), "unsworn.toml");
+    let errors: Vec<String> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.is_error())
+        .map(ToString::to_string)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    compiled.project.expect("a project")
+}
+
 #[test]
 fn only_the_languages_own_handlers() {
     // The config's handlers are all `.py` here, so TypeScript gets none.

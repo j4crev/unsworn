@@ -472,6 +472,192 @@ fn units(project: &Project, lang: Lang) -> Vec<Unit> {
 pub struct Options {
     /// The Go package the file belongs to. Default: `main`.
     pub go_package: Option<String>,
+    /// Where the file goes, relative to the project directory. A Go or
+    /// Rust file lists the handlers the config names, for the worker to
+    /// serve, and which of them it can name depends on where it is.
+    /// Without it, there's no list.
+    pub file: Option<String>,
+}
+
+/// A handler the config names in a file of one language: the file, and
+/// the function's name when the reference has one.
+fn handlers(project: &Project, lang: Lang) -> Vec<(String, Option<String>)> {
+    let mut out: Vec<(String, Option<String>)> = project
+        .handlers_by_runtime()
+        .into_values()
+        .flatten()
+        .map(|raw| {
+            let (file, name) = crate::policy::HandlerRef::split(&raw);
+            (file.to_string(), name.map(String::from))
+        })
+        .filter(|(file, _)| Lang::of_file(file) == Some(lang))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The directory a project-relative file is in: `""` for the project's.
+fn dir_of(file: &str) -> &str {
+    file.rsplit_once('/').map_or("", |(dir, _)| dir)
+}
+
+/// Whether `name` can be written as it is where an identifier goes.
+fn plain_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The handlers a generated file can't list, as comment lines. `item`
+/// goes in front of each one: a tab in Go, where gofmt takes an indented
+/// line of a doc comment for code and wants it that way.
+fn unlisted(skipped: &[(String, &str)], item: &str) -> String {
+    let mut out = String::new();
+    if skipped.is_empty() {
+        return out;
+    }
+    out += "//\n// Not listed, so add these yourself:\n//\n";
+    for (reference, why) in skipped {
+        let _ = writeln!(out, "//{item}{reference}: {why}");
+    }
+    out
+}
+
+/// `Handlers()` for a Go worker: the functions the config names, for
+/// `unsworn.Serve`. A function is named as the config names it, so it has
+/// to be in the generated file's own package, which is its directory.
+fn go_handlers(project: &Project, file: &str) -> Option<String> {
+    let all = handlers(project, Lang::Go);
+    if all.is_empty() {
+        return None;
+    }
+    let mut listed = Vec::new();
+    let mut skipped = Vec::new();
+    for (handler_file, name) in &all {
+        let reference = match name {
+            Some(name) => format!("{handler_file}#{name}"),
+            None => handler_file.clone(),
+        };
+        match name {
+            None => skipped.push((reference, "the config names no function in it")),
+            Some(_) if dir_of(handler_file) != dir_of(file) => {
+                skipped.push((reference, "it's in another directory, so another package"))
+            }
+            Some(name) if !plain_ident(name) => {
+                skipped.push((reference, "its name isn't a Go function's"))
+            }
+            Some(name) => {
+                if !listed.contains(name) {
+                    listed.push(name.clone());
+                }
+            }
+        }
+    }
+    let mut out = String::from(
+        "\n// Handlers lists the handlers the config names, for the worker to serve:\n\
+         //\n\
+         //\tfunc main() { unsworn.Serve(Handlers()...) }\n\
+         //\n\
+         // A handler added to the config is then served with no change to main,\n\
+         // and one the config names that doesn't exist fails the build.\n",
+    );
+    out += &unlisted(&skipped, "\t");
+    listed.sort();
+    out += "func Handlers() []unsworn.HandlerFunc {\n\treturn []unsworn.HandlerFunc{";
+    if listed.is_empty() {
+        out += "}\n}\n";
+        return Some(out);
+    }
+    out += "\n";
+    for name in &listed {
+        let _ = writeln!(out, "\t\t{name},");
+    }
+    out += "\t}\n}\n";
+    Some(out)
+}
+
+/// `handlers()` for a Rust worker: the functions the config names, for
+/// `unsworn_sdk::run`. Each is named by its module path, worked out from
+/// its file's place below the generated file's directory, which is taken
+/// to be the crate's `src`.
+fn rust_handlers(project: &Project, file: &str) -> Option<String> {
+    let all = handlers(project, Lang::Rust);
+    if all.is_empty() {
+        return None;
+    }
+    let root = dir_of(file);
+    let mut listed = Vec::new();
+    let mut skipped = Vec::new();
+    for (handler_file, name) in &all {
+        let reference = match name {
+            Some(name) => format!("{handler_file}#{name}"),
+            None => handler_file.clone(),
+        };
+        let Some(name) = name else {
+            skipped.push((reference, "the config names no function in it"));
+            continue;
+        };
+        let below = match root {
+            "" => Some(handler_file.as_str()),
+            root => handler_file
+                .strip_prefix(root)
+                .and_then(|rest| rest.strip_prefix('/')),
+        };
+        let Some(below) = below else {
+            skipped.push((reference, "it's outside this file's directory"));
+            continue;
+        };
+        // `users.rs` and `users/mod.rs` are the module `users`; `main.rs`
+        // and `lib.rs` are the crate itself.
+        let mut modules: Vec<&str> = below.trim_end_matches(".rs").split('/').collect();
+        if matches!(modules.last(), Some(&"mod"))
+            || (modules.len() == 1 && matches!(modules[0], "main" | "lib"))
+        {
+            modules.pop();
+        }
+        if !plain_ident(name) || !modules.iter().all(|m| plain_ident(m)) {
+            skipped.push((reference, "its path isn't one Rust can name"));
+            continue;
+        }
+        let mut path = String::from("crate");
+        for module in modules {
+            let _ = write!(path, "::{module}");
+        }
+        let _ = write!(path, "::{name}");
+        if !listed.contains(&path) {
+            listed.push(path);
+        }
+    }
+    let mut out = String::from(
+        "\n/// The handlers the config names, for the worker to serve:\n\
+         ///\n\
+         /// ```ignore\n\
+         /// fn main() {\n\
+         ///     unsworn_sdk::run(unsworn_gen::handlers());\n\
+         /// }\n\
+         /// ```\n\
+         ///\n\
+         /// A handler added to the config is then served with no change to `main`,\n\
+         /// and one the config names that doesn't exist fails the build.\n",
+    );
+    out += &unlisted(&skipped, "   ");
+    listed.sort();
+    // One handler a line however few there are, which rustfmt would
+    // otherwise decide by their length.
+    out += "#[rustfmt::skip]\npub fn handlers() -> unsworn_sdk::Handlers {\n";
+    if listed.is_empty() {
+        out += "    unsworn_sdk::Handlers::new()\n}\n";
+        return Some(out);
+    }
+    out += "    unsworn_sdk::handlers![\n";
+    for path in &listed {
+        let _ = writeln!(out, "        {path},");
+    }
+    out += "    ]\n}\n";
+    Some(out)
 }
 
 /// The types for every handler written in `lang`, as one source file.
@@ -486,13 +672,26 @@ pub fn generate(project: &Project, lang: Lang, options: &Options) -> String {
             typescript(&units, &calls, &services, from)
         }
         Lang::Python => python(&units, &calls, from),
-        Lang::Go => go(
-            &units,
-            &calls,
-            from,
-            options.go_package.as_deref().unwrap_or("main"),
-        ),
-        Lang::Rust => rust(&units, &calls, from),
+        Lang::Go => {
+            let list = options
+                .file
+                .as_deref()
+                .and_then(|f| go_handlers(project, f));
+            go(
+                &units,
+                &calls,
+                from,
+                options.go_package.as_deref().unwrap_or("main"),
+                list.as_deref(),
+            )
+        }
+        Lang::Rust => {
+            let list = options
+                .file
+                .as_deref()
+                .and_then(|f| rust_handlers(project, f));
+            rust(&units, &calls, from, list.as_deref())
+        }
     }
 }
 
@@ -1018,7 +1217,13 @@ impl Go {
     }
 }
 
-fn go(units: &[Unit], calls: &[Callable], from: &str, package: &str) -> String {
+fn go(
+    units: &[Unit],
+    calls: &[Callable],
+    from: &str,
+    package: &str,
+    handlers: Option<&str>,
+) -> String {
     let mut go = Go::default();
     for c in calls {
         let base = pascal(&c.name);
@@ -1076,9 +1281,13 @@ fn go(units: &[Unit], calls: &[Callable], from: &str, package: &str) -> String {
          // Change the config, or a schema it names, and generate it again.\n\n\
          package {package}\n"
     );
+    if handlers.is_some() {
+        out += "\nimport \"github.com/j4crev/unsworn/sdk/go/unsworn\"\n";
+    }
     for def in &go.defs {
         let _ = write!(out, "\n{def}");
     }
+    out += handlers.unwrap_or_default();
     out
 }
 
@@ -1209,7 +1418,7 @@ impl Rs {
     }
 }
 
-fn rust(units: &[Unit], calls: &[Callable], from: &str) -> String {
+fn rust(units: &[Unit], calls: &[Callable], from: &str, handlers: Option<&str>) -> String {
     let mut rs = Rs::default();
     for c in calls {
         let base = pascal(&c.name);
@@ -1271,6 +1480,7 @@ fn rust(units: &[Unit], calls: &[Callable], from: &str) -> String {
     for def in &rs.defs {
         let _ = write!(out, "\n{def}");
     }
+    out += handlers.unwrap_or_default();
     out
 }
 

@@ -15,28 +15,39 @@ pub async fn get_user(req: Request) -> Result {
 }
 ```
 
-The handlers are compiled into one worker program that lists them:
+The handlers are compiled into one worker program that lists them.
+`unsworn gen` writes the list from the config, as `handlers()` in the file
+`[gen].rust` names, so `main` is this and stays this:
 
 ```rust
 // src/main.rs
+mod unsworn_gen;
 mod users;
 
 fn main() {
-    unsworn_sdk::run(unsworn_sdk::handlers![users::get_user, users::list_users]);
+    unsworn_sdk::run(unsworn_gen::handlers());
 }
 ```
 
-Unsworn builds and runs it:
+```toml
+[gen]
+rust = "src/unsworn_gen.rs"     # in the crate's src, beside main.rs
+```
+
+A handler added to the config is then served without another change
+(beyond `mod` for a new file), and a name in the config that isn't a
+function fails the build. Each function is named by its module path,
+worked out from its file: `src/api/users.rs#get_user` is
+`crate::api::users::get_user`, so it has to be `pub` and its module
+declared. The file says which handlers it left out. To list them
+yourself: `unsworn_sdk::handlers![users::get_user, users::list_users]`.
+
+Unsworn builds and runs it. With no `[runtimes.rust]`, that's
+`cargo build --release` and the binary `Cargo.toml` names, with five
+minutes for the first build:
 
 ```toml
 # unsworn.toml
-[runtimes.rust]
-extensions      = [".rs"]
-build           = "cargo build --release"
-command         = "target/release/handlers"   # your binary's name
-protocol        = "framed"
-startup_timeout = "300s"                       # time for the first build
-
 [[route]]
 path    = "/users/{id}"
 method  = "GET"
