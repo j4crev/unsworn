@@ -294,33 +294,52 @@ pub fn routes(root: &Path, config: &str, policies: bool, as_json: bool) -> Resul
             if let Some(tool) = project.route_tool(route.id) {
                 println!("    mcp tool {}: {}", tool.name, tool_arguments(tool));
             }
-            for (source, layer) in &route.layers {
-                let summary = layer_summary(layer);
-                if !summary.is_empty() {
-                    println!("    from {source}: {}", summary.join(", "));
+            // In the order they merge: what applies to every request, the
+            // entries wider than the route's own policies, those, then the
+            // narrower entries, which win where they apply.
+            let print_layers = |layers: &[(String, unsworn_core::policy::Layer)]| {
+                for (source, layer) in layers {
+                    let summary = layer_summary(layer);
+                    if !summary.is_empty() {
+                        println!("    from {source}: {}", summary.join(", "));
+                    }
                 }
-            }
-            for p in project.prefixes_for(route) {
-                let summary = layer_summary(&p.layer);
-                if !summary.is_empty() {
-                    println!("    from {} ({}): {}", p.source, p.path, summary.join(", "));
+            };
+            let print_entries = |entries: &[unsworn_core::project::Applied]| {
+                for a in entries {
+                    let summary = layer_summary(&a.entry.layer);
+                    if summary.is_empty() {
+                        continue;
+                    }
+                    let (e, summary) = (a.entry, summary.join(", "));
+                    if a.partial {
+                        let methods = match &e.methods {
+                            Some(m) => format!("{} ", m.join(",")),
+                            None => String::new(),
+                        };
+                        println!("    at {methods}{} ({}): {summary}", e.path, e.source);
+                    } else {
+                        println!("    from {} ({}): {summary}", e.source, e.path);
+                    }
                 }
-            }
-            // Narrower than the catch-all, so these win on their paths.
-            for p in project.prefixes_inside(route) {
-                let summary = layer_summary(&p.layer);
-                if !summary.is_empty() {
-                    println!("    at {} ({}): {}", p.path, p.source, summary.join(", "));
-                }
-            }
+            };
+            let (wider, narrower) = project.entries_for(route);
+            print_layers(&route.layers[..route.low_layers]);
+            print_entries(&wider);
+            print_layers(&route.layers[route.low_layers..]);
+            print_entries(&narrower);
         }
     }
-    if !project.prefixes.is_empty() && !policies {
+    if !project.entries.is_empty() && !policies {
         println!();
-        println!("Policy prefixes:");
-        for p in &project.prefixes {
+        println!("Policy entries:");
+        for p in &project.entries {
             println!(
-                "  {}  {}  {}",
+                "  {}{}  {}  {}",
+                match &p.methods {
+                    Some(m) => format!("{} ", m.join(",")),
+                    None => String::new(),
+                },
                 p.path,
                 layer_summary(&p.layer).join(", "),
                 p.source

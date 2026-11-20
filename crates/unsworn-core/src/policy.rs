@@ -176,6 +176,26 @@ impl Layer {
         self == &Layer::default()
     }
 
+    /// The policies this layer sets, by their names in config.
+    pub fn keys(&self) -> Vec<&'static str> {
+        [
+            ("auth", self.auth.is_some()),
+            ("cors", self.cors.is_some()),
+            ("origin", self.origin.is_some()),
+            ("ip", self.ip.is_some()),
+            ("rate_limit", self.rate_limit.is_some()),
+            ("cache", self.cache.is_some()),
+            ("timeout", self.timeout.is_some()),
+            ("max_body", self.max_body.is_some()),
+            ("stream_body", self.stream_body.is_some()),
+            ("headers", self.headers.is_some()),
+            ("before", self.before.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(key, set)| set.then_some(key))
+        .collect()
+    }
+
     /// Turns the merged layer into final settings.
     pub fn finalize(&self, default_timeout: Duration, default_max_body: u64) -> Effective {
         fn on<T: Clone>(v: &Option<OrOff<T>>) -> Option<T> {
