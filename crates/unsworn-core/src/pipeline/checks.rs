@@ -479,10 +479,10 @@ pub fn preflight_headers(
 
 /// Header rules and CORS headers, applied to every routed response.
 pub fn finish_headers(eff: &Effective, origin: Option<&str>, headers: &mut HeaderMap) {
-    for name in &eff.headers.remove {
+    for name in &eff.response_headers.remove {
         headers.remove(name.as_str());
     }
-    for (name, value) in &eff.headers.set {
+    for (name, value) in &eff.response_headers.set {
         insert(headers, name, value);
     }
     if let (Some(cors), Some(origin)) = (&eff.cors, origin) {
@@ -837,8 +837,8 @@ mod tests {
     #[test]
     fn header_rules_and_cors() {
         let mut eff = crate::policy::Layer::default().finalize(Duration::from_secs(1), 1);
-        eff.headers.set = vec![("x-frame-options".into(), "DENY".into())];
-        eff.headers.remove = vec!["server".into()];
+        eff.response_headers.set = vec![("x-frame-options".into(), "DENY".into())];
+        eff.response_headers.remove = vec!["server".into()];
         eff.cors = Some(Cors {
             origins: None,
             credentials: false,

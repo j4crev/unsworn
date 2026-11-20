@@ -536,7 +536,7 @@ path = "/a"
 method = ["GET", "POST"]
 respond = { status = 200, text = "hi", headers = { Server = "x" } }
 cors = { origins = ["https://app.example"], credentials = true, max_age = "10m" }
-headers = { set = { "Cache-Control" = "no-store" }, remove = ["Server"] }
+response_headers = { set = { "Cache-Control" = "no-store" }, remove = ["Server"] }
 
 [[route]]
 path = "/internal"

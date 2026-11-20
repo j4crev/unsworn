@@ -4,8 +4,8 @@
 //! file name split on `.`, where the last part before the extension is the
 //! HTTP method. `[name]` is a parameter, `[...name]` matches the rest of the
 //! path, `(name)` is a group that doesn't appear in the URL, and `[.]` is a
-//! literal dot. `_before.<ext>` and `_policies.toml` apply to every route
-//! file in their folder and below.
+//! literal dot. A `_before.<ext>` file is a `before` handler for every
+//! route file in its folder and below.
 
 pub const METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
@@ -22,7 +22,7 @@ pub struct FileRoute {
     pub chain: Vec<String>,
 }
 
-/// A `_before.<ext>` or `_policies.toml` file and the folder it covers.
+/// A `_before.<ext>` file and the folder it covers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedFile {
     pub file: String,
@@ -33,7 +33,6 @@ pub struct ScopedFile {
 pub struct Scan {
     pub routes: Vec<FileRoute>,
     pub befores: Vec<ScopedFile>,
-    pub policies: Vec<ScopedFile>,
 }
 
 /// Classifies files from a routes directory. Paths are relative to the
@@ -46,7 +45,6 @@ pub fn scan(files: &[String]) -> Result<Scan, Vec<(String, String)>> {
         match classify(file) {
             Ok(Some(Item::Route(r))) => out.routes.push(r),
             Ok(Some(Item::Before(s))) => out.befores.push(s),
-            Ok(Some(Item::Policies(s))) => out.policies.push(s),
             Ok(None) => {}
             Err(e) => errors.push((file.clone(), e)),
         }
@@ -55,7 +53,6 @@ pub fn scan(files: &[String]) -> Result<Scan, Vec<(String, String)>> {
         .sort_by(|a, b| a.path.cmp(&b.path).then(a.method.cmp(&b.method)));
     // Outermost scopes first, so they merge first.
     out.befores.sort_by_key(|s| s.scope.len());
-    out.policies.sort_by_key(|s| s.scope.len());
     if errors.is_empty() {
         Ok(out)
     } else {
@@ -66,7 +63,6 @@ pub fn scan(files: &[String]) -> Result<Scan, Vec<(String, String)>> {
 enum Item {
     Route(FileRoute),
     Before(ScopedFile),
-    Policies(ScopedFile),
 }
 
 fn classify(file: &str) -> Result<Option<Item>, String> {
@@ -85,8 +81,7 @@ fn classify(file: &str) -> Result<Option<Item>, String> {
     if parts.len() < 2 {
         return Ok(None); // no extension
     }
-    let (stem, ext) = parts.split_at(parts.len() - 1);
-    let ext = &ext[0];
+    let (stem, _ext) = parts.split_at(parts.len() - 1);
     let Some((last, before_last)) = stem.split_last() else {
         return Ok(None);
     };
@@ -94,13 +89,14 @@ fn classify(file: &str) -> Result<Option<Item>, String> {
     chain.extend(before_last.iter().cloned());
 
     if last == "_policies" {
-        if ext != "toml" {
-            return Err("folder policies must be a `_policies.toml` file".into());
-        }
-        return Ok(Some(Item::Policies(ScopedFile {
-            file: file.to_string(),
-            scope: chain,
-        })));
+        // It would cover the route files in its folder, but not a route
+        // from the config or an OpenAPI spec under the same path, which
+        // is easy to take it for.
+        let folder = chain_to_path(&chain).unwrap_or_else(|_| "/<folder>".into());
+        return Err(format!(
+            "policies for a folder of route files aren't read from a file; put them in the config, as an entry for the folder's path: `[[route]]` with `path = \"{}/{{*rest}}\"`",
+            folder.trim_end_matches('/')
+        ));
     }
     if last == "_before" {
         return Ok(Some(Item::Before(ScopedFile {
@@ -249,7 +245,6 @@ mod tests {
         let files: Vec<String> = [
             "users/db.ts",
             "users/_before.ts",
-            "admin._policies.toml",
             "admin/stats.get.ts",
             ".hidden.get.ts",
         ]
@@ -259,8 +254,7 @@ mod tests {
         let scan = scan(&files).unwrap();
         assert_eq!(scan.routes.len(), 1);
         assert_eq!(scan.befores[0].scope, vec!["users"]);
-        assert_eq!(scan.policies[0].scope, vec!["admin"]);
-        assert!(in_scope(&scan.policies[0].scope, &scan.routes[0].chain));
+        assert!(!in_scope(&scan.befores[0].scope, &scan.routes[0].chain));
     }
 
     #[test]

@@ -120,7 +120,7 @@ params = {{ id = {{ type = "integer", min = 1 }} }}
 }
 
 #[test]
-fn route_files_nested_and_flat_with_folder_policies() {
+fn route_files_nested_and_flat_with_a_folders_before_handler() {
     let cfg = format!(
         r#"{RUNTIMES}
 [routes]
@@ -132,20 +132,23 @@ secret = "s"
 
 [policies.cached]
 cache = {{ ttl = "5m" }}
+
+# Policies for a folder's routes are an entry for the folder's path.
+[[route]]
+path = "/admin/{{*rest}}"
+auth = "jwt"
+use = ["cached"]
 "#
     );
-    let p = project(&[
-        ("unsworn.toml", &cfg),
+    let files = [
+        ("unsworn.toml", cfg.as_str()),
         ("routes/users.get.ts", ""),
         ("routes/users/[id]/put.go", ""),
-        (
-            "routes/admin/_policies.toml",
-            "auth = \"jwt\"\nuse = [\"cached\"]\n",
-        ),
         ("routes/admin/_before.ts", ""),
         ("routes/admin/stats.get.ts", ""),
         ("routes/lib/db.ts", ""),
-    ]);
+    ];
+    let p = project(&files);
     assert_eq!(p.routes.len(), 3);
     let put = found(&p, "PUT", "/users/7");
     assert_eq!(put.route.handler().unwrap().runtime, "go");
@@ -160,6 +163,14 @@ cache = {{ ttl = "5m" }}
     let users = found(&p, "GET", "/users");
     let eff = p.effective(users.route, "GET", "/users");
     assert_eq!(eff.auth, AuthReq::Public);
+
+    // A policies file in the folder isn't read: it would cover the route
+    // files there and not a config route under the same path.
+    let mut with_file = files.to_vec();
+    with_file.push(("routes/admin/_policies.toml", "auth = \"jwt\"\n"));
+    let errs = errors(&with_file);
+    assert!(errs[0].contains("routes/admin/_policies.toml"), "{errs:?}");
+    assert!(errs[0].contains("path = \"/admin/{*rest}\""), "{errs:?}");
 }
 
 #[test]
@@ -289,13 +300,21 @@ auth = "none"
     assert!(eff("POST", "/api/users").rate_limit.is_none());
 
     let catch_all = found(&p, "GET", "/account").route;
-    let paths = |entries: Vec<&PrefixEntry>| -> Vec<String> {
-        entries.iter().map(|e| e.path.clone()).collect()
+    let paths = |entries: Vec<Applied>| -> Vec<String> {
+        entries.iter().map(|a| a.entry.path.clone()).collect()
     };
-    assert!(p.prefixes_for(catch_all).is_empty());
+    let (wider, narrower) = p.entries_for(catch_all);
+    assert!(wider.is_empty());
+    // Widest first: an entry for one method comes after one for all of
+    // them, a longer prefix after a shorter one, and a full path last.
     assert_eq!(
-        paths(p.prefixes_inside(catch_all)),
-        ["/assets/{*rest}", "/api/{*rest}", "/assets/private/{*rest}"]
+        paths(narrower),
+        [
+            "/assets/{*rest}",
+            "/api/{*rest}",
+            "/assets/private/{*rest}",
+            "/assets/private/readme"
+        ]
     );
 }
 
@@ -360,16 +379,156 @@ ip = {{ allow = ["10.0.0.0/8"] }}
     // `/admin/{*rest}` is part of `/{team}/{*rest}`, though no longer.
     let teams = found(&p, "GET", "/acme/x").route;
     assert_eq!(teams.path, "/{team}/{*rest}");
-    let paths = |entries: Vec<&PrefixEntry>| -> Vec<String> {
-        entries.iter().map(|e| e.path.clone()).collect()
+    let paths = |entries: Vec<Applied>| -> Vec<String> {
+        entries.iter().map(|a| a.entry.path.clone()).collect()
     };
-    assert_eq!(
-        paths(p.prefixes_for(teams)),
-        ["/{*rest}", "/{team}/{*rest}"]
-    );
-    assert_eq!(paths(p.prefixes_inside(teams)), ["/admin/{*rest}"]);
+    let (wider, narrower) = p.entries_for(teams);
+    assert_eq!(paths(wider), ["/{*rest}", "/{team}/{*rest}"]);
+    assert_eq!(paths(narrower), ["/admin/{*rest}"]);
     assert!(eff("/admin/x").ip.is_some());
     assert!(eff("/acme/x").ip.is_none());
+}
+
+#[test]
+fn an_entry_for_one_method_leaves_the_others_alone() {
+    let cfg = format!(
+        r#"{RUNTIMES}
+[auth.jwt]
+type = "jwt"
+secret = "s"
+
+[[route]]
+path = "/reports"
+auth = "jwt"
+respond = {{ status = 200 }}
+
+[[route]]
+path = "/reports"
+method = "GET"
+auth = "none"
+"#
+    );
+    let p = project(&[("unsworn.toml", &cfg)]);
+    let auth = |method: &str| {
+        p.effective(found(&p, method, "/reports").route, method, "/reports")
+            .auth
+    };
+    assert_eq!(auth("GET"), AuthReq::Public);
+    // `GET` covers `HEAD`.
+    assert_eq!(auth("HEAD"), AuthReq::Public);
+    for method in ["POST", "PUT", "DELETE"] {
+        assert!(matches!(auth(method), AuthReq::AnyOf(_)), "{method}");
+    }
+}
+
+#[test]
+fn an_entry_for_a_path_covers_the_narrower_routes_it_matches() {
+    let cfg = format!(
+        r#"{RUNTIMES}
+[auth.jwt]
+type = "jwt"
+secret = "s"
+
+[[route]]
+path = "/users/{{id}}"
+respond = {{ status = 200 }}
+
+[[route]]
+path = "/users/export"
+respond = {{ status = 200 }}
+
+[[route]]
+path = "/users/me"
+auth = "none"
+respond = {{ status = 200 }}
+
+[[route]]
+path = "/users/{{id}}"
+auth = "jwt"
+"#
+    );
+    let p = project(&[("unsworn.toml", &cfg)]);
+    let auth = |path: &str| p.effective(found(&p, "GET", path).route, "GET", path).auth;
+    assert!(matches!(auth("/users/7"), AuthReq::AnyOf(_)));
+    // A route added later under the same pattern is covered too,
+    assert!(matches!(auth("/users/export"), AuthReq::AnyOf(_)));
+    // unless it says otherwise itself, being the narrower of the two.
+    assert_eq!(auth("/users/me"), AuthReq::Public);
+}
+
+#[test]
+fn two_statements_for_the_same_requests_cant_set_one_policy() {
+    let cfg = |second: &str| {
+        format!(
+            r#"{RUNTIMES}
+[auth.jwt]
+type = "jwt"
+secret = "s"
+
+[[route]]
+path = "/reports/{{id}}"
+method = ["GET", "POST"]
+auth = "jwt"
+timeout = "5s"
+respond = {{ status = 200 }}
+
+[[route]]
+path = "/reports/{{report}}"
+{second}
+"#
+        )
+    };
+    // The same methods, and methods that overlap without one holding the
+    // other: neither statement is the narrower.
+    for second in [
+        "method = [\"POST\", \"GET\"]\nauth = \"none\"",
+        "method = [\"POST\", \"PUT\"]\nauth = \"none\"",
+    ] {
+        let errs = errors(&[("unsworn.toml", &cfg(second))]);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(errs[0].contains("`auth` for"), "{errs:?}");
+        assert!(errs[0].contains("is also set at unsworn.toml:"), "{errs:?}");
+    }
+    // Fewer methods, every method, or another policy: no clash.
+    for second in [
+        "method = \"GET\"\nauth = \"none\"",
+        "auth = \"none\"",
+        "method = [\"GET\", \"POST\"]\nmax_body = \"2KB\"",
+        "method = [\"GET\", \"POST\"]\nbefore = [\"h.ts\"]",
+    ] {
+        project(&[("unsworn.toml", &cfg(second)), ("h.ts", "")]);
+    }
+}
+
+#[test]
+fn validation_in_an_entry_is_for_all_of_a_routes_methods() {
+    let cfg = |method: &str| {
+        format!(
+            r#"{RUNTIMES}
+[[route]]
+path = "/search"
+method = ["GET", "POST"]
+respond = {{ status = 200 }}
+
+[[route]]
+path = "/search"
+{method}
+query = {{ q = {{ type = "string", required = true }} }}
+"#
+        )
+    };
+    let errs = errors(&[("unsworn.toml", &cfg("method = \"GET\""))]);
+    assert!(errs[0].contains("validation for GET only"), "{errs:?}");
+    for method in ["", "method = [\"GET\", \"POST\"]"] {
+        let p = project(&[("unsworn.toml", &cfg(method))]);
+        assert!(
+            found(&p, "POST", "/search")
+                .route
+                .validation
+                .query
+                .is_some()
+        );
+    }
 }
 
 #[test]
@@ -394,7 +553,12 @@ timeout = "2s"
     assert!(m.route.validation.params.is_some());
     let eff = p.effective(m.route, "GET", "/users/1");
     assert_eq!(eff.timeout, Duration::from_secs(2));
-    assert_eq!(m.route.layers.len(), 2);
+    // The route's own layers are `[defaults]` alone; the entry applies by
+    // request.
+    assert_eq!(m.route.layers.len(), 1);
+    let (wider, narrower) = p.entries_for(m.route);
+    assert_eq!((wider.len(), narrower.len()), (1, 0));
+    assert!(!wider[0].partial);
 
     let cfg = format!(
         r#"{RUNTIMES}

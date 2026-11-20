@@ -264,7 +264,7 @@ call the tool and what it may call, with its methods and paths.
 A request to the endpoint is checked in two steps.
 
 1. **Every request** (`server/discover`, `tools/list` and `tools/call`)
-   gets the `[mcp]` policies: `origin`, `ip`, `cors`, `headers`,
+   gets the `[mcp]` policies: `origin`, `ip`, `cors`, `response_headers`,
    `max_body`, `auth` and `rate_limit`. The `[mcp]` rate limit counts every
    request to the endpoint.
 2. **A tool call** then gets the tool's own policies: `auth`, `rate_limit`,
@@ -279,7 +279,7 @@ A request to the endpoint is checked in two steps.
      ones off with `before = "off"`.
 
 Policies that apply to the endpoint as a whole (`origin`, `ip`, `cors`,
-`headers`, `max_body`) can't be set on a tool, not even through a `use`
+`response_headers`, `max_body`) can't be set on a tool, not even through a `use`
 set. `cache` and `stream_body` don't apply to MCP at all.
 
 When a tool call fails a policy:
@@ -464,7 +464,7 @@ every result's `_meta`.
 | `proxy` | none | An existing MCP server to forward to; tools then only add policies |
 | `list_tools` | `permitted` | `permitted` or `all`; see [Tool list visibility](#tool-list-visibility) |
 | `list_ttl` | `5m` | How long clients may cache `tools/list` and `server/discover` results |
-| `auth`, `origin`, `ip`, `cors`, `headers`, `rate_limit`, `timeout`, `max_body`, `before`, `use` | | Policies; see [Policies](#policies) |
+| `auth`, `origin`, `ip`, `cors`, `response_headers`, `rate_limit`, `timeout`, `max_body`, `before`, `use` | | Policies; see [Policies](#policies) |
 
 `[[mcp.tool]]`:
 
@@ -554,8 +554,8 @@ it doesn't have to. Replies map to tool results as for
   none.
 - **REST requests and tool calls share the route's rate limit.** One limit
   covers both ways in.
-- Policies that describe HTTP requests (`origin`, `ip`, `cors`, `headers`,
-  `max_body`, `cache`) don't apply to tool calls; the MCP endpoint has its
+- Policies that describe HTTP requests (`origin`, `ip`, `cors`,
+  `response_headers`, `max_body`, `cache`) don't apply to tool calls; the MCP endpoint has its
   own.
 - A tool call carries the credentials sent to the MCP endpoint, so the
   route's `auth` must accept at least one scheme the `[mcp]` auth uses.

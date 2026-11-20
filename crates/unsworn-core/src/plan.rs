@@ -26,7 +26,9 @@ use crate::config::{
     ListTools, OnError, Protocol, ResponseValidation, StoreBackend, TrailingSlash,
 };
 use crate::policy::{AuthReq, Cors, Effective};
-use crate::project::{Action, PrefixEntry, Project, RespondBody, Route, Seg, parse_pattern};
+use crate::project::{
+    Action, PolicyEntry, Project, RespondBody, Route, Seg, intersect, parse_pattern, probe,
+};
 use crate::units::{format_duration, format_size};
 use crate::validate::{BodyRule, LocationRules};
 
@@ -376,7 +378,7 @@ const POLICY_KEYS: &[&str] = &[
     "timeout",
     "max_body",
     "stream_body",
-    "headers",
+    "response_headers",
 ];
 
 fn is_policy(key: &str) -> bool {
@@ -625,20 +627,20 @@ fn policies(e: &mut Entry, eff: &Effective, project: &Project) {
         e.plain("stream_body", "yes");
     }
     let mut headers = Vec::new();
-    if !eff.headers.set.is_empty() {
+    if !eff.response_headers.set.is_empty() {
         let set: Vec<String> = eff
-            .headers
+            .response_headers
             .set
             .iter()
             .map(|(k, v)| format!("{k}: {v}"))
             .collect();
         headers.push(format!("set {}", set.join(", ")));
     }
-    if !eff.headers.remove.is_empty() {
-        headers.push(format!("remove {}", eff.headers.remove.join(", ")));
+    if !eff.response_headers.remove.is_empty() {
+        headers.push(format!("remove {}", eff.response_headers.remove.join(", ")));
     }
     if !headers.is_empty() {
-        e.plain("headers", headers.join("; "));
+        e.plain("response_headers", headers.join("; "));
     }
 }
 
@@ -796,11 +798,7 @@ fn tool_summary(tool: &crate::mcp::McpTool) -> String {
 /// some methods only, changes the rules.
 fn inside(project: &Project, route: &Route, method: &str, own: &[Seg], base: &Entry) -> Vec<Entry> {
     let mut found: BTreeMap<(String, String), Vec<Seg>> = BTreeMap::new();
-    let exact = route
-        .catch_all
-        .iter()
-        .flat_map(|_| project.path_entries.iter());
-    for entry in project.prefixes.iter().chain(exact) {
+    for entry in &project.entries {
         let Some(shared) = intersect(own, &entry.segs) else {
             continue;
         };
@@ -808,6 +806,11 @@ fn inside(project: &Project, route: &Route, method: &str, own: &[Seg], base: &En
         for m in entry_methods(entry, method) {
             if whole && m == method {
                 continue; // already in the route's own rules
+            }
+            // A narrower route may serve these requests, with rules of
+            // its own.
+            if !project.serves(route, &m, &probe(&shared)) {
+                continue;
             }
             let shown = if m == method { String::new() } else { m };
             found.insert((pattern(&shared), shown), shared.clone());
@@ -835,7 +838,7 @@ fn inside(project: &Project, route: &Route, method: &str, own: &[Seg], base: &En
 
 /// The methods a policy entry applies to, among those a rule for `method`
 /// (`*` for all) is about.
-fn entry_methods(entry: &PrefixEntry, method: &str) -> Vec<String> {
+fn entry_methods(entry: &PolicyEntry, method: &str) -> Vec<String> {
     match &entry.methods {
         None => vec![method.to_string()],
         Some(list) if method == "*" => list.clone(),
@@ -849,39 +852,6 @@ fn entry_methods(entry: &PrefixEntry, method: &str) -> Vec<String> {
                 Vec::new()
             }
         }
-    }
-}
-
-/// The pattern for the paths two patterns both match, if any.
-fn intersect(a: &[Seg], b: &[Seg]) -> Option<Vec<Seg>> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    loop {
-        match (a.get(i), b.get(i)) {
-            (None, None) => return Some(out),
-            // A catch-all takes whatever the other pattern has left, which
-            // may be nothing.
-            (Some(Seg::CatchAll(_)), _) => {
-                out.extend_from_slice(&b[i.min(b.len())..]);
-                return Some(out);
-            }
-            (_, Some(Seg::CatchAll(_))) => {
-                out.extend_from_slice(&a[i.min(a.len())..]);
-                return Some(out);
-            }
-            (None, Some(_)) | (Some(_), None) => return None,
-            (Some(Seg::Lit(x)), Some(Seg::Lit(y))) => {
-                if x != y {
-                    return None;
-                }
-                out.push(Seg::Lit(x.clone()));
-            }
-            (Some(Seg::Lit(x)), Some(Seg::Param(_))) | (Some(Seg::Param(_)), Some(Seg::Lit(x))) => {
-                out.push(Seg::Lit(x.clone()));
-            }
-            (Some(Seg::Param(x)), Some(Seg::Param(_))) => out.push(Seg::Param(x.clone())),
-        }
-        i += 1;
     }
 }
 
@@ -902,21 +872,6 @@ fn pattern(segs: &[Seg]) -> String {
             Seg::Lit(l) => l.clone(),
             Seg::Param(n) => format!("{{{n}}}"),
             Seg::CatchAll(n) => format!("{{*{n}}}"),
-        })
-        .collect();
-    format!("/{}", parts.join("/"))
-}
-
-/// A path that stands for the paths a pattern matches and no narrower
-/// pattern does: a parameter is a segment no literal equals, and a
-/// catch-all is more of them than an entry for one exact path would have.
-fn probe(segs: &[Seg]) -> String {
-    let parts: Vec<String> = segs
-        .iter()
-        .map(|s| match s {
-            Seg::Lit(l) => l.clone(),
-            Seg::Param(n) => format!("{{{n}}}"),
-            Seg::CatchAll(n) => vec![format!("{{{n}}}"); 8].join("/"),
         })
         .collect();
     format!("/{}", parts.join("/"))

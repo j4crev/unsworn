@@ -254,9 +254,6 @@ pub enum Source {
         location: String,
     },
     Defaults,
-    FolderPolicies {
-        path: String,
-    },
     /// The `[mcp]` table.
     Mcp {
         file: String,
@@ -310,7 +307,6 @@ impl fmt::Display for Source {
             Source::RouteFile { path } => write!(f, "{path}"),
             Source::OpenApi { file, location } => write!(f, "{file}:{location}"),
             Source::Defaults => write!(f, "[defaults]"),
-            Source::FolderPolicies { path } => write!(f, "{path}"),
             Source::Mcp {
                 file,
                 line: Some(line),
@@ -364,14 +360,22 @@ pub struct Route {
     pub action: Action,
     pub source: Source,
     pub validation: Validation,
-    /// Layers below prefix entries: defaults, OpenAPI, folder policies.
+    /// What applies before any policy entry: defaults, the OpenAPI spec,
+    /// a folder's `_before` handlers.
     pub low: Layer,
-    /// Layers above prefix entries: the route's own policies and exact
-    /// entries. For a catch-all route, prefix entries for some of its paths
-    /// merge above these in turn.
+    /// The route's own policies, which count as an entry for the route's
+    /// path and methods (see [`Width`]).
     pub high: Layer,
-    /// The static layers in merge order, for `unsworn routes --policies`.
+    /// The layers `low` and `high` are made of, in merge order, for
+    /// `unsworn routes --policies`. The first `low_layers` make up `low`.
     pub layers: Vec<(String, Layer)>,
+    pub low_layers: usize,
+    /// The policy entries that can apply to a request this route serves,
+    /// as indexes into [`Project::entries`], widest first. Those in
+    /// `wider` merge before the route's own policies and those in
+    /// `narrower` after them.
+    wider: Vec<usize>,
+    narrower: Vec<usize>,
     pub param_names: Vec<String>,
     pub catch_all: Option<String>,
     /// The path's segments.
@@ -440,12 +444,18 @@ pub(crate) fn parse_pattern(pattern: &str) -> Vec<Seg> {
 }
 
 fn normalize(pattern: &str) -> String {
-    let segs: Vec<String> = parse_pattern(pattern)
-        .into_iter()
+    normalize_segs(&parse_pattern(pattern))
+}
+
+/// A pattern without its parameters' names, which don't change what it
+/// matches.
+fn normalize_segs(segs: &[Seg]) -> String {
+    let segs: Vec<&str> = segs
+        .iter()
         .map(|s| match s {
-            Seg::Lit(l) => l,
-            Seg::Param(_) => "{}".into(),
-            Seg::CatchAll(_) => "{*}".into(),
+            Seg::Lit(l) => l.as_str(),
+            Seg::Param(_) => "{}",
+            Seg::CatchAll(_) => "{*}",
         })
         .collect();
     format!("/{}", segs.join("/"))
@@ -473,23 +483,130 @@ fn match_prefix(segs: &[Seg], path: &str) -> Option<Vec<String>> {
     (parts.len() == segs.len()).then_some(values)
 }
 
-/// Whether a prefix entry covers every path a catch-all route serves, both
-/// given as segments ending in a catch-all. `/{*rest}` and `/{team}/{*rest}`
-/// cover the route `/app/{*rest}`; `/app/admin/{*rest}` and, for the route
-/// `/{team}/{*rest}`, `/admin/{*rest}` cover only some of its paths.
-fn covers(prefix: &[Seg], route: &[Seg]) -> bool {
-    let fixed = prefix.len().saturating_sub(1);
-    fixed < route.len()
-        && prefix[..fixed].iter().zip(route).all(|pair| match pair {
-            (Seg::Param(_), Seg::Lit(_) | Seg::Param(_)) => true,
+/// Whether `path` matches a pattern, which may end in a catch-all. A
+/// prefix matches its own path too: `/x/{*rest}` matches `/x`.
+fn pattern_matches(segs: &[Seg], path: &str) -> bool {
+    let mut parts = path.split('/').filter(|s| !s.is_empty());
+    for seg in segs {
+        match seg {
+            Seg::CatchAll(_) => return true,
+            Seg::Lit(l) => {
+                if parts.next() != Some(l.as_str()) {
+                    return false;
+                }
+            }
+            Seg::Param(_) => {
+                if parts.next().is_none() {
+                    return false;
+                }
+            }
+        }
+    }
+    parts.next().is_none()
+}
+
+/// A pattern's segments without a catch-all at the end, and whether it had
+/// one.
+fn fixed(segs: &[Seg]) -> (&[Seg], bool) {
+    match segs.split_last() {
+        Some((Seg::CatchAll(_), rest)) => (rest, true),
+        _ => (segs, false),
+    }
+}
+
+/// Whether an entry's pattern matches every path a route's pattern does.
+/// `/{*rest}` and `/{team}/{*rest}` cover the route `/app/{*rest}`, and
+/// `/users/{id}` covers the route `/users/me`. `/app/admin/{*rest}` covers
+/// only some of what the route `/app/{*rest}` serves, and so does
+/// `/admin/{*rest}` for the route `/{team}/{*rest}`.
+fn covers(entry: &[Seg], route: &[Seg]) -> bool {
+    let (entry, entry_prefix) = fixed(entry);
+    let (route, route_prefix) = fixed(route);
+    let lengths = match entry_prefix {
+        true => entry.len() <= route.len(),
+        false => !route_prefix && entry.len() == route.len(),
+    };
+    lengths
+        && entry.iter().zip(route).all(|pair| match pair {
+            (Seg::Param(_), _) => true,
             (Seg::Lit(a), Seg::Lit(b)) => a == b,
             _ => false,
         })
 }
 
-/// A policy-only entry whose path ends in `{*rest}`.
+/// Whether some path matches both patterns.
+fn overlaps(a: &[Seg], b: &[Seg]) -> bool {
+    let (a, a_prefix) = fixed(a);
+    let (b, b_prefix) = fixed(b);
+    let lengths = match (a_prefix, b_prefix) {
+        (true, true) => true,
+        (true, false) => a.len() <= b.len(),
+        (false, true) => b.len() <= a.len(),
+        (false, false) => a.len() == b.len(),
+    };
+    lengths
+        && a.iter()
+            .zip(b)
+            .all(|pair| !matches!(pair, (Seg::Lit(x), Seg::Lit(y)) if x != y))
+}
+
+/// The methods a list of them covers. `GET` covers `HEAD` too, since a
+/// `GET` route answers `HEAD`: otherwise `HEAD` would reach the route
+/// without the policies written for `GET`.
+fn covered_methods(methods: &[String]) -> Vec<&str> {
+    let mut out: Vec<&str> = methods.iter().map(String::as_str).collect();
+    if out.contains(&"GET") && !out.contains(&"HEAD") {
+        out.push("HEAD");
+    }
+    out
+}
+
+/// How many requests a statement about a path and its methods covers,
+/// as a place in an order: a wider statement sorts before a narrower one.
+///
+/// Policies merge in this order, so the narrowest statement that sets a
+/// key decides it. The route's own policies are a statement about the
+/// route's path and methods. In turn:
+///
+/// - a prefix (`/api/{*rest}`) is wider than a full path
+/// - a shorter path is wider than a longer one
+/// - at the first segment where two paths differ in kind, a parameter is
+///   wider than a literal (`/users/{id}` is wider than `/users/me`), which
+///   is the order routes are matched in
+/// - every method is wider than some methods, and more methods are wider
+///   than fewer
+///
+/// Statements that sort the same and both apply to a request cover the
+/// same requests, or overlap without one holding the other. They can't
+/// set the same key: see `conflicts`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Width {
+    full_path: bool,
+    segments: usize,
+    literals: Vec<bool>,
+    fewer_methods: usize,
+}
+
+impl Width {
+    fn of(segs: &[Seg], methods: Option<&[String]>) -> Width {
+        let (segs, prefix) = fixed(segs);
+        Width {
+            full_path: !prefix,
+            segments: segs.len(),
+            literals: segs.iter().map(|s| matches!(s, Seg::Lit(_))).collect(),
+            fewer_methods: match methods {
+                None => 0,
+                Some(list) => usize::MAX - covered_methods(list).len(),
+            },
+        }
+    }
+}
+
+/// A `[[route]]` entry with policies and no action: for one path
+/// (`/users/{id}`) or, ending in `{*rest}`, for every path under a prefix.
+/// It applies to the requests it matches, whichever route serves them.
 #[derive(Debug, Clone)]
-pub struct PrefixEntry {
+pub struct PolicyEntry {
     pub(crate) segs: Vec<Seg>,
     pub path: String,
     pub methods: Option<Vec<String>>,
@@ -497,30 +614,26 @@ pub struct PrefixEntry {
     pub source: Source,
 }
 
-impl PrefixEntry {
-    /// Whether the entry covers `method`. One for `GET` covers `HEAD` too,
-    /// since a `GET` route answers `HEAD`: otherwise `HEAD` would reach the
-    /// route without the entry's policies.
-    fn covers(&self, method: &str) -> bool {
-        self.methods.as_ref().is_none_or(|m| {
-            m.iter()
-                .any(|x| x == method || (method == "HEAD" && x == "GET"))
-        })
+impl PolicyEntry {
+    /// Whether the entry is for a prefix: its path ends in `{*rest}`.
+    pub fn is_prefix(&self) -> bool {
+        fixed(&self.segs).1
     }
 
-    fn matches_exact(&self, method: &str, path: &str) -> bool {
-        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        self.covers(method)
-            && parts.len() == self.segs.len()
-            && self.segs.iter().zip(&parts).all(|(seg, part)| match seg {
-                Seg::Lit(l) => l == part,
-                Seg::Param(_) => true,
-                Seg::CatchAll(_) => false,
-            })
+    /// Whether the entry is for `method`.
+    pub fn covers_method(&self, method: &str) -> bool {
+        self.methods
+            .as_ref()
+            .is_none_or(|m| covered_methods(m).contains(&method))
     }
 
+    /// Whether the entry is for this request.
     pub fn matches(&self, method: &str, path: &str) -> bool {
-        self.covers(method) && match_prefix(&self.segs, path).is_some()
+        self.covers_method(method) && pattern_matches(&self.segs, path)
+    }
+
+    fn width(&self) -> Width {
+        Width::of(&self.segs, self.methods.as_deref())
     }
 }
 
@@ -675,9 +788,8 @@ pub struct Project {
     pub schemes: BTreeMap<String, Arc<Scheme>>,
     pub store: StoreConfig,
     pub routes: Vec<Route>,
-    pub prefixes: Vec<PrefixEntry>,
-    /// Exact policy entries for paths inside a catch-all route.
-    pub path_entries: Vec<PrefixEntry>,
+    /// The policy-only `[[route]]` entries, widest first (see [`Width`]).
+    pub entries: Vec<PolicyEntry>,
     pub openapi: OpenApiMeta,
     /// The MCP endpoint, when `[mcp]` is set.
     pub mcp: Option<McpEndpoint>,
@@ -797,7 +909,7 @@ impl Project {
 
     /// The merged policies for a request to `route`.
     pub fn effective(&self, route: &Route, method: &str, path: &str) -> Effective {
-        merged_layer(route, &self.prefixes, &self.path_entries, method, path)
+        merged_layer(route, &self.entries, method, path)
             .finalize(self.server.timeout, self.server.max_body)
     }
 
@@ -813,16 +925,10 @@ impl Project {
             return self.route_effective(route);
         };
         let probe = b.pattern.replace("{*", "{");
-        let layer = merged_layer(route, &self.prefixes, &self.path_entries, &b.method, &probe);
+        let layer = merged_layer(route, &self.entries, &b.method, &probe);
         let mut eff = layer.finalize(self.server.timeout, self.server.max_body);
         if let Some(mcp) = &self.mcp {
-            let endpoint = merged_layer(
-                &self.routes[mcp.route],
-                &self.prefixes,
-                &self.path_entries,
-                "POST",
-                &mcp.path,
-            );
+            let endpoint = merged_layer(&self.routes[mcp.route], &self.entries, "POST", &mcp.path);
             if layer.timeout.is_none()
                 && let Some(t) = endpoint.timeout
             {
@@ -890,41 +996,55 @@ impl Project {
         out
     }
 
-    /// The prefix entries that apply to every path of a route, for display.
-    pub fn prefixes_for(&self, route: &Route) -> Vec<&PrefixEntry> {
-        let probe = route.path.replace("{*", "{");
-        self.prefixes
-            .iter()
-            .filter(|p| match route.catch_all {
-                Some(_) => covers(&p.segs, &route.segs),
-                None => match_prefix(&p.segs, &probe).is_some(),
-            })
-            .collect()
+    /// The policy entries that can apply to a request `route` serves, in
+    /// the order they merge, for display: those wider than the route's own
+    /// policies, then those narrower. An entry for some of the route's
+    /// paths or methods only is marked `partial`.
+    pub fn entries_for(&self, route: &Route) -> (Vec<Applied<'_>>, Vec<Applied<'_>>) {
+        let applied = |ids: &[usize]| -> Vec<Applied<'_>> {
+            ids.iter()
+                .map(|&i| &self.entries[i])
+                .filter(|e| !self.served_elsewhere(route, e))
+                .map(|entry| Applied {
+                    entry,
+                    partial: !(covers(&entry.segs, &route.segs)
+                        && route_methods(route).iter().all(|m| entry.covers_method(m))),
+                })
+                .collect()
+        };
+        (applied(&route.wider), applied(&route.narrower))
     }
 
-    /// The prefix entries for some of a catch-all route's paths, for
-    /// display. Their policies win over the route's own on those paths.
-    pub fn prefixes_inside(&self, route: &Route) -> Vec<&PrefixEntry> {
-        if route.catch_all.is_none() {
-            return Vec::new();
+    /// Whether a request for `method` and `path` goes to `route`.
+    pub(crate) fn serves(&self, route: &Route, method: &str, path: &str) -> bool {
+        matches!(
+            self.match_request(route.host.as_deref(), method, path),
+            MatchResult::Found(found) if found.route.id == route.id
+        )
+    }
+
+    /// Whether another route serves every request `entry` and `route`
+    /// have in common, so the entry never applies to one `route` serves.
+    fn served_elsewhere(&self, route: &Route, entry: &PolicyEntry) -> bool {
+        if route.mcp_tool().is_some() {
+            return false;
         }
-        let probe = |p: &PrefixEntry| p.path.replace("{*", "{");
-        // A narrower catch-all route serves the paths of the entries it
-        // covers, so those belong to it.
-        let elsewhere = |p: &PrefixEntry| {
-            self.routes.iter().any(|r| {
-                r.id != route.id
-                    && r.catch_all.is_some()
-                    && covers(&r.segs, &p.segs)
-                    && !covers(&r.segs, &route.segs)
-            })
+        let Some(shared) = intersect(&route.segs, &entry.segs) else {
+            return true;
         };
-        self.prefixes
-            .iter()
-            .filter(|p| !covers(&p.segs, &route.segs))
-            .filter(|p| match_prefix(&route.segs, &probe(p)).is_some())
-            .filter(|p| !elsewhere(p))
-            .collect()
+        let path = probe(&shared);
+        // The methods both are for: the entry's, on a route that takes
+        // every method.
+        let methods: Vec<&str> = match (&route.methods, &entry.methods) {
+            (None, None) => vec!["*"],
+            (None, Some(entry)) => covered_methods(entry),
+            (Some(route), _) => route
+                .iter()
+                .map(String::as_str)
+                .filter(|m| entry.covers_method(m))
+                .collect(),
+        };
+        methods.iter().all(|m| !self.serves(route, m, &path))
     }
 
     /// Every handler reference, by runtime.
@@ -949,7 +1069,7 @@ impl Project {
                 }
             }
         }
-        for p in &self.prefixes {
+        for p in &self.entries {
             if let Some(OrOff::On(list)) = &p.layer.before {
                 list.iter().for_each(&mut add);
             }
@@ -983,38 +1103,116 @@ impl Project {
     }
 }
 
-/// A route's policy layers merged for one request, before defaults are
-/// filled in.
-fn merged_layer(
-    route: &Route,
-    prefixes: &[PrefixEntry],
-    path_entries: &[PrefixEntry],
-    method: &str,
-    path: &str,
-) -> Layer {
-    // A prefix entry for some of a catch-all's paths is more specific than
-    // the catch-all, so it merges after the route's own policies.
-    let inside = |p: &PrefixEntry| route.catch_all.is_some() && !covers(&p.segs, &route.segs);
+/// A policy entry among those that can apply to a route's requests.
+pub struct Applied<'a> {
+    pub entry: &'a PolicyEntry,
+    /// It's for some of the route's paths or methods, not all of them.
+    pub partial: bool,
+}
+
+/// The methods to look at a route's policies for: its own, or `*` for one
+/// that takes every method.
+fn route_methods(route: &Route) -> Vec<&str> {
+    match &route.methods {
+        Some(list) => list.iter().map(String::as_str).collect(),
+        None => vec!["*"],
+    }
+}
+
+/// A path that stands for the paths a pattern matches and no narrower
+/// pattern does: a parameter is a segment no literal equals, and a
+/// catch-all is more of them than an entry for one exact path would have.
+pub(crate) fn probe(segs: &[Seg]) -> String {
+    let parts: Vec<String> = segs
+        .iter()
+        .map(|s| match s {
+            Seg::Lit(l) => l.clone(),
+            Seg::Param(n) => format!("{{{n}}}"),
+            Seg::CatchAll(n) => vec![format!("{{{n}}}"); 8].join("/"),
+        })
+        .collect();
+    format!("/{}", parts.join("/"))
+}
+
+/// The pattern for the paths two patterns both match, if any.
+pub(crate) fn intersect(a: &[Seg], b: &[Seg]) -> Option<Vec<Seg>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    loop {
+        match (a.get(i), b.get(i)) {
+            (None, None) => return Some(out),
+            // A catch-all takes whatever the other pattern has left, which
+            // may be nothing.
+            (Some(Seg::CatchAll(_)), _) => {
+                out.extend_from_slice(&b[i.min(b.len())..]);
+                return Some(out);
+            }
+            (_, Some(Seg::CatchAll(_))) => {
+                out.extend_from_slice(&a[i.min(a.len())..]);
+                return Some(out);
+            }
+            (None, Some(_)) | (Some(_), None) => return None,
+            (Some(Seg::Lit(x)), Some(Seg::Lit(y))) => {
+                if x != y {
+                    return None;
+                }
+                out.push(Seg::Lit(x.clone()));
+            }
+            (Some(Seg::Lit(x)), Some(Seg::Param(_))) | (Some(Seg::Param(_)), Some(Seg::Lit(x))) => {
+                out.push(Seg::Lit(x.clone()));
+            }
+            (Some(Seg::Param(x)), Some(Seg::Param(_))) => out.push(Seg::Param(x.clone())),
+        }
+        i += 1;
+    }
+}
+
+/// A route's policies merged for one request, before defaults are filled
+/// in: what applies to every request, then each statement about this one
+/// from the widest to the narrowest (see [`Width`]), the route's own
+/// policies among them.
+fn merged_layer(route: &Route, entries: &[PolicyEntry], method: &str, path: &str) -> Layer {
     let mut layer = route.low.clone();
-    for p in prefixes {
-        if !inside(p) && p.matches(method, path) {
-            layer.merge_from(&p.layer);
+    let apply = |ids: &[usize], layer: &mut Layer| {
+        for &i in ids {
+            let entry = &entries[i];
+            if entry.matches(method, path) {
+                layer.merge_from(&entry.layer);
+            }
         }
-    }
+    };
+    apply(&route.wider, &mut layer);
     layer.merge_from(&route.high);
-    if route.catch_all.is_some() {
-        for p in prefixes {
-            if inside(p) && p.matches(method, path) {
-                layer.merge_from(&p.layer);
+    apply(&route.narrower, &mut layer);
+    layer
+}
+
+/// Gives each route the policy entries that can apply to its requests.
+/// An `[[mcp.tool]]` has no path of its own: its calls arrive at the MCP
+/// endpoint, so the entries for that path apply, all of them before the
+/// tool's own policies.
+fn link_entries(routes: &mut [Route], entries: &[PolicyEntry], mcp_path: Option<&str>) {
+    let endpoint = mcp_path.map(parse_pattern);
+    for route in routes {
+        let tool = route.mcp_tool().is_some();
+        let segs = match (&endpoint, tool) {
+            (Some(endpoint), true) => endpoint,
+            _ => &route.segs,
+        };
+        let own = Width::of(&route.segs, route.methods.as_deref());
+        route.wider.clear();
+        route.narrower.clear();
+        for (i, entry) in entries.iter().enumerate() {
+            if !overlaps(&entry.segs, segs) {
+                continue;
             }
-        }
-        for e in path_entries {
-            if e.matches_exact(method, path) {
-                layer.merge_from(&e.layer);
+            if tool || entry.width() <= own {
+                route.wider.push(i);
+            } else {
+                route.narrower.push(i);
             }
         }
     }
-    layer
 }
 
 /// The result of compiling: a project when there are no errors, plus all
@@ -1209,7 +1407,7 @@ fn endpoint_only_keys(layer: &Layer) -> Vec<&'static str> {
         ("origin", layer.origin.is_some()),
         ("ip", layer.ip.is_some()),
         ("max_body", layer.max_body.is_some()),
-        ("headers", layer.headers.is_some()),
+        ("response_headers", layer.response_headers.is_some()),
     ]
     .into_iter()
     .filter(|(_, set)| *set)
@@ -1262,7 +1460,7 @@ impl<'h> Compiler<'h> {
 
         let mut drafts: Vec<Draft> = Vec::new();
         let mut exacts: Vec<ExactEntry> = Vec::new();
-        let mut prefixes: Vec<PrefixEntry> = Vec::new();
+        let mut entries: Vec<PolicyEntry> = Vec::new();
 
         for (i, r) in raw.route.iter().enumerate() {
             let source = Source::Config {
@@ -1270,7 +1468,7 @@ impl<'h> Compiler<'h> {
                 line: lines.get(i).copied(),
                 index: i + 1,
             };
-            self.config_route(r, source, &mut drafts, &mut exacts, &mut prefixes);
+            self.config_route(r, source, &mut drafts, &mut exacts, &mut entries);
         }
 
         let mcp_pending = match &raw.mcp {
@@ -1348,17 +1546,23 @@ impl<'h> Compiler<'h> {
                 routes.push(route);
             }
         }
-        // Exact entries for paths served by a catch-all apply at request time.
-        let mut path_entries = Vec::new();
+        // An entry for one path has to be some route's path, or a path a
+        // catch-all serves: otherwise it's most likely a typo.
         for e in &exacts {
-            if e.used {
-                continue;
-            }
-            let probe = e.path.clone();
             let covered = drafts_catch_alls
                 .iter()
-                .any(|segs| match_prefix(segs, &probe).is_some());
-            if covered {
+                .any(|segs| match_prefix(segs, &e.path).is_some());
+            if !e.used && !covered {
+                self.diags.push(
+                    Diagnostic::error(
+                        e.source.loc(),
+                        format!("no route matches {} {}", label(&e.methods), e.path),
+                    )
+                    .hint("policy-only entries must match a route from config, route files or the OpenAPI spec; end the path with `{*rest}` to cover a prefix"),
+                );
+                continue;
+            }
+            if !e.used {
                 let v = &e.validation;
                 if v.params.is_some()
                     || v.query.is_some()
@@ -1377,30 +1581,26 @@ impl<'h> Compiler<'h> {
                         "a path served by a catch-all route can't be an MCP tool on its own",
                     );
                 }
-                path_entries.push(PrefixEntry {
-                    segs: parse_pattern(&e.path),
-                    path: e.path.clone(),
-                    methods: e.methods.clone(),
-                    layer: e.layer.clone(),
-                    source: e.source.clone(),
-                });
+            }
+            // One that only carries validation has no policies to apply.
+            if e.layer.is_empty() {
                 continue;
             }
-            {
-                self.diags.push(
-                    Diagnostic::error(
-                        e.source.loc(),
-                        format!("no route matches {} {}", label(&e.methods), e.path),
-                    )
-                    .hint("policy-only entries must match a route from config, route files or the OpenAPI spec; end the path with `{*rest}` to cover a prefix"),
-                );
-            }
+            entries.push(PolicyEntry {
+                segs: parse_pattern(&e.path),
+                path: e.path.clone(),
+                methods: e.methods.clone(),
+                layer: e.layer.clone(),
+                source: e.source.clone(),
+            });
         }
-        // Shorter prefixes merge first.
-        prefixes.sort_by_key(|p| p.segs.len());
+        // Widest first, and as written among entries of the same width.
+        entries.sort_by_cached_key(PolicyEntry::width);
+        let mcp_path = mcp_pending.as_ref().map(|p| p.endpoint.path.as_str());
+        link_entries(&mut routes, &entries, mcp_path);
+        self.conflicts(&routes, &entries);
 
-        let route_tools =
-            self.compile_route_tools(&routes, &prefixes, &path_entries, mcp_pending.as_ref());
+        let route_tools = self.compile_route_tools(&routes, &entries, mcp_pending.as_ref());
         let mcp = mcp_pending.and_then(|p| p.finish(&routes, route_tools));
         if let Some(m) = &mcp
             && m.tools.is_empty()
@@ -1412,8 +1612,8 @@ impl<'h> Compiler<'h> {
             );
         }
 
-        self.check_handlers(&routes, &prefixes);
-        self.warnings(&routes, &prefixes, &path_entries);
+        self.check_handlers(&routes, &entries);
+        self.warnings(&routes, &entries);
 
         let (routers, slots, catch_alls) = self.build_routers(&routes);
 
@@ -1424,8 +1624,7 @@ impl<'h> Compiler<'h> {
             schemes: self.schemes.clone(),
             store,
             routes,
-            prefixes,
-            path_entries,
+            entries,
             openapi: openapi_meta,
             mcp,
             functions: self.functions(&raw, server_timeout),
@@ -2399,7 +2598,7 @@ impl<'h> Compiler<'h> {
         own.timeout = raw.timeout.map(|d| d.0);
         own.max_body = raw.max_body.map(|b| b.0);
         own.stream_body = raw.stream_body;
-        own.headers = raw.headers.as_ref().map(|h| match h {
+        own.response_headers = raw.response_headers.as_ref().map(|h| match h {
             OrOff::Off => OrOff::Off,
             OrOff::On(h) => OrOff::On(HeaderRules {
                 set: h
@@ -2510,13 +2709,8 @@ impl<'h> Compiler<'h> {
         if let Some(q) = &r.query {
             v.query = Some(convert(self, q, "query", false));
         }
-        match r.split_headers() {
-            Ok(split) => {
-                if let Some(h) = &split.validation {
-                    v.headers = Some(convert(self, h, "headers", false));
-                }
-            }
-            Err(e) => self.diags.error(format!("{loc}.headers"), e),
+        if let Some(h) = &r.headers {
+            v.headers = Some(convert(self, h, "headers", false));
         }
         if let Some(b) = &r.body {
             v.body = self.schema(b, &format!("{loc}.body")).map(|s| (s, true));
@@ -2533,20 +2727,14 @@ impl<'h> Compiler<'h> {
         source: Source,
         drafts: &mut Vec<Draft>,
         exacts: &mut Vec<ExactEntry>,
-        prefixes: &mut Vec<PrefixEntry>,
+        entries: &mut Vec<PolicyEntry>,
     ) {
         let loc = source.loc();
         if !self.check_path(&r.path, &loc) {
             return;
         }
         let methods = self.methods(r.method.as_ref().map(|m| m.to_vec()), &loc);
-        let policies = match r.policies() {
-            Ok(p) => p,
-            Err(e) => {
-                self.diags.error(&loc, e);
-                return;
-            }
-        };
+        let policies = r.policies();
         let layer = self.layer(&policies, &loc, None);
         let validation = self.raw_validation(r, &loc);
         let has_catch_all = parse_pattern(&r.path)
@@ -2571,7 +2759,7 @@ impl<'h> Compiler<'h> {
                         "a prefix entry can't be an MCP tool; set `mcp` on a route with one path",
                     );
                 }
-                prefixes.push(PrefixEntry {
+                entries.push(PolicyEntry {
                     segs: parse_pattern(&r.path),
                     path: r.path.clone(),
                     methods,
@@ -3003,8 +3191,7 @@ impl<'h> Compiler<'h> {
     fn compile_route_tools(
         &mut self,
         routes: &[Route],
-        prefixes: &[PrefixEntry],
-        path_entries: &[PrefixEntry],
+        entries: &[PolicyEntry],
         pending: Option<&McpPending>,
     ) -> Vec<McpTool> {
         let decls = std::mem::take(&mut self.route_tools);
@@ -3022,7 +3209,7 @@ impl<'h> Compiler<'h> {
             .find(|r| matches!(r.action, Action::Mcp))
             .zip(pending)
             .map(|(r, p)| {
-                merged_layer(r, prefixes, path_entries, "POST", &p.endpoint.path)
+                merged_layer(r, entries, "POST", &p.endpoint.path)
                     .finalize(Duration::from_secs(30), 0)
                     .auth
             });
@@ -3100,7 +3287,7 @@ impl<'h> Compiler<'h> {
                     }
                 };
                 let probe = route.path.replace("{*", "{");
-                let eff = merged_layer(route, prefixes, path_entries, &method, &probe)
+                let eff = merged_layer(route, entries, &method, &probe)
                     .finalize(Duration::from_secs(30), 0);
                 if eff.stream_body {
                     self.diags.push(
@@ -3368,20 +3555,6 @@ impl<'h> Compiler<'h> {
             }
         };
         let mut folder_layers: Vec<(Vec<String>, String, Layer)> = Vec::new();
-        for p in &scan.policies {
-            let path = format!("{dir}/{}", p.file);
-            self.files.push(path.clone());
-            let Some(text) = self.host.read(&path) else {
-                continue;
-            };
-            match config::parse_document::<RawPolicies>(&text, Format::Toml) {
-                Ok(raw) => {
-                    let layer = self.layer(&raw, &path, None);
-                    folder_layers.push((p.scope.clone(), path, layer));
-                }
-                Err(e) => self.diags.error(&path, e),
-            }
-        }
         for b in &scan.befores {
             let path = format!("{dir}/{}", b.file);
             if let Some(h) = self.handler_ref(&path, None, &path) {
@@ -3395,7 +3568,7 @@ impl<'h> Compiler<'h> {
                 ));
             }
         }
-        // Outermost folders first; policies before `_before` handlers at the same depth.
+        // Outermost folders first.
         folder_layers.sort_by_key(|(scope, _, _)| scope.len());
 
         for fr in scan.routes {
@@ -3683,8 +3856,43 @@ impl<'h> Compiler<'h> {
                 continue;
             }
             e.used = true;
-            high.merge_from(&e.layer);
-            high_layers.push((e.source.to_string(), e.layer.clone()));
+            // The entry's policies apply by request, among the other
+            // entries (see `merged_layer`). What it says about the
+            // contract belongs to the route, which checks every request
+            // the same way whatever its method.
+            let v = &e.validation;
+            let validates = v.params.is_some()
+                || v.query.is_some()
+                || v.headers.is_some()
+                || v.body.is_some()
+                || v.response.is_some();
+            let every_method = match (&e.methods, &d.methods) {
+                (None, _) => true,
+                (Some(_), None) => false,
+                (Some(entry), Some(route)) => {
+                    let entry = covered_methods(entry);
+                    route.iter().all(|m| entry.contains(&m.as_str()))
+                }
+            };
+            if validates && !every_method {
+                self.diags.push(
+                    Diagnostic::error(
+                        e.source.loc(),
+                        format!(
+                            "validation for {} only, on a route that takes {}: {} {} checks every request the same way",
+                            label(&e.methods),
+                            match &d.methods {
+                                None => "every method".to_string(),
+                                Some(m) => m.join(", "),
+                            },
+                            label(&d.methods),
+                            d.path
+                        ),
+                    )
+                    .hint("drop `method` from this entry, or give each method a route of its own"),
+                );
+                continue;
+            }
             raw_validation.overlay(&e.validation);
             if let Some(s) = &e.shadow {
                 shadow = Some((s.clone(), e.source.loc()));
@@ -3703,6 +3911,7 @@ impl<'h> Compiler<'h> {
         if let Some((m, at, bulk)) = tool {
             self.route_tools.push((id, m, at, bulk));
         }
+        let low_layers = layers.len();
         layers.extend(high_layers);
 
         let segs = parse_pattern(&d.path);
@@ -3819,6 +4028,9 @@ impl<'h> Compiler<'h> {
             low,
             high,
             layers,
+            low_layers,
+            wider: Vec::new(),
+            narrower: Vec::new(),
             param_names,
             catch_all,
             segs,
@@ -3842,7 +4054,7 @@ impl<'h> Compiler<'h> {
         }
     }
 
-    fn check_handlers(&mut self, routes: &[Route], prefixes: &[PrefixEntry]) {
+    fn check_handlers(&mut self, routes: &[Route], entries: &[PolicyEntry]) {
         let mut checked = std::collections::HashSet::new();
         let mut check = |c: &mut Self, h: &HandlerRef, loc: String| {
             if checked.insert(h.file.clone()) && !c.host.exists(&h.file) {
@@ -3864,7 +4076,7 @@ impl<'h> Compiler<'h> {
                 }
             }
         }
-        for p in prefixes {
+        for p in entries {
             if let Some(OrOff::On(list)) = &p.layer.before {
                 for h in list {
                     check(self, h, format!("{}.before", p.source.loc()));
@@ -3873,28 +4085,111 @@ impl<'h> Compiler<'h> {
         }
     }
 
-    fn warnings(
-        &mut self,
-        routes: &[Route],
-        prefixes: &[PrefixEntry],
-        path_entries: &[PrefixEntry],
-    ) {
+    /// Two statements about the same requests that set the same policy.
+    /// Neither is the narrower one, so there is no saying which should
+    /// win: one of them has to go.
+    fn conflicts(&mut self, routes: &[Route], entries: &[PolicyEntry]) {
+        struct Statement<'a> {
+            segs: &'a [Seg],
+            methods: Option<&'a [String]>,
+            layer: &'a Layer,
+            loc: String,
+            path: &'a str,
+        }
+        let mut statements: Vec<Statement> = entries
+            .iter()
+            .map(|e| Statement {
+                segs: &e.segs,
+                methods: e.methods.as_deref(),
+                layer: &e.layer,
+                loc: e.source.loc(),
+                path: &e.path,
+            })
+            .collect();
+        // A route's own policies are a statement about its path and
+        // methods. One for a `host` is narrower than any entry, and a
+        // tool's has no path.
+        statements.extend(
+            routes
+                .iter()
+                .filter(|r| r.host.is_none() && r.mcp_tool().is_none() && !r.high.is_empty())
+                .map(|r| Statement {
+                    segs: &r.segs,
+                    methods: r.methods.as_deref(),
+                    layer: &r.high,
+                    loc: r.source.loc(),
+                    path: &r.path,
+                }),
+        );
+        for (i, b) in statements.iter().enumerate() {
+            for a in &statements[..i] {
+                if normalize_segs(a.segs) != normalize_segs(b.segs) {
+                    continue;
+                }
+                // With every method, or with all of the other's and more,
+                // one of them is the wider.
+                let shared: Vec<&str> = match (a.methods, b.methods) {
+                    (None, None) => vec!["*"],
+                    (None, Some(_)) | (Some(_), None) => continue,
+                    (Some(x), Some(y)) => {
+                        let (x, y) = (covered_methods(x), covered_methods(y));
+                        let shared: Vec<&str> =
+                            x.iter().copied().filter(|m| y.contains(m)).collect();
+                        if shared.is_empty()
+                            || (shared.len() == x.len()) != (shared.len() == y.len())
+                        {
+                            continue;
+                        }
+                        shared
+                    }
+                };
+                for key in a.layer.keys() {
+                    // `before` lists add up, so two of them don't clash.
+                    if key == "before" || !b.layer.keys().contains(&key) {
+                        continue;
+                    }
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!("{}.{key}", b.loc),
+                            format!(
+                                "`{key}` for {} {} is also set at {}",
+                                shared.join(", "),
+                                b.path,
+                                a.loc
+                            ),
+                        )
+                        .hint("two entries for the same requests can't both set a policy: keep one, or narrow one of them with `method` or a longer path"),
+                    );
+                }
+            }
+        }
+    }
+
+    fn warnings(&mut self, routes: &[Route], entries: &[PolicyEntry]) {
         // Entries already reported as guarding only some spellings of a path.
         let mut reported: Vec<String> = Vec::new();
         // Tools never stream or cache; `[mcp]` checks their policies.
         for r in routes.iter().filter(|r| r.mcp_tool().is_none()) {
             let probe = r.path.replace("{*", "{");
-            let mut layer = r.low.clone();
-            for p in prefixes {
-                if match_prefix(&p.segs, &probe).is_some() {
-                    layer.merge_from(&p.layer);
+            // A route's policies differ by method when an entry is for
+            // some of its methods only, so each is looked at.
+            let mut methods = route_methods(r);
+            for &i in r.wider.iter().chain(&r.narrower) {
+                for m in entries[i].methods.iter().flatten() {
+                    if r.allows(m) && !methods.contains(&m.as_str()) {
+                        methods.push(m);
+                    }
                 }
             }
-            layer.merge_from(&r.high);
-            let eff = layer.finalize(Duration::from_secs(30), 0);
-            if let Some(shadow) = &r.shadow {
-                if eff.stream_body {
-                    self.diags.push(
+            let first = self.diags.items.len();
+            let mut whole_route = None;
+            for method in methods {
+                let eff =
+                    merged_layer(r, entries, method, &probe).finalize(Duration::from_secs(30), 0);
+                whole_route.get_or_insert_with(|| eff.clone());
+                if let Some(shadow) = &r.shadow {
+                    if eff.stream_body {
+                        self.diags.push(
                         Diagnostic::error(
                             format!("{}", r.source),
                             format!(
@@ -3905,15 +4200,15 @@ impl<'h> Compiler<'h> {
                         )
                         .hint("remove `shadow`, or let Unsworn read the body first"),
                     );
-                }
-                // Whatever the shadow writes, it writes on top of what the
-                // route's own handler wrote.
-                let writes = r
-                    .methods
-                    .as_ref()
-                    .is_none_or(|m| m.iter().any(|m| !matches!(m.as_str(), "GET" | "HEAD")));
-                if writes {
-                    self.diags.push(
+                    }
+                    // Whatever the shadow writes, it writes on top of what the
+                    // route's own handler wrote.
+                    let writes = r
+                        .methods
+                        .as_ref()
+                        .is_none_or(|m| m.iter().any(|m| !matches!(m.as_str(), "GET" | "HEAD")));
+                    if writes {
+                        self.diags.push(
                         Diagnostic::warning(
                             format!("{}.shadow", r.source.loc()),
                             format!(
@@ -3925,10 +4220,10 @@ impl<'h> Compiler<'h> {
                         )
                         .hint("shadow a route that only reads, or make sure the shadow handler changes nothing"),
                     );
+                    }
                 }
-            }
-            if eff.stream_body && r.validation.body.is_some() {
-                self.diags.push(
+                if eff.stream_body && r.validation.body.is_some() {
+                    self.diags.push(
                     Diagnostic::error(
                         format!("{}", r.source),
                         format!(
@@ -3939,14 +4234,14 @@ impl<'h> Compiler<'h> {
                     )
                     .hint("remove `body`, or set `stream_body = false` for this route"),
                 );
-            }
-            if let (Some(cache), AuthReq::AnyOf(_)) = (&eff.cache, &eff.auth)
-                && !rules::cache_separates_users(
-                    cache,
-                    &credential_headers(&self.schemes, &eff.auth),
-                )
-            {
-                self.diags.push(
+                }
+                if let (Some(cache), AuthReq::AnyOf(_)) = (&eff.cache, &eff.auth)
+                    && !rules::cache_separates_users(
+                        cache,
+                        &credential_headers(&self.schemes, &eff.auth),
+                    )
+                {
+                    self.diags.push(
                         Diagnostic::warning(
                             format!("{}", r.source),
                             format!(
@@ -3957,35 +4252,35 @@ impl<'h> Compiler<'h> {
                         )
                         .hint("add `vary = [\"Authorization\"]` or `key = \"auth.sub\"` to cache per user"),
                     );
-            }
-            // Static API keys verify as `{type, key}` claims only, so a cache
-            // keyed on any other claim never caches their callers' responses.
-            if let (
-                Some(CacheRule {
-                    key: Some(KeySource::Claim(claim)),
-                    ..
-                }),
-                AuthReq::AnyOf(alts),
-            ) = (&eff.cache, &eff.auth)
-                && !matches!(claim.as_str(), "type" | "key")
-            {
-                let keyless: Vec<&str> = alts
-                    .iter()
-                    .filter(|a| {
-                        self.schemes.get(&a.scheme).is_some_and(|s| {
-                            matches!(
-                                s.as_ref(),
-                                Scheme::ApiKey(ApiKeyScheme {
-                                    keys: ApiKeys::Static(_),
-                                    ..
-                                })
-                            )
+                }
+                // Static API keys verify as `{type, key}` claims only, so a cache
+                // keyed on any other claim never caches their callers' responses.
+                if let (
+                    Some(CacheRule {
+                        key: Some(KeySource::Claim(claim)),
+                        ..
+                    }),
+                    AuthReq::AnyOf(alts),
+                ) = (&eff.cache, &eff.auth)
+                    && !matches!(claim.as_str(), "type" | "key")
+                {
+                    let keyless: Vec<&str> = alts
+                        .iter()
+                        .filter(|a| {
+                            self.schemes.get(&a.scheme).is_some_and(|s| {
+                                matches!(
+                                    s.as_ref(),
+                                    Scheme::ApiKey(ApiKeyScheme {
+                                        keys: ApiKeys::Static(_),
+                                        ..
+                                    })
+                                )
+                            })
                         })
-                    })
-                    .map(|a| a.scheme.as_str())
-                    .collect();
-                if !keyless.is_empty() {
-                    self.diags.push(
+                        .map(|a| a.scheme.as_str())
+                        .collect();
+                    if !keyless.is_empty() {
+                        self.diags.push(
                         Diagnostic::warning(
                             format!("{}", r.source),
                             format!(
@@ -3997,19 +4292,19 @@ impl<'h> Compiler<'h> {
                         )
                         .hint("add the header those keys are sent in to `vary` to cache per key (e.g. `vary = [\"X-API-Key\"]`)"),
                     );
+                    }
                 }
-            }
-            // A header the route's auth doesn't read is whatever the client
-            // says it is. (`Mcp-Param-*` headers are checked against the
-            // call's arguments, and keying on one is a documented use.)
-            if let Some(RateLimit {
-                key: KeySource::Header(h),
-                ..
-            }) = &eff.rate_limit
-                && !h.starts_with("mcp-param-")
-                && !credential_headers(&self.schemes, &eff.auth).contains(h)
-            {
-                self.diags.push(
+                // A header the route's auth doesn't read is whatever the client
+                // says it is. (`Mcp-Param-*` headers are checked against the
+                // call's arguments, and keying on one is a documented use.)
+                if let Some(RateLimit {
+                    key: KeySource::Header(h),
+                    ..
+                }) = &eff.rate_limit
+                    && !h.starts_with("mcp-param-")
+                    && !credential_headers(&self.schemes, &eff.auth).contains(h)
+                {
+                    self.diags.push(
                     Diagnostic::warning(
                         format!("{}", r.source),
                         format!(
@@ -4020,7 +4315,21 @@ impl<'h> Compiler<'h> {
                     )
                     .hint("use `key = \"ip\"` or `key = \"auth.<claim>\"`, unless a proxy you trust sets this header"),
                 );
+                }
             }
+            // The same finding for two methods is one finding.
+            let mut seen: Vec<(String, String)> = Vec::new();
+            let mut at = 0;
+            self.diags.items.retain(|d| {
+                at += 1;
+                let key = (d.location.clone(), d.message.clone());
+                if at <= first || !seen.contains(&key) {
+                    seen.push(key);
+                    return true;
+                }
+                false
+            });
+            let Some(eff) = whole_route else { continue };
 
             // A catch-all hands every path under it to an app that does its
             // own routing. A policy entry for some of those paths matches
@@ -4033,12 +4342,11 @@ impl<'h> Compiler<'h> {
             if r.catch_all.is_none() || !serves_paths {
                 continue;
             }
-            let route_segs = parse_pattern(&r.path);
-            let narrower = prefixes
+            let narrower = r
+                .narrower
                 .iter()
-                .filter(|p| match_prefix(&p.segs, &probe).is_none())
-                .chain(path_entries)
-                .filter(|p| match_prefix(&route_segs, &p.path.replace("{*", "{")).is_some());
+                .map(|&i| &entries[i])
+                .filter(|e| !covers(&e.segs, &r.segs));
             for entry in narrower {
                 let adds_auth = eff.auth == AuthReq::Public
                     && matches!(entry.layer.auth, Some(AuthReq::AnyOf(_)));
@@ -4196,5 +4504,7 @@ fn label(methods: &Option<Vec<String>>) -> String {
     }
 }
 
+#[cfg(test)]
+mod reference;
 #[cfg(test)]
 pub(crate) mod tests;

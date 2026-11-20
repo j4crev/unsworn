@@ -662,7 +662,7 @@ timeout    = "5s"
 max_body   = "10MB"
 stream_body = true                    # handler reads the body as it arrives
 shadow     = "src/users.rs#get"       # a second handler to compare with; see shadow.md
-headers    = { set = { "Cache-Control" = "no-store" }, remove = ["Server"] }
+response_headers = { set = { "Cache-Control" = "no-store" }, remove = ["Server"] }
 before     = ["src/auth.ts#tenant"]   # handlers that run first, in order
 use        = ["public_cached"]        # named policy sets, applied in order
 ```
@@ -676,13 +676,14 @@ the two together. Browsers refuse `*` with credentials, and answering each
 site by name instead would let any website read what a signed-in user's
 browser fetches.
 
-Most keys replace what broader layers set. `before` is different: lists from
-every layer are joined, broadest first, so a folder's `_before` handler and a
-route's own `before` both run. `before = "off"` clears the inherited ones.
+Most keys replace what wider statements set. `before` is different: lists
+from every one of them are joined, widest first, so a folder's `_before`
+handler and a route's own `before` both run. `before = "off"` clears the
+inherited ones.
 
-`headers` on a route has two meanings: `{ set = {...}, remove = [...] }` is
-the response-headers policy shown here, and any other table validates request
-headers (see [Validation](#validation)).
+`response_headers` sets and removes headers on the response. `headers`, on
+a route, is something else: rules for the request's headers (see
+[Validation](#validation)).
 
 `stream_body = true` passes the request body to the handler as it arrives
 instead of reading it first, for large uploads. A slow handler slows the
@@ -715,15 +716,16 @@ a burst and then refill evenly over `per`. A request over the limit gets
 
 ### Applying policies to many routes
 
-There are four ways to set policies once for many routes, from broadest to
-narrowest:
+There are three ways to set policies once for many routes:
 
 | Scope | How | Section |
 |---|---|---|
 | Every route | `[defaults]` | below |
+| Every request under a path | A prefix entry such as `path = "/api/{*rest}"` | [Policies for routes from any source](#policies-for-routes-from-any-source) |
 | Any routes you choose, wherever they are | Named policy sets with `use` | below |
-| A folder of route files | `_policies.toml` in that folder | [Route files](#2-route-files-nested-or-flat) |
-| Every route under a path | A prefix entry such as `path = "/api/{*rest}"` | [Policies for routes from any source](#policies-for-routes-from-any-source) |
+
+All of them are in the config file. A folder of route files gets its
+policies from a prefix entry for its path, like any other part of the API.
 
 How they combine is described under [Precedence](#precedence).
 
@@ -769,8 +771,8 @@ cache = { ttl = "10s" }        # the entry's own values override its sets
   so there are no inheritance chains to trace.
 - `use` applies the sets in the order listed, then the entry's own values on
   top.
-- `use` works in `[[route]]` entries (with or without an action), in
-  `_policies.toml` files and in `[defaults]`.
+- `use` works in `[[route]]` entries (with or without an action) and in
+  `[defaults]`.
 - Naming a set that doesn't exist is an error from `unsworn check`.
 
 ### Caching rules
@@ -923,7 +925,6 @@ a single flat folder and any mix of the two:
 | `routes/files/[...path]/get.rs` | `routes/files.[...path].get.rs` | `GET /files/{*path}` |
 | `routes/(admin)/stats/get.ts` | `routes/(admin).stats.get.ts` | `GET /stats` |
 | `routes/users/_before.ts` | `routes/users._before.ts` | `before` handler for `/users` and below |
-| `routes/admin/_policies.toml` | `routes/admin._policies.toml` | policies for every route file under `/admin` |
 
 - `[name]` is a parameter, `[...name]` matches the rest of the path, and
   `(name)` is a group that doesn't appear in the URL.
@@ -941,35 +942,25 @@ a single flat folder and any mix of the two:
   or a nested and a flat file for the same route) is an error from
   `unsworn check`.
 
-#### Folder policies: `_policies.toml`
+#### Policies for a folder
 
-A `_policies.toml` file applies policies to every route file in its folder
-and the folders below it, so a group's settings live next to the group:
-
-```
-routes/
-  admin/
-    _policies.toml        # auth = "jwt", rate_limit = ...
-    users.get.ts
-    stats.get.ts
-  (public)/
-    _policies.toml        # use = ["public_cached"]
-    products.[id].get.ts
-    categories.get.ts
-```
+Route files carry no policies of their own. Give a folder's routes theirs
+with an entry for the folder's path, in the config:
 
 ```toml
-# routes/admin/_policies.toml
+[[route]]
+path       = "/admin/{*rest}"        # routes/admin/ and everything in it
 auth       = "jwt"
 rate_limit = { requests = 20, per = "1m", key = "auth.sub" }
 ```
 
-- It takes the same keys as a policy-only `[[route]]` entry, including
-  `use`, but no path or method: the folder is the scope.
-- In a group folder such as `(public)`, it gives routes a shared policy
-  without adding anything to their URLs.
-- It applies only to route files. Routes from config or an OpenAPI spec that
-  happen to share the path aren't affected; use a prefix entry for those.
+That entry covers every request under `/admin`, whichever source its route
+comes from. A group folder such as `(public)` has no path of its own, so
+its routes take a named set through an entry each, or share a path prefix.
+
+Unsworn doesn't read a `_policies.toml` file in a routes folder, and says
+so if it finds one. Such a file would cover the route files beside it and
+not a `[[route]]` or an OpenAPI operation under the same path.
 
 ### 3. OpenAPI spec
 
@@ -1056,16 +1047,19 @@ auth   = "jwt"
 cache  = { ttl = "30s" }
 ```
 
-There are two kinds of policy entries:
+A policy entry is a statement about some requests: those its path and
+`method` match, whichever route serves them. There are two kinds:
 
-- **Exact entries** have a path with no `{*rest}`, like the one above. They
-  apply to every route with that path (and method, if given). An entry that
-  matches no route is an error from `unsworn check`, which catches typos in
-  paths, unless the path is served by a catch-all route: then it applies to
-  requests for that exact path inside the catch-all.
-- **Prefix entries** have a path ending in `{*rest}`. They apply to every
-  request under that prefix, whichever route serves it. This is how you add
-  policies to paths inside a catch-all app:
+- **An entry for a path** has no `{*rest}`, like the one above. Its path
+  has to be some route's path, or a path a catch-all route serves:
+  otherwise it's an error from `unsworn check`, which catches typos. It
+  covers a narrower route that its path matches too. With the entry
+  above, a route added later at `/users/export` also needs a token,
+  unless that route says otherwise.
+- **An entry for a prefix** has a path ending in `{*rest}`, and covers
+  every request under it. This is how you add policies to a folder of
+  route files, to part of an OpenAPI spec, or to paths inside a
+  catch-all app:
 
   ```toml
   [[route]]
@@ -1074,8 +1068,16 @@ There are two kinds of policy entries:
   rate_limit = { requests = 100, per = "1m", key = "auth.sub" }
   ```
 
-An entry with `method = "GET"` covers `HEAD` too, since a `GET` route
-answers `HEAD`.
+`/api/{*rest}` covers `/api` itself as well as everything under it.
+
+An entry with `method = "GET"` is for `GET` requests only, and `HEAD`,
+since a `GET` route answers `HEAD`. On a route that takes several
+methods, the others keep the policies they had.
+
+An entry for a path can also carry validation (`params`, `query`,
+`headers`, `body`, `response`), `mcp` or `shadow` for the route with that
+path. Validation belongs to the route as a whole, so such an entry has to
+be for all of the route's methods.
 
 #### Locking down part of a catch-all app
 
@@ -1117,28 +1119,45 @@ For OpenAPI routes, policy values here override what the spec implies.
    everything else.
 2. **One action per method and path.** Two sources defining an action for
    the same method and path is an error, never a silent override.
-3. **Policies merge from broadest to most specific,** later winning:
-   1. `[defaults]`
-   2. the OpenAPI spec
-   3. `_policies.toml` files, outermost folder first
-   4. prefix entries that cover the whole route, shorter prefixes first
-   5. the route's own policies, and exact entries for its path
-   6. for a catch-all route, prefix entries for some of its paths, shorter
-      prefixes first, then exact entries for one path inside it
+3. **The narrowest statement about a request decides each policy.** A
+   request gets `[defaults]`, then what the OpenAPI spec says about its
+   operation, then every `[[route]]` entry that covers it, from the one
+   that covers the most requests to the one that covers the fewest. Each
+   sets only the keys it mentions, and a later one replaces what an
+   earlier one set. The route's own policies count as an entry for the
+   route's path and methods. From wider to narrower:
 
-   Within any one of these, the sets named in `use` apply first, in order,
-   then that layer's own values. So `/api/{*rest}` can require `jwt` for
-   everything, and an exact entry for `/api/public/status` can set
-   `auth = "none"`.
+   | Wider | Narrower |
+   |---|---|
+   | a prefix: `/api/{*rest}` | a full path: `/api/users/{id}` |
+   | a shorter path: `/api/{*rest}` | a longer one: `/api/admin/{*rest}` |
+   | a parameter: `/users/{id}` | a literal in its place: `/users/me` |
+   | every method | `method = ["GET", "POST"]`, and then `method = "GET"` |
 
-   A catch-all route is the one case where a prefix entry is the more
-   specific of the two. `/assets/{*rest}` covers a part of what `/{*rest}`
-   serves, so its values win there over the ones on the `/{*rest}` route.
-   The other way round, `/{*rest}` covers all of a route at
-   `/assets/{*rest}` or `/users/{id}`, and that route's own values win.
-4. **`unsworn routes --policies`** prints the final, merged policies for
-   each route and which layer set each value, so nothing about the merge
-   has to be worked out by hand.
+   They're compared in that order, so a longer path is narrower than a
+   shorter one whatever their methods. Where two paths of the same length
+   differ in more than one segment, the first difference decides, as it
+   does when routes are matched.
+
+   So `/api/{*rest}` can require `jwt` for everything, and an entry for
+   `/api/public/status` can set `auth = "none"`. A catch-all route needs
+   no rule of its own: `/assets/{*rest}` covers part of what a `/{*rest}`
+   route serves, so its values win there over the route's, while the
+   route `/users/{id}` is narrower than `/{*rest}` and keeps its own.
+
+   Within one table, the sets named in `use` apply first, in order, then
+   the table's own values.
+4. **Two statements about the same requests can't set the same policy.**
+   Neither is the narrower, so `unsworn check` reports it as an error
+   instead of picking one: two entries with the same path and methods,
+   an entry and a route with the same path and methods, or two with the
+   same path whose methods overlap without one list holding the other
+   (`["GET", "POST"]` and `["POST", "PUT"]`). `before` is the exception,
+   since its lists add up.
+5. **`unsworn routes --policies`** prints the final, merged policies for
+   each route and which statement set each value, in the order they
+   apply. [`unsworn plan`](plan.md) writes the result for every route,
+   with what differs for part of a route's paths or for one method.
 
 ## MCP
 

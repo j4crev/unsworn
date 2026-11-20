@@ -515,8 +515,8 @@ pub struct RawHeaders {
     pub remove: Vec<String>,
 }
 
-/// Policy keys, as used in `[defaults]`, `[policies.*]` and
-/// `_policies.toml` files. Route entries repeat these fields.
+/// Policy keys, as used in `[defaults]` and `[policies.*]`. Route entries
+/// repeat these fields.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawPolicies {
@@ -531,7 +531,8 @@ pub struct RawPolicies {
     /// Pass the request body to the handler as it arrives, instead of
     /// reading it first.
     pub stream_body: Option<bool>,
-    pub headers: Option<OrOff<RawHeaders>>,
+    /// Headers to set on, or remove from, the response.
+    pub response_headers: Option<OrOff<RawHeaders>>,
     pub before: Option<OrOff<Vec<String>>>,
     #[serde(rename = "use")]
     pub use_sets: Option<Vec<String>>,
@@ -637,6 +638,8 @@ pub struct RawRoute {
     // Validation.
     pub params: Option<BTreeMap<String, RawParam>>,
     pub query: Option<BTreeMap<String, RawParam>>,
+    /// Rules for request headers, by name.
+    pub headers: Option<BTreeMap<String, RawParam>>,
     pub body: Option<SchemaRef>,
     pub response: Option<SchemaRef>,
 
@@ -652,10 +655,8 @@ pub struct RawRoute {
     /// Pass the request body to the handler as it arrives, instead of
     /// reading it first.
     pub stream_body: Option<bool>,
-    /// Either request-header validation (a table of param rules) or the
-    /// `headers` policy (`{ set = ..., remove = ... }`). See
-    /// [`RawRoute::split_headers`].
-    pub headers: Option<Value>,
+    /// Headers to set on, or remove from, the response.
+    pub response_headers: Option<OrOff<RawHeaders>>,
     pub before: Option<OrOff<Vec<String>>>,
     #[serde(rename = "use")]
     pub use_sets: Option<Vec<String>>,
@@ -752,7 +753,7 @@ pub struct RawMcp {
     pub rate_limit: Option<OrOff<RawRateLimit>>,
     pub timeout: Option<ConfigDuration>,
     pub max_body: Option<ConfigSize>,
-    pub headers: Option<OrOff<RawHeaders>>,
+    pub response_headers: Option<OrOff<RawHeaders>>,
     pub before: Option<OrOff<Vec<String>>>,
     #[serde(rename = "use")]
     pub use_sets: Option<Vec<String>>,
@@ -768,7 +769,7 @@ impl RawMcp {
             rate_limit: self.rate_limit.clone(),
             timeout: self.timeout,
             max_body: self.max_body,
-            headers: self.headers.clone(),
+            response_headers: self.response_headers.clone(),
             before: self.before.clone(),
             use_sets: self.use_sets.clone(),
             ..Default::default()
@@ -827,48 +828,9 @@ impl RawMcpTool {
     }
 }
 
-/// The two meanings of `headers` on a route.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct SplitHeaders {
-    pub validation: Option<BTreeMap<String, RawParam>>,
-    pub policy: Option<OrOff<RawHeaders>>,
-}
-
 impl RawRoute {
-    /// `headers = { set = {...}, remove = [...] }` is the response-headers
-    /// policy. Any other table is request-header validation.
-    pub fn split_headers(&self) -> Result<SplitHeaders, String> {
-        let Some(value) = &self.headers else {
-            return Ok(SplitHeaders::default());
-        };
-        if value.as_str() == Some("off") {
-            return Ok(SplitHeaders {
-                validation: None,
-                policy: Some(OrOff::Off),
-            });
-        }
-        let Some(table) = value.as_object() else {
-            return Err("`headers` must be a table".into());
-        };
-        let is_policy = !table.is_empty() && table.keys().all(|k| k == "set" || k == "remove");
-        if is_policy {
-            let policy: RawHeaders =
-                serde_json::from_value(value.clone()).map_err(|e| format!("headers: {e}"))?;
-            return Ok(SplitHeaders {
-                validation: None,
-                policy: Some(OrOff::On(policy)),
-            });
-        }
-        let validation: BTreeMap<String, RawParam> =
-            serde_json::from_value(value.clone()).map_err(|e| format!("headers: {e}"))?;
-        Ok(SplitHeaders {
-            validation: Some(validation),
-            policy: None,
-        })
-    }
-
-    pub fn policies(&self) -> Result<RawPolicies, String> {
-        Ok(RawPolicies {
+    pub fn policies(&self) -> RawPolicies {
+        RawPolicies {
             auth: self.auth.clone(),
             cors: self.cors.clone(),
             origin: self.origin.clone(),
@@ -878,10 +840,10 @@ impl RawRoute {
             timeout: self.timeout,
             max_body: self.max_body,
             stream_body: self.stream_body,
-            headers: self.split_headers()?.policy,
+            response_headers: self.response_headers.clone(),
             before: self.before.clone(),
             use_sets: self.use_sets.clone(),
-        })
+        }
     }
 
     pub fn action_count(&self) -> usize {
@@ -918,7 +880,7 @@ impl Format {
     }
 }
 
-/// Deserializes any config-like document (config, `_policies.toml`, schemas).
+/// Deserializes any config-like document (config, schemas).
 pub fn parse_document<T: serde::de::DeserializeOwned>(
     text: &str,
     format: Format,
@@ -1008,7 +970,7 @@ path = "/users/{id}"
 method = "GET"
 handler = "src/users.ts#getUser"
 params = { id = { type = "integer", min = 1 } }
-headers = { set = { "x-a" = "b" } }
+response_headers = { set = { "x-a" = "b" } }
 auth = { scheme = "jwt", scopes = ["users:read"] }
 cache = "off"
 
@@ -1021,7 +983,7 @@ proxy = "http://old:8080"
         assert_eq!(cfg.route.len(), 2);
         let r = &cfg.route[0];
         assert_eq!(r.cache, Some(OrOff::Off));
-        assert!(r.split_headers().unwrap().policy.is_some());
+        assert!(r.response_headers.is_some());
         assert!(matches!(r.auth, Some(RawAuth::One(_))));
         assert_eq!(route_lines(text), vec![23, 32]);
     }
@@ -1034,15 +996,14 @@ proxy = "http://old:8080"
     }
 
     #[test]
-    fn headers_validation_vs_policy() {
+    fn request_header_rules_and_response_headers_are_two_keys() {
         let route: RawRoute = parse_document(
-            "path = \"/\"\nheaders = { \"x-tenant\" = { required = true } }\n",
+            "path = \"/\"\nheaders = { \"x-tenant\" = { required = true } }\nresponse_headers = { remove = [\"server\"] }\n",
             Format::Toml,
         )
         .unwrap();
-        let split = route.split_headers().unwrap();
-        assert!(split.validation.unwrap().contains_key("x-tenant"));
-        assert!(split.policy.is_none());
+        assert!(route.headers.unwrap().contains_key("x-tenant"));
+        assert!(route.response_headers.is_some());
     }
 
     #[test]

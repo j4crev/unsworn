@@ -1,8 +1,7 @@
 # The plan: your rules, worked out
 
 A route's rules come from several places: `[defaults]`, named policy sets,
-`_policies.toml` files, prefix entries, an OpenAPI spec and the route
-itself. That keeps a config short, and it means no single line says what a
+entries for a prefix or a path, an OpenAPI spec and the route itself. That keeps a config short, and it means no single line says what a
 request to `/api/users/7` has to pass.
 
 `unsworn plan` works that out for every route and MCP tool and writes it to
@@ -30,7 +29,7 @@ unsworn plan            # writes unsworn.plan next to the config
 
 Commit `unsworn.plan` with the config. A pull request that changes the
 rules then shows the change in its own diff, whatever it edited to cause
-it: a `[defaults]` key, a folder's `_policies.toml`, a schema file.
+it: a `[defaults]` key, an entry for a prefix, a schema file.
 
 This is [`examples/polyglot`](../examples/polyglot)'s, without its
 settings:
