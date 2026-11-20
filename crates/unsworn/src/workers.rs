@@ -2127,8 +2127,15 @@ fn signal_group(pid: Option<u32>, signal: rustix::process::Signal) {
 /// and a shell that stays ends without a word to the server behind it.
 /// This one runs the command in the background and waits, so that it can
 /// answer `SIGTERM` by sending it to its whole process group.
+///
+/// It ignores `SIGTERM` itself from then on. Linux sends the signal for
+/// Unsworn's death once for each of Unsworn's threads the shell passes
+/// to as they end, so several can arrive together, and a second one that
+/// found the shell back at its default would end it before it had told
+/// anyone.
 fn server_shell(command: &str) -> Command {
-    const PASS_IT_ON: &str = r#"trap 'trap - TERM; kill -TERM 0' TERM; sh -c "$1" & wait $!"#;
+    const PASS_IT_ON: &str =
+        r#"trap 'trap "" TERM; kill -TERM 0; exit 143' TERM; sh -c "$1" & wait $!"#;
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(PASS_IT_ON).arg("sh").arg(command);
     cmd
