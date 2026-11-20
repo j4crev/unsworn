@@ -349,6 +349,37 @@ impl<H: Host> Ctx<'_, H> {
         .await
     }
 
+    /// Whether a cached response for `path` was made out of date after it
+    /// was stored, by a route that `invalidates` the path.
+    async fn invalidated(&self, path: &str, hit: &CachedResponse) -> bool {
+        if !self.project.may_be_invalidated(path) {
+            return false;
+        }
+        let segments: Vec<String> = path
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(decode_param)
+            .collect();
+        let key = crate::store::path_key(segments.iter().map(String::as_str));
+        crate::store::invalidated(&self.host.store(), &key, hit.stored_ms).await
+    }
+
+    /// Marks cached responses for these paths as out of date. It's done
+    /// before the response goes out, so that whoever made the change
+    /// reads it back fresh.
+    pub(super) async fn invalidate(&self, path_keys: &[String]) {
+        if path_keys.is_empty() {
+            return;
+        }
+        let store = self.host.store();
+        let (now, ttl) = (self.host.now_ms(), self.project.invalidation_ttl());
+        for key in path_keys {
+            if let Err(e) = crate::store::invalidate(&store, key, now, ttl).await {
+                tracing::warn!("couldn't invalidate cached responses: {e}");
+            }
+        }
+    }
+
     /// Reads a response body whole, if it's at most `limit` bytes.
     /// Otherwise gives back an equivalent body.
     async fn collect(
@@ -398,6 +429,7 @@ async fn serve_route<H: Host>(
     // away does so even when a response is cached.
     if let Some(key) = &prepared.cache_key
         && let Some(hit) = cache_get(&ctx.host.store(), key, ctx.host.now_ms()).await
+        && !ctx.invalidated(prepared.parts.uri.path(), &hit).await
     {
         let method = &prepared.template.method;
         return cached_response(ctx, &hit, method, &prepared.parts.headers);
@@ -408,7 +440,23 @@ async fn serve_route<H: Host>(
         .cache_key
         .take()
         .filter(|_| prepared.template.method == "GET");
+    // The paths this request makes out of date, with its own parameters
+    // filled in.
+    let outdated: Vec<String> = route
+        .invalidates
+        .iter()
+        .filter_map(|target| {
+            let params = &prepared.raw_params;
+            target.key(&|name| {
+                let found = params.iter().find(|(k, _)| k == name);
+                found.map(|(_, v)| v.clone())
+            })
+        })
+        .collect();
     let resp = run_action(ctx, route, prepared, deadline).await;
+    if resp.status().as_u16() < 400 {
+        ctx.invalidate(&outdated).await;
+    }
     if let (Some(key), Some(rule)) = (cache_key, eff.cache.as_ref()) {
         return store_in_cache(ctx, key, rule, resp).await;
     }

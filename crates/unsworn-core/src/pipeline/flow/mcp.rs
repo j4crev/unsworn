@@ -401,8 +401,23 @@ impl ToolCall<'_> {
         request.handler = handler.raw.clone();
         request.phase = Phase::Handle;
         request.context = context;
+        // A route that makes cached responses out of date does so when
+        // it's called as a tool as well.
+        let outdated: Vec<String> = route
+            .invalidates
+            .iter()
+            .filter_map(|target| {
+                target.key(&|name| match request.params.get(name)? {
+                    Value::String(s) => Some(s.clone()),
+                    other => Some(other.to_string()),
+                })
+            })
+            .collect();
         let deadline = ctx.deadline(timeout);
         let reply = ctx.host.call(handler, request, Body::Empty, deadline).await;
+        if matches!(&reply, Ok(Reply::Response { response, .. }) if response.status < 400) {
+            ctx.invalidate(&outdated).await;
+        }
         let response = match reply {
             Ok(Reply::Response { response, .. }) => response,
             Ok(Reply::Continue(_)) => {

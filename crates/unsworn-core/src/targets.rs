@@ -78,6 +78,17 @@ fn cloudflare(project: &Project) -> Vec<Diagnostic> {
     );
     js_handlers_only(project, "cloudflare", "a Worker", &mut out);
     no_unix_upstreams(project, "cloudflare", &mut out);
+    // The Cache API keeps a copy in each data center, and a write is
+    // handled in one of them.
+    if let Some(route) = project.routes.iter().find(|r| !r.invalidates.is_empty()) {
+        out.push(
+            Diagnostic::warning(
+                format!("{}.invalidates", route.source.loc()),
+                "on cloudflare, cached responses are kept per data center: a write invalidates the copies where it was handled, and the others live out their `ttl`",
+            )
+            .hint("keep `ttl` as short as stale data can be tolerated there, or use the server target with one store"),
+        );
+    }
     out
 }
 
