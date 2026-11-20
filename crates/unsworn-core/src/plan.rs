@@ -518,7 +518,9 @@ fn scheme(scheme: &Scheme) -> Entry {
 
 fn runtime(r: &crate::project::Runtime) -> Entry {
     let mut e = Entry::new(Kind::Runtime, &r.name);
-    e.plain("extensions", r.extensions.join(", "));
+    if !r.extensions.is_empty() {
+        e.plain("extensions", r.extensions.join(", "));
+    }
     e.plain("command", &r.command);
     if let Some(build) = &r.build {
         e.plain("build", build);
@@ -528,6 +530,10 @@ fn runtime(r: &crate::project::Runtime) -> Entry {
         match r.protocol {
             Protocol::Jsonl => "jsonl",
             Protocol::Framed | Protocol::Binary => "framed",
+            Protocol::Http => match r.listen {
+                crate::config::Listen::Socket => "http, on a socket",
+                crate::config::Listen::Port => "http, on a port",
+            },
         },
     );
     match (r.workers.min, r.workers.max) {
@@ -763,7 +769,10 @@ fn action(e: &mut Entry, project: &Project, route: &Route) {
 }
 
 fn proxy(e: &mut Entry, p: &crate::project::Proxy) {
-    let mut parts = vec![p.upstreams.join(", ")];
+    let mut parts = vec![match &p.runtime {
+        Some(name) => format!("runtime {name}"),
+        None => p.upstreams.join(", "),
+    }];
     if let Some(s) = &p.strip_prefix {
         parts.push(format!("strip_prefix {s}"));
     }

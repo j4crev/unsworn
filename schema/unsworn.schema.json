@@ -42,6 +42,21 @@
         }
       ]
     },
+    "Listen": {
+      "description": "Where an `http` runtime's server listens for Unsworn.",
+      "oneOf": [
+        {
+          "const": "socket",
+          "description": "A Unix socket only Unsworn's user can open, at the path in\n`UNSWORN_SOCKET`. Nothing else can reach the server.",
+          "type": "string"
+        },
+        {
+          "const": "port",
+          "description": "A port on this machine that Unsworn picks, in `PORT`, for a server\nthat can't listen on a socket. Anything on the machine can reach it.",
+          "type": "string"
+        }
+      ]
+    },
     "Map_of_RawRequireValueOrOff": {
       "anyOf": [
         {
@@ -80,6 +95,11 @@
         {
           "const": "framed",
           "description": "Tier 2: length-prefixed frames over a Unix socket.",
+          "type": "string"
+        },
+        {
+          "const": "http",
+          "description": "An HTTP server of the runtime's own: any language's, with no SDK.\nUnsworn starts it and forwards requests to it once they've passed\ntheir route's rules. Routes reach it with `proxy = { runtime = ... }`.",
           "type": "string"
         },
         {
@@ -1295,6 +1315,13 @@
           "default": false,
           "type": "boolean"
         },
+        "runtime": {
+          "description": "Or an `http` runtime, whose server Unsworn starts itself.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "sticky": {
           "type": [
             "string",
@@ -1308,15 +1335,14 @@
           ]
         },
         "upstreams": {
+          "default": [],
+          "description": "Where to forward: one or more URLs, or `unix:/path`.",
           "items": {
             "type": "string"
           },
           "type": "array"
         }
       },
-      "required": [
-        "upstreams"
-      ],
       "type": "object"
     },
     "RawRateLimit": {
@@ -1773,10 +1799,23 @@
           "type": "object"
         },
         "extensions": {
+          "default": [],
+          "description": "The file extensions of the handlers it runs. An `http` runtime\nhas none: routes name it.",
           "items": {
             "type": "string"
           },
           "type": "array"
+        },
+        "listen": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Listen"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where an `http` runtime's server listens. Default: `\"socket\"`."
         },
         "protocol": {
           "$ref": "#/$defs/Protocol",
@@ -1805,7 +1844,6 @@
         }
       },
       "required": [
-        "extensions",
         "command"
       ],
       "type": "object"

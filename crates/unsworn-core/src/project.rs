@@ -67,6 +67,8 @@ pub struct Runtime {
     pub eager: bool,
     pub env: BTreeMap<String, String>,
     pub startup_timeout: Duration,
+    /// Where an `http` runtime's server listens.
+    pub listen: config::Listen,
 }
 
 /// How many worker processes a runtime runs: `min` to start with, and up
@@ -122,6 +124,9 @@ pub struct Proxy {
     /// verified claims and what `before` handlers added) in the
     /// `Unsworn-Context` header.
     pub context: bool,
+    /// The `http` runtime to forward to, in place of `upstreams`: the host
+    /// knows where its server listens.
+    pub runtime: Option<String>,
     /// How to reach each upstream. In step with `upstreams`.
     #[serde(skip)]
     targets: Vec<Target>,
@@ -166,8 +171,15 @@ impl Proxy {
             sticky_header,
             preserve_host,
             context: true,
+            runtime: None,
             targets,
         }
+    }
+
+    /// A proxy to an `http` runtime's server.
+    pub fn to_runtime(mut self, runtime: Option<String>) -> Proxy {
+        self.runtime = runtime;
+        self
     }
 
     /// Whether the upstream is told who the caller is. It is by default.
@@ -183,10 +195,17 @@ impl Proxy {
 }
 
 fn target(upstream: &str) -> Target {
-    if let Some(path) = upstream.strip_prefix(UNIX_UPSTREAM) {
-        return Target::Unix(path.into());
+    Target::of(upstream)
+}
+
+impl Target {
+    /// How to reach an upstream, from its URL or `unix:/path`.
+    pub fn of(upstream: &str) -> Target {
+        if let Some(path) = upstream.strip_prefix(UNIX_UPSTREAM) {
+            return Target::Unix(path.into());
+        }
+        origin(upstream).map_or(Target::Url, Target::Origin)
     }
-    origin(upstream).map_or(Target::Url, Target::Origin)
 }
 
 fn origin(upstream: &str) -> Option<Origin> {
@@ -242,7 +261,10 @@ impl Action {
             Action::Respond { status, .. } => format!("respond {status}"),
             Action::Redirect { to, status } => format!("redirect {status} → {to}"),
             Action::Static { dir, .. } => format!("static {dir}"),
-            Action::Proxy(p) => format!("proxy {}", p.upstreams.join(", ")),
+            Action::Proxy(p) => match &p.runtime {
+                Some(name) => format!("proxy runtime {name}"),
+                None => format!("proxy {}", p.upstreams.join(", ")),
+            },
             Action::Handler(h) => h.raw.clone(),
             Action::Mcp => "mcp".into(),
         }
@@ -2048,11 +2070,41 @@ impl<'h> Compiler<'h> {
             } else {
                 r.protocol
             };
+            let http = protocol == Protocol::Http;
+            if http && !r.extensions.is_empty() {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!("{loc}.extensions"),
+                        "an `http` runtime doesn't run handler files",
+                    )
+                    .hint(format!("remove `extensions`; routes reach it with `proxy = {{ runtime = \"{name}\" }}`")),
+                );
+            }
+            if !http && r.extensions.is_empty() {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!("{loc}.extensions"),
+                        "no extensions, so no handler file would be run by it",
+                    )
+                    .hint(
+                        "list the extensions of its handler files, such as extensions = [\".ts\"]",
+                    ),
+                );
+            }
+            if !http && r.listen.is_some() {
+                self.diags.error(
+                    format!("{loc}.listen"),
+                    "only an `http` runtime listens: this one's workers connect to Unsworn",
+                );
+            }
             let mut env = BTreeMap::new();
             for (k, v) in &r.env {
                 env.insert(k.clone(), self.subst(v, &format!("{loc}.env.{k}")));
             }
             let workers = match r.workers {
+                // An HTTP server takes many requests at once on its own,
+                // and a second copy of one is a decision for whoever runs it.
+                None if http => Workers::fixed(1),
                 None => Workers::default(),
                 Some(config::RawWorkers::Fixed(n)) => Workers::fixed(n),
                 Some(config::RawWorkers::Range(range)) => {
@@ -2091,6 +2143,7 @@ impl<'h> Compiler<'h> {
                     eager: r.eager,
                     env,
                     startup_timeout: r.startup_timeout.map_or(Duration::from_secs(30), |d| d.0),
+                    listen: r.listen.unwrap_or_default(),
                 }),
             );
         }
@@ -2426,6 +2479,18 @@ impl<'h> Compiler<'h> {
                     self.diags.push(
                         Diagnostic::error(loc, format!("unknown runtime \"{r}\""))
                             .hint(format!("define [runtimes.{r}]")),
+                    );
+                    return None;
+                }
+                if self.runtimes[r].protocol == Protocol::Http {
+                    self.diags.push(
+                        Diagnostic::error(
+                            loc,
+                            format!("[runtimes.{r}] is an HTTP server, which has no handler files"),
+                        )
+                        .hint(format!(
+                            "send the route to it with `proxy = {{ runtime = \"{r}\" }}`"
+                        )),
                     );
                     return None;
                 }
@@ -2989,6 +3054,48 @@ impl<'h> Compiler<'h> {
                     f.context.unwrap_or(true),
                 ),
             };
+            let runtime = match p {
+                RawProxy::Full(f) => f.runtime.clone(),
+                RawProxy::Url(_) => None,
+            };
+            if let Some(name) = &runtime {
+                let at = format!("{loc}.proxy.runtime");
+                match self.runtimes.get(name) {
+                    None => self.diags.push(
+                        Diagnostic::error(&at, format!("no runtime named \"{name}\""))
+                            .hint(format!("add [runtimes.{name}] with protocol = \"http\"")),
+                    ),
+                    Some(r) if r.protocol != Protocol::Http => self.diags.push(
+                        Diagnostic::error(
+                            &at,
+                            format!("[runtimes.{name}] runs handlers, not an HTTP server"),
+                        )
+                        .hint(format!("give the route a `handler` in one of its files, or set protocol = \"http\" in [runtimes.{name}]")),
+                    ),
+                    Some(_) => {}
+                }
+                if !upstreams.is_empty() {
+                    self.diags.error(
+                        format!("{loc}.proxy"),
+                        "`runtime` and `upstreams` are two places to forward to; pick one",
+                    );
+                }
+                if matches!(p, RawProxy::Full(f) if f.context == Some(false)) {
+                    self.diags.error(
+                        format!("{loc}.proxy.context"),
+                        "a runtime's server is the project's own, and is always told who the caller is",
+                    );
+                }
+                if sticky.is_some() {
+                    self.diags.error(
+                        format!("{loc}.proxy.sticky"),
+                        "`sticky` picks among upstreams; a runtime's workers take requests as they come",
+                    );
+                }
+                return Arc::new(
+                    Proxy::new(Vec::new(), strip_prefix, None, preserve_host).to_runtime(runtime),
+                );
+            }
             let upstreams: Vec<String> = upstreams
                 .iter()
                 .map(|u| self.subst(u, &format!("{loc}.proxy")))

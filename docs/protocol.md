@@ -10,6 +10,9 @@ Unsworn talks to handler workers over one **message model** with two
 
 Everything in "Message model" applies to both tiers.
 
+A runtime that is an HTTP server of its own speaks neither: Unsworn
+forwards it HTTP requests. See [`http-runtime.md`](http-runtime.md).
+
 ## Worker startup
 
 Unsworn starts the worker with the runtime's `command` and these environment

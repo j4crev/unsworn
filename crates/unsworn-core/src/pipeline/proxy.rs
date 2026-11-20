@@ -239,9 +239,9 @@ fn upstream_path(proxy: &Proxy, uri: &Uri) -> Result<Option<PathAndQuery>, http:
 /// The URL to send the request to: the upstream's, then the path and query.
 /// An upstream on a Unix socket has no URL, so its requests name the path
 /// alone.
-fn target(proxy: &Proxy, index: usize, uri: &Uri) -> Result<Uri, http::Error> {
+fn target(proxy: &Proxy, to: &Target, upstream: &str, uri: &Uri) -> Result<Uri, http::Error> {
     let path_and_query = upstream_path(proxy, uri)?;
-    match proxy.target(index) {
+    match to {
         // The parts go together as they are.
         Target::Origin(origin) => {
             let mut parts = http::uri::Parts::default();
@@ -254,7 +254,7 @@ fn target(proxy: &Proxy, index: usize, uri: &Uri) -> Result<Uri, http::Error> {
         // The upstream's own path goes in front.
         Target::Url => {
             let path = path_and_query.as_ref().map_or("/", PathAndQuery::as_str);
-            Ok(format!("{}{path}", proxy.upstreams[index]).parse::<Uri>()?)
+            Ok(format!("{upstream}{path}").parse::<Uri>()?)
         }
         Target::Unix(_) => Ok(match path_and_query {
             Some(path_and_query) => Uri::from(path_and_query),
@@ -275,10 +275,31 @@ pub fn rewrite(
     parts: &mut http::request::Parts,
     info: &ForwardInfo,
 ) -> Result<usize, Problem> {
+    if proxy.upstreams.is_empty() {
+        // A proxy to an `http` runtime: only the host that started the
+        // runtime's server knows where it listens.
+        return Err(Problem::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "this route forwards to a runtime's server, which only the Unsworn server runs",
+        ));
+    }
     let index = pick(proxy, &parts.headers);
     let upstream = proxy.upstreams[index].as_str();
+    rewrite_to(proxy, proxy.target(index), upstream, parts, info)?;
+    Ok(index)
+}
+
+/// [`rewrite`] for an upstream the host names itself: an `http` runtime's
+/// server, which listens where the host started it.
+pub fn rewrite_to(
+    proxy: &Proxy,
+    to: &Target,
+    upstream: &str,
+    parts: &mut http::request::Parts,
+    info: &ForwardInfo,
+) -> Result<(), Problem> {
     let upgrade = is_upgrade(&parts.headers);
-    let uri = target(proxy, index, &parts.uri).map_err(|e| {
+    let uri = target(proxy, to, upstream, &parts.uri).map_err(|e| {
         Problem::new(
             StatusCode::BAD_GATEWAY,
             format!("bad upstream URL {upstream}{}: {e}", parts.uri.path()),
@@ -343,7 +364,7 @@ pub fn rewrite(
         headers.insert(&X_REQUEST_ID, id.clone());
     }
     if !proxy.preserve_host {
-        let host = match proxy.target(index) {
+        let host = match to {
             Target::Origin(origin) => Some(origin.host.clone()),
             Target::Url => uri
                 .authority()
@@ -362,7 +383,7 @@ pub fn rewrite(
     }
     parts.uri = uri;
     parts.version = http::Version::HTTP_11;
-    Ok(index)
+    Ok(())
 }
 
 #[cfg(test)]

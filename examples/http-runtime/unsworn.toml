@@ -1,0 +1,28 @@
+#:schema ../../schema/unsworn.schema.json
+# An ordinary HTTP server as a runtime: no SDK, any language.
+# Run from this directory: DEMO_KEY=secret unsworn dev
+
+[server]
+listen = "127.0.0.1:8080"
+
+# Unsworn starts the server, restarts it if it stops, and collects what it
+# prints. It listens on the Unix socket in UNSWORN_SOCKET, which only
+# Unsworn can open, so nothing reaches it without passing the rules below.
+[runtimes.app]
+command  = "python3 app.py"
+protocol = "http"
+
+[auth.key]
+type = "api_key"
+keys = "{env.DEMO_KEY}"
+
+[[route]]
+path    = "/health"
+auth    = "none"
+respond = { status = 200, json = { ok = true } }
+
+[[route]]
+path       = "/api/{*rest}"
+auth       = "key"
+rate_limit = { requests = 60, per = "1m", key = "ip" }
+proxy      = { runtime = "app" }

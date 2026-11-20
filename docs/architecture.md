@@ -6,7 +6,8 @@
   it. Everything a project needs is expressed through config, route files and
   handlers.
 - **Language-agnostic handlers.** Any language that can read stdin and write
-  JSON can serve a route. Popular languages get a faster path through SDKs.
+  JSON can serve a route, and so can any HTTP server. Popular languages
+  get handlers as plain functions through SDKs.
 - **Fast by default.** Declarative routes are served entirely in Rust.
   Handler dispatch adds as little overhead as a local IPC hop allows.
 - **Runs anywhere.** The same config and handlers work on a VPS, in a
@@ -244,8 +245,16 @@ Both tiers carry the **same message model**, so the router has one dispatch
 pipeline with two codecs. Neither is the fast one across the board: for
 small requests the two are within 9% of each other on Bun, Python and Go,
 and Tier 1 is 27% ahead in Rust. From about 64 KB of body, Tier 2 is ahead
-by 15 to 25% on Bun and 3 to 5% in Go (see [benchmarks](benchmarks.md)). Plain HTTP services are covered by the built-in
-`proxy` route type instead of a third tier.
+by 15 to 25% on Bun and 3 to 5% in Go (see [benchmarks](benchmarks.md)).
+
+A runtime can also be an ordinary HTTP server (`protocol = "http"`), for a
+language with no SDK or an app with a framework of its own. Unsworn
+starts and supervises it as it does a worker, on a Unix socket only
+Unsworn can open, and forwards requests to it through the `proxy` path
+once the pipeline has passed them, with the request's context in a
+header. It trades handler references, typed requests and `ctx.call` for
+needing nothing of Unsworn's in the app. See
+[`http-runtime.md`](http-runtime.md).
 
 The **portable contract is the handler signature** provided by each language
 SDK, not the wire format. The same handler file runs in a Tier 2 worker, in
