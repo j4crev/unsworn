@@ -481,6 +481,22 @@ env = { REDIS_URL = "{env.REDIS_URL}" }
 
 Unsworn logs the variables it holds back when a runtime starts.
 
+Workers run as the same user as Unsworn, and Linux lets a process read
+the environment and memory of another one with the same user
+(`/proc/<pid>/environ`). So Unsworn closes its own process to that when it
+starts: a handler can't read a held-back variable from Unsworn's
+environment either, and Unsworn writes no core dump. What that leaves:
+
+- **Files that user can read,** such as `[server.tls].key` or a
+  `public_key` file. A handler can read them too. Keeping them from
+  workers needs the platform for now (see the
+  [roadmap](roadmap.md#beyond-the-front-door)).
+- **A variable passed on to one runtime** can be read by the workers of
+  the others, since workers aren't closed to each other.
+- **A server running as root.** Its workers are root as well, and root
+  can usually read any process. The official image runs as the user
+  `unsworn` for this reason.
+
 ## Routes
 
 Each `[[route]]` has a **matcher**, optional **policies** and exactly one

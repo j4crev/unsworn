@@ -173,10 +173,12 @@ on the way out. In the order planned:
      shadow's differences are logged but not counted.
    - **Limits on what a worker can reach.** An outbound service keeps the
      credential from a handler, but nothing stops the handler opening its
-     own connections, and a worker has whatever memory and CPU the
-     machine gives it. To add, for each runtime: the hosts it may connect
-     to (Landlock or a network namespace) and cgroup limits. The platform
-     has to do this for now.
+     own connections or reading a file Unsworn's user can read (a TLS
+     key, a `public_key` file), and a worker has whatever memory and CPU
+     the machine gives it. To add, for each runtime: the hosts it may
+     connect to and the files it may read (Landlock, a network namespace
+     or a user of its own) and cgroup limits. The platform has to do this
+     for now.
 4. ~~**Choosing a language by measurement.**~~ Done: `unsworn top` shows
    each route's latency and its handler's share of time and CPU on a
    running server ([`top.md`](top.md)), and a route's `shadow` handler
