@@ -390,7 +390,7 @@ listen = "0.0.0.0:8080"
 # nothing to set up here. To run them another way, or another language:
 # [runtimes.ts]
 # extensions = [".ts"]
-# command = "deno run --allow-all node_modules/@unswornjs/sdk/src/worker.ts"
+# command = "bun run node_modules/@unswornjs/sdk/src/worker.ts"
 # protocol = "framed"
 
 [[route]]

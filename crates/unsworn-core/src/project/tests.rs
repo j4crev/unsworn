@@ -834,13 +834,13 @@ fn a_language_with_an_sdk_needs_no_runtime_of_its_own() {
 
     // A runtime of the project's own for the extension is the one used,
     let own = format!(
-        "[runtimes.deno]\nextensions = [\".ts\"]\ncommand = \"deno run -A worker.ts\"\n\n{}",
+        "[runtimes.own]\nextensions = [\".ts\"]\ncommand = \"node --import tsx worker.ts\"\n\n{}",
         route("src/users.ts#get")
     );
     let p = load(&own, &[("src/users.ts", "")])
         .project
         .expect("compiles");
-    assert_eq!(p.runtimes.keys().collect::<Vec<_>>(), ["deno"]);
+    assert_eq!(p.runtimes.keys().collect::<Vec<_>>(), ["own"]);
     // and one that only shares the name is left alone.
     let named = format!(
         "[runtimes.ts]\nextensions = [\".tsx\"]\ncommand = \"x\"\n\n{}",

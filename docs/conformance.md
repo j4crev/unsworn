@@ -19,7 +19,7 @@ Implementations in this repository:
 
 | Runtime | Handlers file |
 |---|---|
-| JS/TS SDK (Bun, Node, Deno) | [`sdk/js/conformance/handlers.ts`](../sdk/js/conformance/handlers.ts) |
+| JS/TS SDK (Bun, Node) | [`sdk/js/conformance/handlers.ts`](../sdk/js/conformance/handlers.ts) |
 | Python SDK | [`sdk/python/conformance/handlers.py`](../sdk/python/conformance/handlers.py) |
 | Go SDK | [`sdk/go/conformance/handlers.go`](../sdk/go/conformance/handlers.go) |
 | Rust SDK | [`sdk/rust/examples/conformance.rs`](../sdk/rust/examples/conformance.rs) |

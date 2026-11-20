@@ -326,7 +326,7 @@ from a per-target capability table (`unsworn-core/src/targets.rs`).
 | `crates/unsworn-proto` | The message model and both encodings, shared by the server and the Rust SDK. |
 | `crates/unsworn` | The binary: the `Host` for servers (hyper, worker pools, proxying, static files, the memory and Redis stores), compression, metrics, CLI. |
 | `crates/unsworn-wasm` | The core as a WebAssembly module for JavaScript hosts, with the `Bridge` interface they implement. Built into `sdk/js/wasm`. |
-| `sdk/js` | JS/TS SDK for Bun, Node and Deno, plus the runtimes for built targets: the Cloudflare Worker (`@unswornjs/sdk/cloudflare`), and Node functions (`@unswornjs/sdk/node`, with `vercel` and `netlify` entries). |
+| `sdk/js` | JS/TS SDK for Bun and Node, plus the runtimes for built targets: the Cloudflare Worker (`@unswornjs/sdk/cloudflare`), and Node functions (`@unswornjs/sdk/node`, with `vercel` and `netlify` entries). |
 | `sdk/python` | Python SDK (asyncio). |
 | `sdk/go` | Go SDK, including an `http.Handler` adapter. |
 | `sdk/rust` | Rust SDK (`unsworn-sdk`, Tokio). |
