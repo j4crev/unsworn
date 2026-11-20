@@ -138,7 +138,11 @@ fn a_server_with_no_sdk_is_a_runtime() {
     // It's a worker like any other: Unsworn's own credentials stay out of
     // its environment, and what it prints is in Unsworn's log.
     assert_eq!(seen["has_secret"], false);
-    assert!(s.logs().contains("starting"), "{}", s.logs());
+    // (Its output is read as it comes, so the line may be a moment behind
+    // the response.)
+    eventually("the server's output is logged", || {
+        s.logs().contains("starting")
+    });
 
     // A caller can't pass itself off through the server's own header.
     let forged = [
@@ -206,7 +210,11 @@ fn a_server_that_doesnt_start_is_a_503_that_says_why() {
         logs.contains("exited before listening on the socket in UNSWORN_SOCKET"),
         "{logs}"
     );
-    assert!(logs.contains("no server here"), "{logs}");
+    // What the command printed is read as it comes, so it may be a
+    // moment behind the response.
+    eventually("the command's output is logged", || {
+        s.logs().contains("no server here")
+    });
     // The rest of the project is unaffected.
     assert_eq!(s.get("/health").status, 200);
 }
