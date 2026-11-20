@@ -229,6 +229,8 @@ async fn check_key<H: Host>(host: &H, verifier: &KeyVerifier, key: &str) -> Verd
 pub(super) struct Creds<'a> {
     pub headers: &'a HeaderMap,
     pub query: &'a [(String, String)],
+    /// The body, when it was read first for a scheme that needs it.
+    pub body: Option<&'a [u8]>,
 }
 
 impl CredentialSource for Creds<'_> {
@@ -240,6 +242,9 @@ impl CredentialSource for Creds<'_> {
             .iter()
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.as_str())
+    }
+    fn body(&self) -> Option<&[u8]> {
+        self.body
     }
 }
 
@@ -255,12 +260,17 @@ pub(super) async fn authenticate_request<H: Host>(
     headers: &HeaderMap,
     eff: &Effective,
     query: &[(String, String)],
+    body: Option<&[u8]>,
 ) -> Result<AuthOutcome, Problem> {
     let mut context = Map::new();
     let AuthReq::AnyOf(alts) = &eff.auth else {
         return Ok((context, None));
     };
-    let creds = Creds { headers, query };
+    let creds = Creds {
+        headers,
+        query,
+        body,
+    };
     let schemes: Vec<Arc<Scheme>> = alts
         .iter()
         .filter_map(|alt| project.schemes.get(&alt.scheme).cloned())
@@ -291,7 +301,7 @@ pub(super) async fn authenticate_request<H: Host>(
     }
     let lookup = |n: &str| match project.schemes.get(n)?.as_ref() {
         Scheme::Jwt(jwt) => keys.get(jwt),
-        Scheme::ApiKey(_) => None,
+        Scheme::ApiKey(_) | Scheme::Webhook(_) => None,
     };
     let verdict = |n: &str| verdicts.get(n).cloned();
     let outcome = authenticate(

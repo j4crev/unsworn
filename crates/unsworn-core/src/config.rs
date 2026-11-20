@@ -314,6 +314,28 @@ pub enum Listen {
 pub enum RawAuthScheme {
     Jwt(RawJwt),
     ApiKey(RawApiKey),
+    Webhook(RawWebhook),
+}
+
+/// A scheme for requests a service signs with a shared secret.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawWebhook {
+    /// The secret the service signs with.
+    pub secret: String,
+    /// A service whose way of signing Unsworn knows: `stripe`, `github`,
+    /// `slack`, `standard` (Standard Webhooks) or `svix`.
+    pub provider: Option<String>,
+    /// Or, for any other: the header that holds an HMAC-SHA256 of the
+    /// body.
+    pub header: Option<String>,
+    /// How that header writes it: `hex` (the default) or `base64`.
+    pub encoding: Option<String>,
+    /// Text in front of it, such as `sha256=`.
+    pub prefix: Option<String>,
+    /// How far a signed time may be from now, for the providers that sign
+    /// one. Default: 5 minutes.
+    pub tolerance: Option<ConfigDuration>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

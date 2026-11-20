@@ -1730,6 +1730,87 @@ handler = "src/h.ts#echo"
     assert_eq!(context("/elsewhere/x", &[auth]), None);
 }
 
+/// A webhook's signature is over its body, so the body is read before
+/// the caller is known, and the handler runs for signed requests only.
+#[test]
+fn a_signed_webhook_is_checked_before_its_handler_runs() {
+    use hmac::{Hmac, KeyInit, Mac};
+    let host = TestHost::new().handler("src/h.ts#event", echo);
+    let t = Test::new(
+        &format!(
+            r#"{TS}
+[auth.github]
+type = "webhook"
+provider = "github"
+secret = "It's a Secret to Everybody"
+
+[[route]]
+path = "/hooks/github"
+method = "POST"
+auth = "github"
+max_body = "1KB"
+handler = "src/h.ts#event"
+
+[[route]]
+path = "/hooks/forwarded"
+method = "POST"
+auth = "github"
+proxy = "http://app"
+"#
+        ),
+        &["src/h.ts"],
+        host,
+    );
+    let sign = |body: &[u8]| -> String {
+        let mut mac = Hmac::<sha2::Sha256>::new_from_slice(b"It's a Secret to Everybody").unwrap();
+        mac.update(body);
+        let hex: String = mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        format!("sha256={hex}")
+    };
+    let post = |uri: &str, signature: Option<&str>, body: &[u8]| {
+        let mut headers = vec![("content-type", "application/json")];
+        headers.extend(signature.map(|s| ("x-hub-signature-256", s)));
+        t.send("POST", uri, &headers, body)
+    };
+    let body = br#"{"action":"opened","number":7}"#;
+
+    // Signed by GitHub: the handler gets the event, and who sent it.
+    let r = post("/hooks/github", Some(&sign(body)), body);
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.json()["json"]["number"], 7);
+    assert_eq!(
+        r.json()["context"]["auth"],
+        json!({ "type": "webhook", "provider": "github", "scheme": "github" })
+    );
+    // Not signed, signed for another body, or signed with another secret:
+    // `401`, and the handler never runs.
+    let unsigned = post("/hooks/github", None, body);
+    assert_eq!(unsigned.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(unsigned.header("www-authenticate"), Some("Signature"));
+    let other = post("/hooks/github", Some(&sign(b"{}")), body);
+    assert_eq!(other.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(t.host.calls().len(), 1);
+    // The body is read within the route's limit, signature or not.
+    let big = vec![b' '; 2048];
+    assert_eq!(
+        post("/hooks/github", Some(&sign(&big)), &big).status,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    // A proxied route forwards the body it checked.
+    let r = post("/hooks/forwarded", Some(&sign(body)), body);
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.json()["body"], String::from_utf8_lossy(body).as_ref());
+    assert_eq!(
+        post("/hooks/forwarded", None, body).status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
 #[test]
 fn rate_limits_count_requests_that_fail_auth() {
     let host = TestHost::new().fetch_answer(

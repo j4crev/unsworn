@@ -308,15 +308,26 @@ impl<H: Host> Ctx<'_, H> {
         Deadline(self.host.monotonic() + timeout)
     }
 
+    /// `body` is the request's, for a scheme that checks a signature made
+    /// over it.
     async fn authenticate(
         &self,
         headers: &http::HeaderMap,
         eff: &Effective,
         query: &[(String, String)],
+        body: Option<&[u8]>,
     ) -> Result<AuthOutcome, Resp<H>> {
-        authenticate_request(self.host, self.keys, self.project, headers, eff, query)
-            .await
-            .map_err(problem_response)
+        authenticate_request(
+            self.host,
+            self.keys,
+            self.project,
+            headers,
+            eff,
+            query,
+            body,
+        )
+        .await
+        .map_err(problem_response)
     }
 
     /// Counts a request against a rate limit, on the limit's own counter.
@@ -412,8 +423,12 @@ async fn prepare<H: Host>(
     eff: &Effective,
     raw_params: Vec<(String, String)>,
 ) -> Result<Prepared<H>, Resp<H>> {
-    let method = req.method().as_str().to_string();
-    let query_pairs = query_pairs(req.uri().query());
+    // The body is taken apart from the rest now, since a signed request's
+    // has to be read before its caller is known.
+    let (parts, incoming) = req.into_parts();
+    let mut incoming = Some(incoming);
+    let method = parts.method.as_str().to_string();
+    let query_pairs = query_pairs(parts.uri.query());
     access(eff, ctx.origin.as_deref(), ctx.client_ip).map_err(problem_response)?;
 
     // An MCP endpoint counts requests once their headers are checked
@@ -425,10 +440,27 @@ async fn prepare<H: Host>(
     // never asked more often than the limit allows.
     let before_auth = |l: &&RateLimitRule| !matches!(l.key, KeySource::Claim(_));
     if let Some(limit) = limit.filter(before_auth) {
-        rate_limited(ctx.rate_limit(limit, req.headers(), None).await)?;
+        rate_limited(ctx.rate_limit(limit, &parts.headers, None).await)?;
     }
 
-    let (context, claims) = match ctx.authenticate(req.headers(), eff, &query_pairs).await {
+    // A webhook's signature is made over its body, so that is read first:
+    // after the limits that don't need the caller, and within `max_body`.
+    let mut body_bytes: Option<Bytes> = None;
+    if ctx.project.signs_body(&eff.auth)
+        && let Some(body) = incoming.take()
+    {
+        check_content_length(&parts.headers, eff.max_body).map_err(problem_response)?;
+        body_bytes = Some(
+            ctx.host
+                .read_body(body, eff.max_body)
+                .await
+                .map_err(problem_response)?,
+        );
+    }
+    let authenticated = ctx
+        .authenticate(&parts.headers, eff, &query_pairs, body_bytes.as_deref())
+        .await;
+    let (context, claims) = match authenticated {
         Ok(outcome) => outcome,
         Err(resp) => {
             // The limits that wait for the caller's claims (one keyed on a
@@ -443,29 +475,29 @@ async fn prepare<H: Host>(
                     .as_ref()
                     .filter(|l| is_mcp || !before_auth(l))
             {
-                let headers = crate::mcp::rpc::trusted_headers(req.headers(), None);
+                let headers = crate::mcp::rpc::trusted_headers(&parts.headers, None);
                 rate_limited(ctx.rate_limit(limit, &headers, None).await)?;
             }
             return Err(resp);
         }
     };
     if let Some(limit) = limit.filter(|l| !before_auth(l)) {
-        rate_limited(ctx.rate_limit(limit, req.headers(), claims.as_ref()).await)?;
+        rate_limited(ctx.rate_limit(limit, &parts.headers, claims.as_ref()).await)?;
     }
 
     // Before the request's own values are looked at any further: a caller
     // who may not be here learns nothing about what the route expects.
     if let Some(rule) = unmet(
         &eff.require,
-        req.uri().path(),
+        parts.uri.path(),
         &query_pairs,
-        req.headers(),
+        &parts.headers,
         claims.as_ref(),
     ) {
         return Err(problem_response(not_allowed(rule)));
     }
 
-    let (params, query) = validate_inputs(route, &raw_params, &query_pairs, req.headers())
+    let (params, query) = validate_inputs(route, &raw_params, &query_pairs, &parts.headers)
         .map_err(problem_response)?;
 
     let scheme = context
@@ -478,8 +510,8 @@ async fn prepare<H: Host>(
             &ctx.project.credential_headers(&eff.auth),
             route.id,
             &method,
-            req.uri(),
-            req.headers(),
+            &parts.uri,
+            &parts.headers,
             claims.as_ref(),
             scheme,
             ctx.client_ip,
@@ -490,19 +522,20 @@ async fn prepare<H: Host>(
     let needs_body = (matches!(route.action, Action::Handler(_)) && !eff.stream_body)
         || route.validation.body.is_some()
         || is_mcp;
-    let (parts, incoming) = req.into_parts();
-    check_content_length(&parts.headers, eff.max_body).map_err(problem_response)?;
-    let mut body_bytes: Option<Bytes> = None;
     let mut streaming_body = None;
-    if needs_body {
-        body_bytes = Some(
-            ctx.host
-                .read_body(incoming, eff.max_body)
-                .await
-                .map_err(problem_response)?,
-        );
-    } else {
-        streaming_body = Some(ctx.host.limit_body(incoming, eff.max_body));
+    // Unless it was read to check a signature.
+    if let Some(incoming) = incoming {
+        check_content_length(&parts.headers, eff.max_body).map_err(problem_response)?;
+        if needs_body {
+            body_bytes = Some(
+                ctx.host
+                    .read_body(incoming, eff.max_body)
+                    .await
+                    .map_err(problem_response)?,
+            );
+        } else {
+            streaming_body = Some(ctx.host.limit_body(incoming, eff.max_body));
+        }
     }
 
     // MCP reads its own JSON-RPC body, with JSON-RPC errors.

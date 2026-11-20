@@ -325,6 +325,64 @@
             "type"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A scheme for requests a service signs with a shared secret.",
+          "properties": {
+            "encoding": {
+              "description": "How that header writes it: `hex` (the default) or `base64`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "header": {
+              "description": "Or, for any other: the header that holds an HMAC-SHA256 of the\nbody.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prefix": {
+              "description": "Text in front of it, such as `sha256=`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "description": "A service whose way of signing Unsworn knows: `stripe`, `github`,\n`slack`, `standard` (Standard Webhooks) or `svix`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "secret": {
+              "description": "The secret the service signs with.",
+              "type": "string"
+            },
+            "tolerance": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Duration"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How far a signed time may be from now, for the providers that sign\none. Default: 5 minutes."
+            },
+            "type": {
+              "const": "webhook",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "secret"
+          ],
+          "type": "object"
         }
       ]
     },

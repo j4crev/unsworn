@@ -324,10 +324,119 @@ impl Verdict {
     }
 }
 
+/// A scheme for requests a service signs with a shared secret, as
+/// webhooks are: the request carries an HMAC-SHA256 of its body, which
+/// only someone holding the secret could have made.
+#[derive(Clone)]
+pub struct WebhookScheme {
+    pub name: String,
+    /// The key signatures are made with. Kept out of `Debug`.
+    key: Vec<u8>,
+    pub signed: Signed,
+    /// How far a signed time may be from now, in seconds, for the styles
+    /// that sign one. A request older than that may be a replay.
+    pub tolerance: u64,
+}
+
+impl std::fmt::Debug for WebhookScheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookScheme")
+            .field("name", &self.name)
+            .field("signed", &self.signed)
+            .field("tolerance", &self.tolerance)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How a service signs its requests: what the signature is over, and
+/// where and how it's written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Signed {
+    /// The body alone, in one header, after `prefix`, as hex or base64.
+    /// GitHub (`X-Hub-Signature-256: sha256=<hex>`) and Shopify sign this
+    /// way, and so do many others.
+    Body {
+        provider: Option<&'static str>,
+        /// The header's lowercase name.
+        header: String,
+        prefix: String,
+        base64: bool,
+    },
+    /// `Stripe-Signature: t=<time>,v1=<hex>`, over `<time>.<body>`.
+    Stripe,
+    /// `X-Slack-Signature: v0=<hex>` and `X-Slack-Request-Timestamp`,
+    /// over `v0:<time>:<body>`.
+    Slack,
+    /// Standard Webhooks: `<prefix>-id`, `<prefix>-timestamp` and
+    /// `<prefix>-signature: v1,<base64>`, over `<id>.<time>.<body>`. The
+    /// prefix is `webhook`, or `svix` as Svix's customers get them.
+    Standard { prefix: &'static str },
+}
+
+impl Signed {
+    /// The style for a provider's name in the config.
+    pub fn provider(name: &str) -> Option<Signed> {
+        Some(match name {
+            "github" => Signed::Body {
+                provider: Some("github"),
+                header: "x-hub-signature-256".into(),
+                prefix: "sha256=".into(),
+                base64: false,
+            },
+            "stripe" => Signed::Stripe,
+            "slack" => Signed::Slack,
+            "standard" => Signed::Standard { prefix: "webhook" },
+            "svix" => Signed::Standard { prefix: "svix" },
+            _ => return None,
+        })
+    }
+
+    pub const PROVIDERS: &[&str] = &["github", "slack", "standard", "stripe", "svix"];
+
+    /// The provider's name, or `None` for a signature described in the
+    /// config.
+    pub fn name(&self) -> Option<&'static str> {
+        match self {
+            Signed::Body { provider, .. } => *provider,
+            Signed::Stripe => Some("stripe"),
+            Signed::Slack => Some("slack"),
+            Signed::Standard { prefix: "svix" } => Some("svix"),
+            Signed::Standard { .. } => Some("standard"),
+        }
+    }
+
+    /// The header the signature is in, by its lowercase name.
+    pub fn header(&self) -> String {
+        match self {
+            Signed::Body { header, .. } => header.clone(),
+            Signed::Stripe => "stripe-signature".into(),
+            Signed::Slack => "x-slack-signature".into(),
+            Signed::Standard { prefix } => format!("{prefix}-signature"),
+        }
+    }
+
+    /// Whether the signature covers a time, which `tolerance` bounds.
+    pub fn timed(&self) -> bool {
+        !matches!(self, Signed::Body { .. })
+    }
+}
+
+impl WebhookScheme {
+    pub fn new(name: &str, key: Vec<u8>, signed: Signed, tolerance: u64) -> WebhookScheme {
+        WebhookScheme {
+            name: name.to_string(),
+            key,
+            signed,
+            tolerance,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Scheme {
     Jwt(JwtScheme),
     ApiKey(ApiKeyScheme),
+    Webhook(WebhookScheme),
 }
 
 impl Scheme {
@@ -335,6 +444,7 @@ impl Scheme {
         match self {
             Scheme::Jwt(s) => &s.name,
             Scheme::ApiKey(s) => &s.name,
+            Scheme::Webhook(s) => &s.name,
         }
     }
 }
@@ -418,6 +528,11 @@ pub struct AuthSuccess {
 pub trait CredentialSource {
     fn header(&self, name: &str) -> Option<&str>;
     fn query(&self, name: &str) -> Option<&str>;
+    /// The request's body, when it has been read: a signature is checked
+    /// against it.
+    fn body(&self) -> Option<&[u8]> {
+        None
+    }
 }
 
 /// Checks a request against an [`AuthReq`].
@@ -456,6 +571,7 @@ pub fn authenticate(
                 Err(KeyError::Invalid(reason)) => Err(reason),
                 Ok(claims) => Ok(claims),
             },
+            Scheme::Webhook(w) => check_webhook(w, source, now),
         };
         match result {
             Ok(Some(claims)) => {
@@ -621,6 +737,142 @@ fn check_api_key(
     }
 }
 
+/// Checks a signed request: `Ok(None)` when it carries no signature for
+/// this scheme, and an error when the one it carries doesn't hold.
+fn check_webhook(
+    scheme: &WebhookScheme,
+    source: &dyn CredentialSource,
+    now: u64,
+) -> Result<Option<Map<String, Value>>, String> {
+    use base64::Engine;
+    use hmac::{Hmac, KeyInit, Mac};
+    type HmacSha256 = Hmac<sha2::Sha256>;
+
+    let Some(written) = source.header(&scheme.signed.header()) else {
+        return Ok(None);
+    };
+    let Some(body) = source.body() else {
+        return Err(
+            "a signed request's body has to be read first, which this route doesn't do".into(),
+        );
+    };
+    let hex = |text: &str| -> Option<Vec<u8>> {
+        let text = text.as_bytes();
+        text.len().is_multiple_of(2).then_some(())?;
+        text.chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+            .collect()
+    };
+    let base64 = |text: &str| base64::engine::general_purpose::STANDARD.decode(text).ok();
+    let bad_form = || "the signature isn't written the way this scheme expects".to_string();
+
+    // What was signed, in the pieces it's made of; the signatures to try,
+    // of which one has to hold; and the time that was signed, if any.
+    let (parts, candidates, time, id): (Vec<&[u8]>, Vec<Vec<u8>>, Option<&str>, Option<&str>) =
+        match &scheme.signed {
+            Signed::Body {
+                prefix,
+                base64: b64,
+                ..
+            } => {
+                let text = written
+                    .trim()
+                    .strip_prefix(prefix.as_str())
+                    .ok_or_else(bad_form)?;
+                let signature = if *b64 { base64(text) } else { hex(text) };
+                (
+                    vec![body],
+                    vec![signature.ok_or_else(bad_form)?],
+                    None,
+                    None,
+                )
+            }
+            Signed::Stripe => {
+                let mut time = None;
+                let mut candidates = Vec::new();
+                for field in written.split(',') {
+                    match field.trim().split_once('=') {
+                        Some(("t", t)) => time = Some(t),
+                        Some(("v1", sig)) => candidates.extend(hex(sig)),
+                        _ => {}
+                    }
+                }
+                let time = time.ok_or_else(bad_form)?;
+                (
+                    vec![time.as_bytes(), b".", body],
+                    candidates,
+                    Some(time),
+                    None,
+                )
+            }
+            Signed::Slack => {
+                let time = source
+                    .header("x-slack-request-timestamp")
+                    .ok_or_else(bad_form)?;
+                let signature = written.trim().strip_prefix("v0=").and_then(hex);
+                (
+                    vec![b"v0:", time.as_bytes(), b":", body],
+                    vec![signature.ok_or_else(bad_form)?],
+                    Some(time),
+                    None,
+                )
+            }
+            Signed::Standard { prefix } => {
+                let (id, time) = (
+                    source
+                        .header(&format!("{prefix}-id"))
+                        .ok_or_else(bad_form)?,
+                    source
+                        .header(&format!("{prefix}-timestamp"))
+                        .ok_or_else(bad_form)?,
+                );
+                // Several, while a secret is being replaced: `v1,<a> v1,<b>`.
+                let candidates = written
+                    .split_whitespace()
+                    .filter_map(|s| s.strip_prefix("v1,"))
+                    .filter_map(base64)
+                    .collect();
+                (
+                    vec![id.as_bytes(), b".", time.as_bytes(), b".", body],
+                    candidates,
+                    Some(time),
+                    Some(id),
+                )
+            }
+        };
+
+    let mut mac = HmacSha256::new_from_slice(&scheme.key).map_err(|e| e.to_string())?;
+    for part in parts {
+        mac.update(part);
+    }
+    // `verify_slice` compares in constant time.
+    if !candidates
+        .iter()
+        .any(|signature| mac.clone().verify_slice(signature).is_ok())
+    {
+        return Err("the signature doesn't match the request".into());
+    }
+    // Only once the signature holds is the time it covers the sender's.
+    if let Some(time) = time {
+        let signed_at: u64 = time.trim().parse().map_err(|_| bad_form())?;
+        if signed_at.abs_diff(now) > scheme.tolerance {
+            return Err(format!(
+                "the request was signed more than {}s from now, so it may be a replay",
+                scheme.tolerance
+            ));
+        }
+    }
+    let mut claims = Map::new();
+    claims.insert("type".into(), json!("webhook"));
+    if let Some(provider) = scheme.signed.name() {
+        claims.insert("provider".into(), json!(provider));
+    }
+    if let Some(id) = id {
+        claims.insert("id".into(), json!(id));
+    }
+    Ok(Some(claims))
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -643,6 +895,9 @@ fn has_scope(claims: &Map<String, Value>, scope: &str) -> bool {
 /// know.
 const API_KEY_CHALLENGE: &str = "ApiKey";
 
+/// The same for a signed request.
+const SIGNATURE_CHALLENGE: &str = "Signature";
+
 /// The `WWW-Authenticate` header for a failure.
 pub fn www_authenticate(
     failure: &AuthFailure,
@@ -656,6 +911,7 @@ pub fn www_authenticate(
     let jwt = match schemes.get(scheme_name)?.as_ref() {
         Scheme::Jwt(jwt) => jwt,
         Scheme::ApiKey(_) => return Some(API_KEY_CHALLENGE.into()),
+        Scheme::Webhook(_) => return Some(SIGNATURE_CHALLENGE.into()),
     };
     let mut parts = Vec::new();
     match failure {
@@ -1139,5 +1395,195 @@ mod tests {
         let key = verifier.cache_key("sk_live_1");
         assert!(key.starts_with("auth|") && !key.contains("sk_live_1"));
         assert_ne!(key, verifier.cache_key("sk_live_2"));
+    }
+    /// A signed request: headers and the body the signature is over.
+    struct Signature<'a>(Vec<(&'static str, &'a str)>, &'a [u8]);
+    impl CredentialSource for Signature<'_> {
+        fn header(&self, name: &str) -> Option<&str> {
+            self.0.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+        }
+        fn query(&self, _: &str) -> Option<&str> {
+            None
+        }
+        fn body(&self) -> Option<&[u8]> {
+            Some(self.1)
+        }
+    }
+
+    fn webhook(provider: &str, key: &[u8]) -> BTreeMap<String, Arc<Scheme>> {
+        let signed = Signed::provider(provider).unwrap();
+        let scheme = WebhookScheme::new("hooks", key.to_vec(), signed, 300);
+        BTreeMap::from([("hooks".to_string(), Arc::new(Scheme::Webhook(scheme)))])
+    }
+
+    fn signed(
+        schemes: &BTreeMap<String, Arc<Scheme>>,
+        source: &dyn CredentialSource,
+        now: u64,
+    ) -> Result<Option<AuthSuccess>, AuthFailure> {
+        let req = AuthReq::AnyOf(vec![AuthAlt {
+            scheme: "hooks".into(),
+            scopes: Vec::new(),
+        }]);
+        authenticate(&req, schemes, &|_| None, &|_| None, source, now)
+    }
+
+    fn reason(result: Result<Option<AuthSuccess>, AuthFailure>) -> String {
+        match result {
+            Err(AuthFailure::Unauthorized { reason, .. }) => reason,
+            other => panic!("expected a 401, got {other:?}"),
+        }
+    }
+
+    /// Each provider's own published example: the secret, the request and
+    /// the signature its documentation gives for them.
+    #[test]
+    fn webhook_signatures_match_each_providers_published_example() {
+        // GitHub, "Validating webhook deliveries".
+        let github = webhook("github", b"It's a Secret to Everybody");
+        let sig = "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17";
+        let ok = signed(
+            &github,
+            &Signature(vec![("x-hub-signature-256", sig)], b"Hello, World!"),
+            0,
+        );
+        assert_eq!(
+            ok.unwrap().unwrap().claims,
+            json!({ "type": "webhook", "provider": "github" })
+                .as_object()
+                .unwrap()
+                .clone()
+        );
+        // One byte of the body changed.
+        let tampered = signed(
+            &github,
+            &Signature(vec![("x-hub-signature-256", sig)], b"Hello, World?"),
+            0,
+        );
+        assert_eq!(reason(tampered), "the signature doesn't match the request");
+
+        // Slack, "Verifying requests from Slack".
+        let slack = webhook("slack", b"8f742231b10e8888abcd99yyyzzz85a5");
+        let body = b"token=xyzz0WbapA4vBCDEFasx0q6G&team_id=T1DC2JH3J&team_domain=testteamnow&channel_id=G8PSS9T3V&channel_name=foobar&user_id=U2CERLKJA&user_name=roadrunner&command=%2Fwebhook-collect&text=&response_url=https%3A%2F%2Fhooks.slack.com%2Fcommands%2FT1DC2JH3J%2F397700885554%2F96rGlfmibIGlgcZRskXaIFfN&trigger_id=398738663015.47445629121.803a0bc887a14d10d2c447fce8b6703c";
+        let headers = vec![
+            (
+                "x-slack-signature",
+                "v0=a2114d57b48eac39b9ad189dd8316235a7b4a8d21a10bd27519666489c69b503",
+            ),
+            ("x-slack-request-timestamp", "1531420618"),
+        ];
+        let at = 1_531_420_618;
+        assert!(signed(&slack, &Signature(headers.clone(), body), at + 60).is_ok());
+        // The same request an hour later is a replay.
+        let late = signed(&slack, &Signature(headers.clone(), body), at + 3600);
+        assert!(reason(late).contains("may be a replay"));
+        // So is one whose time was changed to look recent: the signature
+        // covers the time.
+        let mut moved = headers;
+        moved[1].1 = "1531424218";
+        let forged = signed(&slack, &Signature(moved, body), at + 3600);
+        assert_eq!(reason(forged), "the signature doesn't match the request");
+
+        // Standard Webhooks, as Svix documents it. The secret is base64
+        // after `whsec_`, which the compiler decodes.
+        use base64::Engine;
+        let key = base64::engine::general_purpose::STANDARD
+            .decode("MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw")
+            .unwrap();
+        let body = br#"{"test": 2432232314}"#;
+        for prefix in ["svix", "webhook"] {
+            let names: [&'static str; 3] = match prefix {
+                "svix" => ["svix-id", "svix-timestamp", "svix-signature"],
+                _ => ["webhook-id", "webhook-timestamp", "webhook-signature"],
+            };
+            let provider = if prefix == "svix" { "svix" } else { "standard" };
+            let schemes = webhook(provider, &key);
+            // A second signature, as sent while a secret is replaced.
+            let sent = "v1,AAAA v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE=";
+            let headers = vec![
+                (names[0], "msg_p5jXN8AQM9LWM0D4loKWxJek"),
+                (names[1], "1614265330"),
+                (names[2], sent),
+            ];
+            let ok = signed(&schemes, &Signature(headers, body), 1_614_265_330)
+                .unwrap()
+                .unwrap();
+            assert_eq!(ok.claims["id"], "msg_p5jXN8AQM9LWM0D4loKWxJek");
+            assert_eq!(ok.claims["provider"], provider);
+        }
+    }
+
+    #[test]
+    fn webhook_signatures_for_stripe_and_for_a_header_of_ones_own() {
+        use hmac::{Hmac, KeyInit, Mac};
+        let sign = |key: &[u8], message: &[u8]| -> Vec<u8> {
+            let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key).unwrap();
+            mac.update(message);
+            mac.finalize().into_bytes().to_vec()
+        };
+        let hex = |bytes: &[u8]| -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() };
+
+        // Stripe signs `<time>.<body>` with the secret as it's written.
+        let stripe = webhook("stripe", b"whsec_test");
+        let body = br#"{"id":"evt_1"}"#;
+        let v1 = hex(&sign(
+            b"whsec_test",
+            &[b"1700000000.".as_slice(), body].concat(),
+        ));
+        // An older scheme's signature rides along, and is ignored.
+        let header = format!("t=1700000000,v1={v1},v0=00ff");
+        let source = Signature(vec![("stripe-signature", &header)], body);
+        let ok = signed(&stripe, &source, 1_700_000_100).unwrap().unwrap();
+        assert_eq!(ok.claims["provider"], "stripe");
+        assert!(reason(signed(&stripe, &source, 1_700_000_301)).contains("may be a replay"));
+        // Signed by someone with another secret.
+        let other = hex(&sign(
+            b"whsec_other",
+            &[b"1700000000.".as_slice(), body].concat(),
+        ));
+        let header = format!("t=1700000000,v1={other}");
+        let wrong = signed(
+            &stripe,
+            &Signature(vec![("stripe-signature", &header)], body),
+            1_700_000_100,
+        );
+        assert_eq!(reason(wrong), "the signature doesn't match the request");
+
+        // A header described in the config: base64, as Shopify writes it.
+        use base64::Engine;
+        let scheme = WebhookScheme::new(
+            "hooks",
+            b"shpss".to_vec(),
+            Signed::Body {
+                provider: None,
+                header: "x-shopify-hmac-sha256".into(),
+                prefix: String::new(),
+                base64: true,
+            },
+            300,
+        );
+        let schemes = BTreeMap::from([("hooks".to_string(), Arc::new(Scheme::Webhook(scheme)))]);
+        let sig = base64::engine::general_purpose::STANDARD.encode(sign(b"shpss", b"{}"));
+        let ok = signed(
+            &schemes,
+            &Signature(vec![("x-shopify-hmac-sha256", &sig)], b"{}"),
+            0,
+        );
+        assert_eq!(
+            ok.unwrap().unwrap().claims,
+            json!({ "type": "webhook" }).as_object().unwrap().clone()
+        );
+        // Not a signature at all, and no signature.
+        let junk = signed(
+            &schemes,
+            &Signature(vec![("x-shopify-hmac-sha256", "not base64!")], b"{}"),
+            0,
+        );
+        assert!(reason(junk).contains("isn't written the way"));
+        let none = signed(&schemes, &Signature(Vec::new(), b"{}"), 0);
+        assert_eq!(reason(none), "missing credentials");
+        // A scheme asked about a body nobody read fails closed.
+        let unread = signed(&schemes, &Req(vec![("x-shopify-hmac-sha256", sig)]), 0);
+        assert!(reason(unread).contains("has to be read first"));
     }
 }

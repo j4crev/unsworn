@@ -350,6 +350,71 @@ auth:
       X-Service: unsworn
 ```
 
+#### `type = "webhook"`
+
+For requests another service sends you and signs: Stripe events, GitHub
+deliveries, Slack commands. They carry no token. The service makes an
+HMAC-SHA256 of the request's body with a secret the two of you share, and
+sends it in a header.
+
+```toml
+[auth.stripe]
+type      = "webhook"
+provider  = "stripe"                        # "stripe" | "github" | "slack" | "standard" | "svix"
+secret    = "{env.STRIPE_WEBHOOK_SECRET}"
+tolerance = "5m"                            # the default, for providers that sign a time
+
+[[route]]
+path    = "/hooks/stripe"
+method  = "POST"
+auth    = "stripe"
+handler = "src/billing.ts#event"
+```
+
+Unsworn reads the body, checks the signature against it, and only then
+runs the handler. A request with no signature, one made with another
+secret, or one whose body was changed gets `401`.
+
+| `provider` | Signature | Covers |
+|---|---|---|
+| `stripe` | `Stripe-Signature: t=<time>,v1=<hex>` | the time and the body |
+| `github` | `X-Hub-Signature-256: sha256=<hex>` | the body |
+| `slack` | `X-Slack-Signature: v0=<hex>`, with `X-Slack-Request-Timestamp` | the time and the body |
+| `standard` | `webhook-signature: v1,<base64>`, with `webhook-id` and `webhook-timestamp` ([Standard Webhooks](https://www.standardwebhooks.com)) | the id, the time and the body |
+| `svix` | the same with `svix-` headers, as Clerk, Resend and other Svix customers send | the id, the time and the body |
+
+For a service that isn't listed and signs the body alone, say where the
+signature is, in place of `provider`:
+
+```toml
+[auth.shop]
+type     = "webhook"
+secret   = "{env.SHOPIFY_WEBHOOK_SECRET}"
+header   = "X-Shopify-Hmac-Sha256"
+encoding = "base64"          # "hex" (the default) | "base64"
+prefix   = ""                # text before the signature, such as "sha256="
+```
+
+- **Why here and not in the handler.** The check needs the exact bytes
+  that were sent, which a framework has often parsed away by the time a
+  handler runs; a comparison that takes the same time whatever differs;
+  and a limit on how old a signed request may be. It's also the reason a
+  webhook route would otherwise be `auth = "none"`, and the handler would
+  hold the secret. Here the route shows in the plan as authenticated, and
+  the secret stays with Unsworn: the variable it's read from isn't passed
+  to workers.
+- **A time that's signed bounds replays.** A request signed more than
+  `tolerance` from now is turned away. `github`, and a `header` of your
+  own, sign no time, so the same request can be sent again later: make
+  the handler safe to run twice, by the delivery id the service sends.
+- **`ctx.auth`** is `{ "type": "webhook", "provider": "stripe" }`, with
+  the `id` of the message for `standard` and `svix`.
+- **The body is read before the caller is known,** up to `max_body`, so a
+  route with such a scheme can't have `stream_body`. A rate limit keyed
+  on `ip` still comes first.
+- **Replacing a secret:** give the route both for a while,
+  `auth = ["stripe", "stripe_next"]`.
+
 #### Using schemes
 
 Verified claims are available to handlers as `ctx.auth`, plus `scheme`, the
@@ -508,7 +573,7 @@ and verifier URLs, verifier `headers`, issuers, audiences and API keys, proxy up
 an outbound service's `url` and `headers`, and runtime `env` values. A missing variable is an error.
 
 Workers inherit Unsworn's environment, except for the variables it reads
-its own credentials from: a JWT `secret`, API `keys`, verifier `headers`,
+its own credentials from: a JWT or webhook `secret`, API `keys`, verifier `headers`,
 `[store].url` and `token`, and an outbound service's `headers`. A handler that could read the signing secret
 could mint its own tokens, so those stay with Unsworn. If a handler needs
 one of them (the same Redis, say), pass it on by name:

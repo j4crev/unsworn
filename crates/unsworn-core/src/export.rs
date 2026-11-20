@@ -133,6 +133,11 @@ pub fn openapi(project: &Project) -> Value {
                     (None, Some(q)) => json!({"type": "apiKey", "in": "query", "name": q}),
                     (None, None) => continue,
                 },
+                // OpenAPI has no scheme for a signed body; the header the
+                // signature is in is the nearest thing it can say.
+                Scheme::Webhook(w) => {
+                    json!({"type": "apiKey", "in": "header", "name": w.signed.header()})
+                }
             };
             schemes.insert(name.clone(), value);
         }
