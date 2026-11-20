@@ -69,6 +69,18 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// Whether anyone may call it, on all of its paths or some: a route
+    /// or a tool with `auth none`.
+    fn open_to_anyone(&self) -> bool {
+        let public = |e: &Entry| {
+            e.facts
+                .iter()
+                .any(|f| f.key == "auth" && f.weigh == Weigh::Auth(AuthReq::Public))
+        };
+        matches!(self.kind, Kind::Route | Kind::Tool)
+            && (public(self) || self.inside.iter().any(public))
+    }
+
     fn new(kind: Kind, name: impl Into<String>) -> Entry {
         Entry {
             kind,
@@ -1004,10 +1016,26 @@ impl Diff {
         })
     }
 
-    /// How many changes let more requests through.
+    /// How many changes let more requests through: rules that got looser,
+    /// and new routes and tools that anyone may call.
     pub fn looser(&self) -> usize {
+        self.loosened() + self.opened()
+    }
+
+    /// How many rules got looser.
+    fn loosened(&self) -> usize {
         self.changes()
             .filter(|c| c.direction == Direction::Looser)
+            .count()
+    }
+
+    /// How many added routes and tools anyone may call, on all of their
+    /// paths or some. A route that was never there let nothing through, so
+    /// a public one is looser than what came before it.
+    pub fn opened(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|(_, d)| matches!(d, Delta::Added(e) if e.open_to_anyone()))
             .count()
     }
 
@@ -1032,9 +1060,24 @@ impl Diff {
                     added += 1;
                     let mut block = String::new();
                     render_entry(&mut block, entry, title, 0, None);
+                    let guarded = matches!(entry.kind, Kind::Route | Kind::Tool);
                     for (i, line) in block.lines().enumerate() {
                         let mark = if i == 0 { "+ " } else { "  " };
-                        let _ = writeln!(out, "{mark}{line}");
+                        let rule = line.trim_start();
+                        let open = guarded
+                            && rule.split_whitespace().collect::<Vec<_>>() == ["auth", "none"];
+                        if open {
+                            // The `!` goes where a looser change has it,
+                            // in the margin.
+                            let indent = &line[..line.len() - rule.len()];
+                            let indent = &indent[..indent.len().saturating_sub(2)];
+                            let _ = writeln!(
+                                out,
+                                "{mark}! {indent}{rule}  (looser: anyone may call it)"
+                            );
+                        } else {
+                            let _ = writeln!(out, "{mark}{line}");
+                        }
                     }
                 }
                 Delta::Removed => {
@@ -1062,8 +1105,8 @@ impl Diff {
         if changed > 0 {
             let mut s = plural(changed, "change");
             let mut marks = Vec::new();
-            if self.looser() > 0 {
-                marks.push(format!("{} looser", self.looser()));
+            if self.loosened() > 0 {
+                marks.push(format!("{} looser", self.loosened()));
             }
             if self.tighter() > 0 {
                 marks.push(format!("{} tighter", self.tighter()));
@@ -1074,7 +1117,10 @@ impl Diff {
             parts.push(s);
         }
         if added > 0 {
-            parts.push(format!("{added} added"));
+            parts.push(match self.opened() {
+                0 => format!("{added} added"),
+                n => format!("{added} added ({n} open to anyone)"),
+            });
         }
         if removed > 0 {
             parts.push(format!("{removed} removed"));

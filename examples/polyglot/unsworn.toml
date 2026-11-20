@@ -31,13 +31,16 @@ python = "unsworn_gen.py"
 type = "api_key"
 keys = "{env.DEMO_KEY}"
 
+# A project with an auth scheme has each route say who may call it.
 [[route]]
 path = "/health"
+auth = "none"
 respond = { status = 200, json = { ok = true } }
 
 # Everything not matched below goes to the existing app.
 [[route]]
 path = "/{*rest}"
+auth = "none"
 handler = "src/legacy.ts"
 
 # Policies for routes inside /api, wherever they're served from.

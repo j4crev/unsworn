@@ -18,7 +18,13 @@ keys = "{env.API_KEYS}"
 "#;
 
 fn plan_of(config: &str, files: &[(&str, &str)]) -> Plan {
-    let text = format!("{BASE}\n{config}");
+    // A project with auth schemes has every route say who may call it.
+    // Here that's anyone, unless the test has a `[defaults]` of its own.
+    let defaults = match config.contains("[defaults]") {
+        true => "",
+        false => "[defaults]\nauth = \"none\"\n",
+    };
+    let text = format!("{BASE}\n{defaults}\n{config}");
     let mut all = vec![("unsworn.toml", text.as_str())];
     all.extend_from_slice(files);
     let host = MemHost::with(&all);
@@ -162,6 +168,7 @@ fn switching_a_policy_off_inside_a_route_is_written() {
     let plan = plan_of(
         r#"
 [defaults]
+auth = "none"
 rate_limit = { requests = 5, per = "1s", key = "ip" }
 
 [[route]]
@@ -405,6 +412,29 @@ fn added_and_removed_routes() {
     assert!(out.contains("- GET /old\n"), "{out}");
     assert!(out.ends_with("\n1 added, 1 removed\n"), "{out}");
     assert_eq!(d.looser(), 0);
+
+    // A new route anyone may call lets through requests that nothing did
+    // before, so it counts as looser, on all of its paths or some.
+    let public = "[[route]]\npath = \"/new\"\nrespond = { status = 204 }\n";
+    let d = changes(old, public);
+    assert_eq!((d.looser(), d.opened()), (1, 1));
+    let out = d.render();
+    assert!(
+        out.contains("+ * /new\n    respond            204\n  ! auth               none  (looser: anyone may call it)\n"),
+        "{out}"
+    );
+    assert!(
+        out.ends_with("\n1 added (1 open to anyone), 1 removed\n"),
+        "{out}"
+    );
+    let partly = "[[route]]\npath = \"/app/{*rest}\"\nproxy = \"http://app\"\nauth = \"jwt\"\n\n[[route]]\npath = \"/app/assets/{*rest}\"\nauth = \"none\"\n";
+    let d = changes(old, partly);
+    assert_eq!(d.opened(), 1);
+    let out = d.render();
+    assert!(
+        out.contains("    at /app/assets/{*rest}\n  !   auth               none  (looser: anyone may call it)\n"),
+        "{out}"
+    );
 }
 
 #[test]

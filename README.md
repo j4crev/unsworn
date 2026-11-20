@@ -29,6 +29,10 @@ Those rules are declared in `unsworn.toml` and enforced by a
 binary that handler code can't change. A handler only runs after its request
 has been tested against those rules.
 
+A forgotten rule doesn't pass quietly either. Once a project has an auth
+scheme, a route that doesn't say who may call it is an error, so a public
+endpoint is always one somebody wrote `auth = "none"` for.
+
 A change to the rules can be reviewed too. `unsworn plan` writes what every
 route ends up enforcing to a file you commit, and `unsworn diff` says what
 a branch changes and marks what it loosens:
@@ -165,6 +169,7 @@ url  = "https://auth.example.com/.well-known/jwks.json"
 
 [[route]]
 path    = "/health"
+auth    = "none"                         # every route says who may call it
 respond = { status = 200, json = { ok = true } }
 
 [[route]]

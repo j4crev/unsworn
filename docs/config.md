@@ -353,6 +353,36 @@ auth = { scheme = "jwt", scopes = ["users:read"] }  # with required scopes
 auth = "none"                                     # public
 ```
 
+**Once a project has an auth scheme, every route says who may call it.**
+A route with no `auth` from anywhere is an error from `unsworn check`:
+
+```
+✗ unsworn.toml:12 [[route]]: `auth` isn't set for * /admin/export
+  → say who may call it: `auth = "<scheme>"`, or `auth = "none"` if anyone may. ...
+```
+
+A route left without `auth` would be public, and nothing would tell one
+left that way on purpose from one whose `auth` line was forgotten. So a
+public route has `auth = "none"` written for it: on the route, on an entry
+for its path or a prefix, or once for the whole project:
+
+```toml
+[defaults]
+auth = "none"        # public unless a route names a scheme
+```
+
+or the other way round, which is the safer default for an API that's
+mostly private:
+
+```toml
+[defaults]
+auth = "users"       # a token unless a route says `auth = "none"`
+```
+
+Either way the choice is a line in the config, and it shows in the
+[plan](plan.md). A project with no `[auth.*]` at all has nothing to forget,
+and isn't asked.
+
 Scopes are read from the token's `scope` (space-separated) or `scp` claim.
 A missing or invalid credential gets `401`; a valid one without the scopes
 gets `403`; one whose verifier is unavailable gets `503`. A `401` names the

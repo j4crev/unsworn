@@ -5,6 +5,10 @@
 [server]
 listen = "127.0.0.1:8080"
 
+# Every route says who may call it: anyone, unless it names a scheme.
+[defaults]
+auth = "none"
+
 [auth.jwt]
 type   = "jwt"
 secret = "bench-secret-0123456789abcdef-0123456789"

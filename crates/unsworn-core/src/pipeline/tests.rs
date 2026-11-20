@@ -450,6 +450,9 @@ proxy = "http://old-api:8080"
 fn paths_are_normalized_before_matching() {
     let t = Test::new(
         r#"
+[defaults]
+auth = "none"
+
 [auth.keys]
 type = "api_key"
 keys = ["k1"]
@@ -890,6 +893,9 @@ fn caching() {
     let t = Test::new(
         &format!(
             r#"{TS}
+[defaults]
+auth = "none"
+
 [auth.keys]
 type = "api_key"
 keys = ["k1", "k2"]
@@ -1401,6 +1407,9 @@ rate_limit = { requests = 2, per = "1m" }
 fn a_get_policy_covers_head() {
     let t = Test::new(
         r#"
+[defaults]
+auth = "none"
+
 [auth.key]
 type = "api_key"
 keys = ["k1"]

@@ -497,6 +497,9 @@ handler = "src/app.py#echo"
 
     let cfg = format!(
         r#"
+[defaults]
+auth = "none"
+
 [auth.service]
 type = "api_key"
 keys = "secret"
@@ -1025,6 +1028,9 @@ extensions = [".py"]
 command = "python3 worker.py"
 env = { PASSED_ON = "{env.PASSED_ON}" }
 
+[defaults]
+auth = "none"
+
 [auth.users]
 type = "jwt"
 secret = "{env.JWT_SECRET}"
@@ -1130,6 +1136,9 @@ for line in sys.stdin.buffer:
 [runtimes.py]
 extensions = [".py"]
 command = "python3 worker.py"
+
+[defaults]
+auth = "none"
 
 [auth.users]
 type = "jwt"

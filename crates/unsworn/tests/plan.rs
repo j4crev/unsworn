@@ -88,7 +88,7 @@ fn plan_is_written_and_checked() {
 
     p.write(
         "unsworn.toml",
-        &CONFIG.replace("[defaults]\nauth = \"jwt\"\n", ""),
+        &CONFIG.replace("auth = \"jwt\"\n", "auth = \"none\"\n"),
     );
     let out = p.command(&["plan", "--check"]);
     assert!(!out.status.success());
@@ -125,7 +125,7 @@ fn diff_against_a_git_revision() {
     assert!(p.command(&["diff", "--fail-on", "any"]).status.success());
 
     // Take the token requirement off, and add a route with a new file.
-    let open = CONFIG.replace("[defaults]\nauth = \"jwt\"\n", "")
+    let open = CONFIG.replace("auth = \"jwt\"\n", "auth = \"none\"\n")
         + "\n[[route]]\npath = \"/reports\"\nmethod = \"POST\"\nhandler = \"src/reports.ts\"\n";
     p.write("unsworn.toml", &open);
     p.write("src/reports.ts", "");
@@ -140,9 +140,10 @@ fn diff_against_a_git_revision() {
         text.contains("~ * /{*rest}\n  ! auth               jwt → none  (looser)\n"),
         "{text}"
     );
-    assert!(text.contains("+ POST /reports\n    handler            src/reports.ts (ts)\n    auth               none\n"), "{text}");
+    // A new route that anyone may call is marked as the looser rules are.
+    assert!(text.contains("+ POST /reports\n    handler            src/reports.ts (ts)\n  ! auth               none  (looser: anyone may call it)\n"), "{text}");
     assert!(
-        text.ends_with("\n2 changes (2 looser), 1 added\n"),
+        text.ends_with("\n2 changes (2 looser), 1 added (1 open to anyone)\n"),
         "{text}"
     );
 

@@ -194,6 +194,11 @@ fn model(rng: &mut Rng) -> Model {
     if rng.chance(70) {
         m.defaults = written(rng, m.sets.len(), true);
     }
+    // A project with auth schemes has every route say who may call it,
+    // which `[defaults]` does for all of them.
+    if m.defaults.auth.is_none() {
+        m.defaults.auth = Some(rng.pick(&["s1", "s2", "none"]).to_string());
+    }
     for _ in 0..1 + rng.below(6) {
         let mut segs = segments(rng, 3);
         if rng.chance(30) {
