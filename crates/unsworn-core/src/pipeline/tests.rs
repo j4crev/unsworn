@@ -1507,6 +1507,11 @@ mcp = {{ tool = "get_invoice", description = "An invoice" }}
 path = "/{{*rest}}"
 respond = {{ status = 200, text = "app" }}
 
+# One organization has a rule more.
+[[route]]
+path = "/orgs/vault/{{*rest}}"
+require = {{ "header.x-approved-by" = "auth.sub" }}
+
 [[route]]
 path = "/files/{{*path}}"
 respond = {{ status = 200 }}
@@ -1597,7 +1602,7 @@ require = {{ "query.user" = "auth.sub", "header.x-tenant" = "auth.org" }}
 
     // The same route as a tool: the rule is checked against the request
     // the arguments make.
-    let call = |organization: &str| {
+    let call = |token: &str, organization: &str| {
         let body = json!({
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {
@@ -1614,22 +1619,35 @@ require = {{ "query.user" = "auth.sub", "header.x-tenant" = "auth.org" }}
             ("mcp-protocol-version", "2026-07-28"),
             ("mcp-method", "tools/call"),
             ("mcp-name", "get_invoice"),
-            ("authorization", acme.as_str()),
+            ("authorization", token),
         ];
         let r = t.send("POST", "/mcp", &headers, body.to_string().as_bytes());
         assert_eq!(r.status, ok, "{:?}", r.body);
         r.json()["result"].clone()
     };
-    let mine = call("acme");
+    let mine = call(&acme, "acme");
     assert_eq!(mine["isError"], json!(null), "{mine}");
     assert_eq!(mine["structuredContent"]["params"]["organization"], "acme");
-    let theirs = call("globex");
+    let theirs = call(&acme, "globex");
     assert_eq!(theirs["isError"], true, "{theirs}");
     assert_eq!(
         theirs["content"][0]["text"],
         "Not allowed: `params.org` and `auth.org` have to be the same for this call."
     );
     assert_eq!(t.host.calls().len(), 2, "the handler ran for acme only");
+
+    // A call gets the policies of the path its arguments make: here an
+    // entry for one organization's part of the route, which a request for
+    // the route's pattern as a whole doesn't match.
+    let vault = token(json!({ "org": "vault" }));
+    assert_eq!(get(&vault, "/orgs/vault/invoices/7").status, forbidden);
+    let unapproved = call(&vault, "vault");
+    assert_eq!(unapproved["isError"], true, "{unapproved}");
+    assert_eq!(
+        unapproved["content"][0]["text"],
+        "Not allowed: `header.x-approved-by` and `auth.sub` have to be the same for this call."
+    );
+    assert_eq!(t.host.calls().len(), 2);
 }
 
 #[test]

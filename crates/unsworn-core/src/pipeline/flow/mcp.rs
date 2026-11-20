@@ -243,11 +243,32 @@ impl ToolCall<'_> {
         mut claims: Option<Map<String, Value>>,
     ) -> Result<Checked, Resp<H>> {
         let tool = self.tool;
-        let eff = ctx.project.tool_effective(tool);
         let route = &ctx.project.routes[tool.route];
+        // A route offered as a tool is called with the request its
+        // arguments make, and gets that request's policies: the route's,
+        // and those of an entry for the part of its paths the call is in.
+        // A `[[mcp.tool]]` has its own, on top of the endpoint's, which
+        // were applied to the request that carried the call.
+        let bound = tool.binding.as_ref().map(|b| b.bind(&self.args));
+        let eff = ctx
+            .project
+            .tool_effective_at(tool, bound.as_ref().map(|b| b.path.as_str()));
+        let (needs_auth, limit) = match &bound {
+            Some(_) => (
+                matches!(eff.auth, AuthReq::AnyOf(_)),
+                eff.rate_limit.as_ref(),
+            ),
+            None => (
+                tool.own.auth.is_some(),
+                match &tool.own.rate_limit {
+                    Some(OrOff::On(limit)) => Some(limit),
+                    _ => None,
+                },
+            ),
+        };
 
         // A missing scope is an HTTP error, so clients can ask for more access.
-        if tool.own.auth.is_some() {
+        if needs_auth {
             let query = query_pairs(parts.uri.query());
             let (more, tool_claims) = match ctx.authenticate(&parts.headers, &eff, &query).await {
                 Ok(outcome) => outcome,
@@ -256,7 +277,7 @@ impl ToolCall<'_> {
                     // against its rate limit, by the client's address,
                     // unless it failed because a verifier is down.
                     if resp.status() != StatusCode::SERVICE_UNAVAILABLE
-                        && let Some(OrOff::On(limit)) = &tool.own.rate_limit
+                        && let Some(limit) = limit
                         && let RateLimit::Limited { retry_after } =
                             ctx.rate_limit(limit, &self.trusted, None).await
                     {
@@ -276,7 +297,7 @@ impl ToolCall<'_> {
         }
 
         // The rest are reported to the model as tool errors.
-        if let Some(OrOff::On(limit)) = &tool.own.rate_limit {
+        if let Some(limit) = limit {
             match ctx.rate_limit(limit, &self.trusted, claims.as_ref()).await {
                 RateLimit::Allowed => {}
                 RateLimit::Limited { retry_after } => {
@@ -303,24 +324,21 @@ impl ToolCall<'_> {
             mcp["client"] = client.clone();
         }
         context.insert("mcp".into(), mcp);
-        let template = match &tool.binding {
+        let template = match (&tool.binding, bound) {
             // A route offered as a tool: its handler gets the same request a
             // REST client would send.
-            Some(b) => {
-                let bound = b.bind(&self.args);
-                ProtoRequest {
-                    route: route.path.clone(),
-                    method: b.method.clone(),
-                    path: bound.path,
-                    params: bound.params,
-                    query: bound.query,
-                    raw_query: bound.raw_query,
-                    headers: header_map(&self.trusted),
-                    json: bound.json.map(Into::into),
-                    ..Default::default()
-                }
-            }
-            None => ProtoRequest {
+            (Some(b), Some(bound)) => ProtoRequest {
+                route: route.path.clone(),
+                method: b.method.clone(),
+                path: bound.path,
+                params: bound.params,
+                query: bound.query,
+                raw_query: bound.raw_query,
+                headers: header_map(&self.trusted),
+                json: bound.json.map(Into::into),
+                ..Default::default()
+            },
+            _ => ProtoRequest {
                 route: route.path.clone(),
                 method: "POST".into(),
                 path: parts.uri.path().to_string(),

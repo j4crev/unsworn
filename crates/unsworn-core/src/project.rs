@@ -920,12 +920,21 @@ impl Project {
     /// route's policies as a REST request sees them, with `[mcp]`'s `before`
     /// handlers first, and `[mcp]`'s `timeout` unless the route sets one.
     pub fn tool_effective(&self, tool: &McpTool) -> Effective {
+        self.tool_effective_at(tool, None)
+    }
+
+    /// [`Project::tool_effective`] for one call to a route offered as a
+    /// tool, whose arguments make the request for `path`. An entry for
+    /// part of the route's paths applies to the calls that land there, as
+    /// it does to a REST request for the same path.
+    pub fn tool_effective_at(&self, tool: &McpTool, path: Option<&str>) -> Effective {
         let route = &self.routes[tool.route];
         let Some(b) = &tool.binding else {
             return self.route_effective(route);
         };
         let probe = b.pattern.replace("{*", "{");
-        let layer = merged_layer(route, &self.entries, &b.method, &probe);
+        let path = path.unwrap_or(&probe);
+        let layer = merged_layer(route, &self.entries, &b.method, path);
         let mut eff = layer.finalize(self.server.timeout, self.server.max_body);
         if let Some(mcp) = &self.mcp {
             let endpoint = merged_layer(&self.routes[mcp.route], &self.entries, "POST", &mcp.path);
