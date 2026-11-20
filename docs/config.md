@@ -694,6 +694,7 @@ stream_body = true                    # handler reads the body as it arrives
 shadow     = "src/users.rs#get"       # a second handler to compare with; see shadow.md
 response_headers = { set = { "Cache-Control" = "no-store" }, remove = ["Server"] }
 before     = ["src/auth.ts#tenant"]   # handlers that run first, in order
+require    = { "params.org" = "auth.org" }   # two values that have to be the same; see below
 use        = ["public_cached"]        # named policy sets, applied in order
 ```
 
@@ -706,10 +707,10 @@ the two together. Browsers refuse `*` with credentials, and answering each
 site by name instead would let any website read what a signed-in user's
 browser fetches.
 
-Most keys replace what wider statements set. `before` is different: lists
-from every one of them are joined, widest first, so a folder's `_before`
-handler and a route's own `before` both run. `before = "off"` clears the
-inherited ones.
+Most keys replace what wider statements set. `before` and `require` are
+different: lists from every one of them are joined, widest first, so a
+folder's `_before` handler and a route's own `before` both run, and a
+route's `require` adds to a prefix's. `"off"` clears the inherited ones.
 
 `response_headers` sets and removes headers on the response. `headers`, on
 a route, is something else: rules for the request's headers (see
@@ -729,6 +730,55 @@ then refill evenly over `per`. A request over the limit gets `429` with
 `Retry-After`. The client IP is the connection's address, or the
 `X-Forwarded-For` address when the connection comes from one of
 `[server].trusted_proxies`.
+
+#### `require`: whose things a caller may reach
+
+`auth` says who may call a route, and its `scopes` what kind of thing they
+may do. Neither says *whose* things: a user with a valid token for one
+organization can ask for `/orgs/another/invoices`, and the token passes.
+Whether they get the invoices is then up to the handler remembering to
+compare the two.
+
+`require` makes that comparison a rule:
+
+```toml
+[[route]]
+path    = "/orgs/{org}/{*rest}"
+require = { "params.org" = "auth.org" }
+```
+
+Each pair is two values that have to be the same for the request to go
+on. A request where they differ, or that lacks either one, gets `403`
+before validation, `before` handlers and the handler run. Its answer
+names the rule and neither value. The values a rule can name are ones the
+request and its caller already have:
+
+| Value | What it is |
+|---|---|
+| `auth.<claim>` | a claim of the verified caller: a string, a number or a boolean. A list or an object equals nothing |
+| `params.<name>` | a parameter of the path the rule is written for, with its escapes resolved. A `{*rest}` is all of the rest |
+| `query.<name>` | a query parameter, sent once |
+| `header.<name>` | a request header, sent once |
+
+- **Write it once for everything under a path.** On a prefix entry, as
+  above, it covers every route below, an app behind a catch-all included,
+  and a route added later. `params.org` is the `{org}` of the entry's own
+  path, whatever a route under it calls that segment.
+- **Rules add up.** A narrower statement adds its pairs to the wider
+  ones', as `before` lists do, and `require = "off"` clears them. In a
+  named set, `params.<name>` gets its place from the path of each entry
+  that uses the set, so `[defaults]`, which has no path, can't hold one.
+- **TOML reads an unquoted `params.org` as a table,** which Unsworn takes
+  too: `require = { params.org = "auth.org" }` is the same rule.
+- **A rule with `auth.<claim>` needs a caller,** so it's an error on a
+  route that's public.
+- **It compares, and nothing else.** There are no other operators, and a
+  value can't be compared with one written in the config. "Is invoice 812
+  this user's" needs a database, and stays in a handler or a `before`
+  handler.
+
+A route offered as an [MCP tool](mcp.md#level-3-routes-as-tools) keeps its
+rules: a tool call is checked against the request its arguments make.
 
 **A limit is counted where it's written.** Every request it applies to
 takes from one count for each caller, whichever route serves the request:
@@ -1210,8 +1260,8 @@ For OpenAPI routes, policy values here override what the spec implies.
    instead of picking one: two entries with the same path and methods,
    an entry and a route with the same path and methods, or two with the
    same path whose methods overlap without one list holding the other
-   (`["GET", "POST"]` and `["POST", "PUT"]`). `before` is the exception,
-   since its lists add up.
+   (`["GET", "POST"]` and `["POST", "PUT"]`). `before` and `require`
+   are the exceptions, since their lists add up.
 5. **`unsworn routes --policies`** prints the final, merged policies for
    each route and which statement set each value, in the order they
    apply. [`unsworn plan`](plan.md) writes the result for every route,

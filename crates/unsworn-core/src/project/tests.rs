@@ -668,6 +668,7 @@ path = "/reports/{{report}}"
         "auth = \"none\"",
         "method = [\"GET\", \"POST\"]\nmax_body = \"2KB\"",
         "method = [\"GET\", \"POST\"]\nbefore = [\"h.ts\"]",
+        "method = [\"GET\", \"POST\"]\nrequire = { \"params.report\" = \"auth.sub\" }",
     ] {
         project(&[("unsworn.toml", &cfg(second)), ("h.ts", "")]);
     }

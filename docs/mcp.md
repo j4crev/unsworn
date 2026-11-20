@@ -554,6 +554,11 @@ it doesn't have to. Replies map to tool results as for
   none.
 - **REST requests and tool calls share the route's rate limit.** One limit
   covers both ways in, on one count.
+- **A call gets the policies of the request its arguments make.** A tool
+  for `/orgs/{org}/invoices/{id}` called with `org = "acme"` is checked as
+  `GET /orgs/acme/invoices/7` would be: the route's `auth`, rate limit,
+  [`require`](config.md#require-whose-things-a-caller-may-reach) rules and
+  `before` handlers, and those of an entry for that part of its paths.
 - Policies that describe HTTP requests (`origin`, `ip`, `cors`,
   `response_headers`, `max_body`, `cache`) don't apply to tool calls; the MCP endpoint has its
   own.

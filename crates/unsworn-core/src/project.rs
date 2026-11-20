@@ -4246,8 +4246,9 @@ impl<'h> Compiler<'h> {
                     }
                 };
                 for key in a.layer.keys() {
-                    // `before` lists add up, so two of them don't clash.
-                    if key == "before" || !b.layer.keys().contains(&key) {
+                    // `before` and `require` lists add up, so two of
+                    // them don't clash.
+                    if matches!(key, "before" | "require") || !b.layer.keys().contains(&key) {
                         continue;
                     }
                     self.diags.push(

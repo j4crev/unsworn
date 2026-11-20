@@ -33,6 +33,15 @@ A forgotten rule doesn't pass quietly either. Once a project has an auth
 scheme, a route that doesn't say who may call it is an error, so a public
 endpoint is always one somebody wrote `auth = "none"` for.
 
+And the rules reach past "is this a valid token". One line keeps every
+caller to their own organization's paths, for every route under them:
+
+```toml
+[[route]]
+path    = "/orgs/{org}/{*rest}"
+require = { "params.org" = "auth.org" }
+```
+
 A change to the rules can be reviewed too. `unsworn plan` writes what every
 route ends up enforcing to a file you commit, and `unsworn diff` says what
 a branch changes and marks what it loosens:
@@ -249,7 +258,7 @@ All of this can be configured in `unsworn.toml`, with no code:
 | AI agents (MCP) | OAuth protected-resource metadata, origin checks and streaming pass-through for existing MCP servers, with per-tool policies; MCP tools as handlers, with tool lists filtered by scope; routes and OpenAPI operations as tools |
 | Responses | static JSON or text, redirects, static files with SPA fallback, health checks |
 | Forwarding | reverse proxy with WebSocket pass-through, load balancing, catch-all to an existing app |
-| Security | JWT/JWKS, API keys, CORS, IP allow and deny lists, body size limits, outbound services with credentials handlers never hold |
+| Security | JWT/JWKS, API keys, `require` rules that tie a path to the caller's claims, CORS, IP allow and deny lists, body size limits, outbound services with credentials handlers never hold |
 | Traffic | rate limits, timeouts, response caching |
 | Contracts | params, query, header and body validation (JSON Schema), OpenAPI input and output |
 | Ops | access logs, Prometheus metrics, per-route cost (`unsworn top`), shadow handlers, request IDs, health checks, config hot reload |
