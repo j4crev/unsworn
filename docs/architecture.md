@@ -274,9 +274,10 @@ too.
 In the core, `[mcp]` compiles to a `POST`-only route for the endpoint and
 one hidden route per tool. Tool routes are never matched by path. They
 carry the tool's handler, its input and output schemas, and its policies
-merged as `[defaults]`, prefix entries for the endpoint path, `[mcp]`, then
-the tool's own. That lets tools reuse the route machinery: per-route rate
-limit buckets, validation, `before` handlers and `unsworn routes --policies`.
+merged as `[defaults]`, the entries that cover the endpoint's path,
+`[mcp]`, then the tool's own. That lets tools reuse the route machinery:
+per-route rate limit buckets, validation, `before` handlers and `unsworn
+routes --policies`.
 
 ## Deployment targets
 

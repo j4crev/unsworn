@@ -1033,10 +1033,18 @@ impl Project {
             return true;
         };
         let path = probe(&shared);
-        route_methods(route)
-            .iter()
-            .filter(|m| **m == "*" || entry.covers_method(m))
-            .all(|m| !self.serves(route, m, &path))
+        // The methods both are for: the entry's, on a route that takes
+        // every method.
+        let methods: Vec<&str> = match (&route.methods, &entry.methods) {
+            (None, None) => vec!["*"],
+            (None, Some(entry)) => covered_methods(entry),
+            (Some(route), _) => route
+                .iter()
+                .map(String::as_str)
+                .filter(|m| entry.covers_method(m))
+                .collect(),
+        };
+        methods.iter().all(|m| !self.serves(route, m, &path))
     }
 
     /// Every handler reference, by runtime.
@@ -1573,6 +1581,10 @@ impl<'h> Compiler<'h> {
                         "a path served by a catch-all route can't be an MCP tool on its own",
                     );
                 }
+            }
+            // One that only carries validation has no policies to apply.
+            if e.layer.is_empty() {
+                continue;
             }
             entries.push(PolicyEntry {
                 segs: parse_pattern(&e.path),
