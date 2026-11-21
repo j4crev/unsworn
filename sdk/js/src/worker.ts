@@ -427,7 +427,7 @@ function ready() {
     raw_json: rawJson,
     calls: canCall,
     fetch: canFetch,
-    sdk: "unsworn-js/0.4.0",
+    sdk: "unsworn-js/0.5.0",
   });
 }
 
