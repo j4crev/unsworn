@@ -250,8 +250,8 @@ fn decode(key: &ring::hmac::Key, token: &[u8]) -> Option<u64> {
         return None;
     }
     let mut bytes = [0u8; TOKEN_LEN / 2];
-    for (byte, pair) in bytes.iter_mut().zip(token.chunks_exact(2)) {
-        *byte = nibble(pair[0])? << 4 | nibble(pair[1])?;
+    for (byte, [high, low]) in bytes.iter_mut().zip(token.as_chunks::<2>().0) {
+        *byte = nibble(*high)? << 4 | nibble(*low)?;
     }
     let (number, tag) = bytes.split_at(8);
     let expected = ring::hmac::sign(key, number);
