@@ -333,21 +333,7 @@ from a per-target capability table (`unsworn-core/src/targets.rs`).
 
 ## CLI
 
-| Command | What it does |
-|---|---|
-| `unsworn serve` | Run the router. |
-| `unsworn dev` | Serve with file watching, handler rebuilds and verbose errors. |
-| `unsworn check [--deep] [--target <t>]` | Validate config and routes and report target capability gaps. `--deep` also starts workers to verify handler names. |
-| `unsworn routes [--policies]` | Print the resolved route table and the source of each route. `--policies` adds each route's merged policies and where each value came from. |
-| `unsworn top [--once]` | Show each route's requests, latency and handler CPU on a running server, from its admin listener. See [`top.md`](top.md). |
-| `unsworn plan [--check]` | Write what every route and MCP tool enforces to `unsworn.plan`. `--check` fails when the file is out of date. See [`plan.md`](plan.md). |
-| `unsworn diff [<base>] [--fail-on <looser\|any>]` | Compare the rules with those at a git revision or in another directory, marking the changes that let more requests through. |
-| `unsworn openapi` | Emit the OpenAPI document. |
-| `unsworn gen [<lang>] [--check]` | Write typed request and response models for handlers, from each route's schemas, to the files `[gen]` lists. See [`types.md`](types.md). |
-| `unsworn conformance --runtime <r> --handlers <file>` | Run the protocol conformance suite against a runtime. |
-| `unsworn build --target <t>` | Write a Dockerfile for the server and its workers (`image`, or `lambda` for AWS Lambda), or bundle the project into a Cloudflare Worker (`cloudflare`) or a serverless function (`vercel`, `netlify`). |
-| `unsworn schema` | Print the config's JSON Schema. |
-| `unsworn init` | Write a starter config. |
+Every command is listed in [`cli.md`](cli.md).
 
 ## Decisions made in v1
 

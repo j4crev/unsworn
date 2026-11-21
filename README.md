@@ -1,21 +1,59 @@
 # Unsworn
 
-An API router with allegiance to no language.
+An API router with allegiance to no programming language.
 
-That means your endpoint handlers can be written in virtually anything.
+That means your handlers can be written in virtually anything. And each handler can be in a different language;
+so `src/chat.py` can sit next to `src/users.ts`. The same handlers can also be offered to AI agents as
+MCP tools. Hell, call a function in Python from TypeScript if you'd like.
 
-Unsworn handles the HTTP side of an API:
-routing, validation, auth, CORS, rate limiting, caching, proxying, logging
-and metrics. You configure it with a TOML file. Anything that
-needs real logic goes to a **handler**, a plain function in whatever language
-suits that endpoint. The same handlers can also be offered to AI agents as
-MCP tools.
+Unsworn also handles the below parts of your app, configured in `unsworn.toml` instead of your code:
 
-## AI Usage and Security Disclosure
+| Area | Features |
+|---|---|
+| Responses | static JSON or text, redirects, static files with SPA fallback, health checks |
+| Forwarding | reverse proxy with WebSocket pass-through, basic load balancing, catch-all to an existing app |
+| Security | JWT/JWKS, API keys, signed webhooks (Stripe, GitHub, Slack, Standard Webhooks), `require` rules that tie a path to the caller's claims, CORS, IP allow and deny lists, body size limits, outbound services with credentials handlers never hold |
+| Traffic | rate limits, timeouts, response caching |
+| Contracts | params, query, header and body validation (JSON Schema), OpenAPI input and output |
+| Ops | access logs, Prometheus metrics, per-route cost (`unsworn top`), shadow handlers, request IDs, health checks, config hot reload |
 
-**Latest release built with Fable 5.2 High**
+## Two ways to serve a route
 
-**Last Security Audit on 2026-11-15 by Fable 5.2 Medium, followed by Opus 5.5 High**
+Unsworn checks every request against your API's rules, then hands
+it to your code. A request that fails a rule never reaches your code.
+
+Your code can receive a request in two ways:
+
+**1. As a handler function.**
+Unsworn calls it with the validated request and
+sends back what it returns.
+
+**2. As an HTTP server.** You have an app built on a
+framework such as Hono, Rails, FastAPI or Express. Unsworn forwards
+requests to it via HTTP, but you can decide who manages the app.
+  - **Unsworn manages it.** Configure the command, and Unsworn starts,
+restarts, and shuts it down as needed.
+  - **You manage it.** Configure the proxy address to wherever your app lives.
+
+The really cool part is that your project can use both ways, at the same time, by defining them per route.
+
+For example, look at this configuration snippet:
+
+```toml
+[[route]]                            # way 1: a function
+path    = "/chat"
+method  = "POST"
+handler = "src/chat.py"              # assumes 'def handler'
+
+
+[runtimes.bun]                       # way 2: an HTTP server
+command  = "bun run server.ts"
+protocol = "http"
+
+[[route]]                            # a route for way 2
+path  = "/invoices/{*rest}"
+proxy = { runtime = "bun" }
+```
 
 ## Why Unsworn
 
@@ -24,26 +62,19 @@ MCP tools.
 In most frameworks, auth checks, input validation and rate limits are code,
 but code can be wrong. One forgotten middleware or an unvalidated field is enough to get you rekt.
 
-With Unsworn, the security-critical part of your API is one file of rules someone can review.
-Those rules are declared in `unsworn.toml` and enforced by a
-binary that handler code can't change. A handler only runs after its request
-has been tested against those rules.
+With Unsworn, the security-critical part of your API is declared, not coded: rules in `unsworn.toml`, enforced by a binary that handler code can't change.
 
-A forgotten rule doesn't pass quietly either. Once a project has an auth
-scheme, a route that doesn't say who may call it is an error, so a public
-endpoint is always one somebody wrote `auth = "none"` for.
-
-And the rules reach past "is this a valid token". One line keeps every
-caller to their own organization's paths, for every route under them:
+And the rules reach past "is this a valid token". For example, one `require` line keeps every
+caller scoped to their own organization's paths:
 
 ```toml
 [[route]]
 path    = "/orgs/{org}/{*rest}"
 require = { "params.org" = "auth.org" }
+# i.e. the {org} in the path must equal the "org" claim in the caller's token
 ```
 
-A change to the rules can be reviewed too. `unsworn plan` writes what every
-route ends up enforcing to a file you commit, and `unsworn diff` says what
+You, or your agents, can review changes to the rules using `unsworn plan`. It writes all of them into a file called `unsworn.plan`, next to your config. Keep that file in git, and a pull request that changes the rules shows the change in its diff. `unsworn diff` says what
 a branch changes and marks what it loosens:
 
 ```
@@ -52,21 +83,25 @@ $ unsworn diff origin/main
   ! auth               jwt → none  (looser)
 ```
 
-See [`docs/plan.md`](docs/plan.md).
+### The right language for each endpoint
 
-The rules cover outbound traffic too. Declare a service a handler needs, and
-Unsworn makes the request and adds the credential:
+Creating an API with one language is great, except for the parts that need Python's AI and
+data libraries, or hot paths that need a speed boost. They usually turn into a separate service with their own
+deploy, networking and auth.
 
-```toml
-[outbound.stripe]
-url     = "https://api.stripe.com"
-headers = { Authorization = "Bearer {env.STRIPE_KEY}" }
-paths   = ["/v1/charges", "/v1/charges/{id}"]
+With Unsworn, `routes/chat.post.py` sits next to `routes/users.get.ts`. They
+share one router, one auth config, one API contract and one deploy. The same
+goes for a Go endpoint that needs Go's concurrency, a Rust endpoint, etc.
+
+And they can call each other. A handler declared as a
+[function](docs/functions.md) in the config, is called by name from any other handler,
+with its input checked on the way and no service in between:
+
+```ts
+// let's say "embed" represents a Python function
+// but called from your TypeScript handler
+const vector = await ctx.call("embed", { text: req.query.q });
 ```
-
-The handler calls `ctx.fetch("stripe", "/v1/charges", ...)` and never
-holds the environment variable, so a handler that's tricked into misbehaving has nothing
-to leak. See [`docs/outbound.md`](docs/outbound.md).
 
 ### Built for MCP servers
 
@@ -101,69 +136,22 @@ handler = "src/users.ts#getUser"
 mcp     = { tool = "get_user", description = "Look up a user by id" }
 ```
 
-See [`docs/mcp.md`](docs/mcp.md).
-
-### Plug 'n Play
-
-Unsworn can sit between your existing app and the internet. Run it behind
-your platform's load balancer, Caddy, nginx or Cloudflare, or on its own with a simple setup.
-Point a catch-all route at your existing Express, Hono, FastAPI or Go app,
-with no code changes, and you can immediately:
-
-- add JWT or API-key auth, rate limits and caching to any path
-- have the app told who the caller is, in a header, so it doesn't check
-  the token again
-- validate requests and data against an OpenAPI spec before they reach your app
-- serve health checks, redirects and static files without touching the app
-
-Then move routes out of the old app one at a time, at your own pace.
-
-### The right language for each endpoint
-
-Creating an API with one langugage is great, except for the parts that need Python's AI and
-data libraries. Those parts usually turn into a separate service with its own
-deploy, networking and auth.
-
-With Unsworn, `routes/chat.post.py` sits next to `routes/users.get.ts`. They
-share one router, one auth config, one API contract and one deploy. The same
-goes for a Go endpoint that needs Go's concurrency, a Rust endpoint, etc.
-
-And they can call each other. A handler declared as a
-[function](docs/functions.md) in the config, is called by name from any other handler,
-with its input checked on the way and no service in between:
-
-```ts
-// let's say "embed" represents a Python function
-// but called from your TypeScript handler
-const vector = await ctx.call("embed", { text: req.query.q });
-```
-
-### Performance behavior and tweaks
+### Performance
 
 - **Declarative endpoints run entirely in Rust.** Static responses,
-  redirects, proxies, cached responses and rejected requests never reach a handler.
+  redirects, proxies, cached responses and rejected requests never reach a
+  handler.
 - **Handlers run in worker pools that grow with the load,** without any
-  clustering setup in your code. Each runtime starts with one worker by
-  default and adds more as needed, up to one per available CPU.
+  clustering setup in your code.
 - **A CPU-heavy endpoint can move to a faster language** without changing
-  the API. Replace `get.ts` with `get.rs`, rewrite the handler, and clients
-  notice nothing except the speed. In
-  [our benchmark](docs/benchmarks.md#a-handler-that-does-work), one search
-  handler costs 53 ms of CPU per request in Python, 1.2 ms in TypeScript on
-  Bun and 0.82 ms in Rust.
-- **Look for latency, and try the rewrite first.**
-  [`unsworn top`](docs/top.md) lists each route's latency and its
-  handler's CPU on a running server. [`shadow`](docs/shadow.md) sends a
-  copy of a route's requests to the new handler and compares its answers
-  with the original one. Clients continue being served by the original.
+  the API. [`unsworn top`](docs/top.md) finds the costly routes, and
+  [`shadow`](docs/shadow.md) tries the rewrite on a copy of live requests
+  first.
 
-A handler call does cross a process boundary, and that costs about the same
-in every language. So a trivial endpoint won't beat the same code running
-directly on Bun, for example, and won't get faster by moving to Rust. The
-gains come from the points above.
-
-What Unsworn costs per request, for every route type, policy and SDK, is
-measured in [docs/benchmarks.md](docs/benchmarks.md).
+A handler call does cross a process boundary, so a trivial endpoint won't
+beat the same code running directly on Bun, for example. What Unsworn costs per
+request, for every route type, policy and SDK, is measured in
+[docs/benchmarks.md](docs/benchmarks.md).
 
 ## A quick look
 
@@ -229,79 +217,15 @@ handler. Everything else still goes to the old app. There's no runtime to
 configure for it: a TypeScript, Python, Go or Rust handler runs with its
 SDK's worker unless the config says otherwise.
 
-## Is Unsworn a good fit?
+## Documentation
 
-**Probably, if you:**
-
-- are building a remote MCP server, or want AI agents to use your API with
-  the same rules as everyone else
-- want auth, validation and rate limits enforced outside your application code
-- want API features such as auth, validation and contracts in front of an
-  existing app, without rewriting it
-- need more than one language in one API, such as TypeScript plus Python for
-  AI features
-- have a few hot endpoints you'd like to move to Rust or Go without splitting
-  off a new service
-
-**Probably not, if you** have a single-language app with no performance
-problems, are happy with your framework's middleware, and don't need
-anything in front of it. A framework like Hono, Elysia or axum on its own is simpler
-in that case.
-
-## What's built in
-
-All of this can be configured in `unsworn.toml`, with no code:
-
-| Area | Features |
+| | |
 |---|---|
-| AI agents (MCP) | OAuth protected-resource metadata, origin checks and streaming pass-through for existing MCP servers, with per-tool policies; MCP tools as handlers, with tool lists filtered by scope; routes and OpenAPI operations as tools |
-| Responses | static JSON or text, redirects, static files with SPA fallback, health checks |
-| Forwarding | reverse proxy with WebSocket pass-through, load balancing, catch-all to an existing app |
-| Security | JWT/JWKS, API keys, signed webhooks (Stripe, GitHub, Slack, Standard Webhooks), `require` rules that tie a path to the caller's claims, CORS, IP allow and deny lists, body size limits, outbound services with credentials handlers never hold |
-| Traffic | rate limits, timeouts, response caching |
-| Contracts | params, query, header and body validation (JSON Schema), OpenAPI input and output |
-| Ops | access logs, Prometheus metrics, per-route cost (`unsworn top`), shadow handlers, request IDs, health checks, config hot reload |
-
-## How it works
-
-- **Routes come from wherever suits you,** and all feed one route table:
-  `[[route]]` entries pointing at functions (`src/users.ts#getUser`), a
-  nested or flat routes directory (`routes/users.[id].get.ts`), an OpenAPI
-  spec, or a catch-all to an existing app.
-- **Handlers are plain functions.** Language SDKs give each one a typed
-  request and hide everything else. The same handler code runs on a server,
-  at the edge and in serverless functions.
-- **The contract reaches the code.** [`unsworn gen`](docs/types.md) writes
-  each route's params, query and body as types in the handler's language,
-  and `unsworn dev` keeps them current. Change a rule and the handlers it
-  breaks stop compiling.
-- **Any language can join.** A language with no SDK joins as an
-  [HTTP runtime](docs/http-runtime.md): Unsworn starts its ordinary HTTP
-  server (ASP.NET, Spring, Rails, Phoenix, anything) on a socket only
-  Unsworn can open, and sends it requests that have passed the rules,
-  with who the caller is. For a function-style worker without an SDK,
-  the universal protocol is JSON lines over stdin/stdout. Official SDKs
-  also speak a framed protocol over a Unix socket, which handles large
-  bodies faster.
-- **Custom middleware is just more handlers.** A `before` handler, in any
-  language, can add context such as the current tenant, or reject a request.
-- **Mistakes surface early.** `unsworn check` validates config and routes
-  with precise, fixable errors, and SDK workers confirm at startup that every
-  handler name in the config exists. The config has a published JSON Schema
-  for editor autocomplete.
-- **Rule changes show up in review.** The [plan](docs/plan.md) is every
-  route's merged policies in one committed file, and `unsworn diff` lists
-  what a change does to them.
-
-Details: [architecture](docs/architecture.md), [config](docs/config.md),
-[plan and diff](docs/plan.md), [generated types](docs/types.md),
-[functions](docs/functions.md), [outbound services](docs/outbound.md),
-[tracing](docs/tracing.md), [`top`](docs/top.md), [`shadow`](docs/shadow.md),
-[container image](docs/image.md), [AWS Lambda](docs/lambda.md),
-[HTTP runtimes](docs/http-runtime.md),
-[protocol](docs/protocol.md),
-[conformance](docs/conformance.md), [MCP](docs/mcp.md),
-[benchmarks](docs/benchmarks.md) and [roadmap](docs/roadmap.md).
+| Start here | [Installing](docs/install.md), [commands](docs/cli.md), [config reference](docs/config.md) |
+| Your code | [Serving a route](docs/serving-routes.md), [HTTP runtimes](docs/http-runtime.md), [generated types](docs/types.md), [functions](docs/functions.md), [outbound services](docs/outbound.md), [MCP](docs/mcp.md) |
+| Reviewing and operating | [Plan and diff](docs/plan.md), [`top`](docs/top.md), [`shadow`](docs/shadow.md), [tracing](docs/tracing.md) |
+| Deploying | [Container image](docs/image.md), [AWS Lambda](docs/lambda.md), [Cloudflare Workers](docs/cloudflare.md), [Vercel and Netlify](docs/serverless.md) |
+| Internals | [Architecture](docs/architecture.md), [worker protocol](docs/protocol.md), [conformance](docs/conformance.md), [benchmarks](docs/benchmarks.md), [roadmap](docs/roadmap.md) |
 
 ## Where Unsworn sits
 
@@ -318,32 +242,18 @@ portals, billing, key issuance) or a web framework.
 
 ## Where Unsworn runs
 
-Unsworn runs in two ways, and what it promises differs between them.
+| Where | How | Handlers |
+|---|---|---|
+| Any VPS or bare metal, Docker, Kubernetes, Fly.io, Railway, Render, Google Cloud Run, AWS ECS/Fargate, Cloudflare Containers | The `unsworn` binary plus worker processes: `unsworn build --target image` ([guide](docs/image.md)) | Any language, in processes of their own |
+| AWS Lambda | The same image, with AWS's Lambda Web Adapter: `--target lambda` ([guide](docs/lambda.md)) | Any language, in processes of their own |
+| Cloudflare Workers | The core as WebAssembly in the Worker: `--target cloudflare` ([guide](docs/cloudflare.md)) | JavaScript and TypeScript, in the same isolate |
+| Vercel Functions, Netlify Functions | One function runs the whole project: `--target vercel` or `netlify` ([guide](docs/serverless.md)) | JavaScript and TypeScript, in the same process |
 
-**As a server, with handlers in processes of their own.** This is all of
-Unsworn: handlers in any language, and rules that handler code can't read
-the secrets of or change.
-
-| Where | How |
-|---|---|
-| Any VPS or bare metal, Docker, Kubernetes, Fly.io, Railway, Render, Google Cloud Run, AWS ECS/Fargate, Cloudflare Containers | The `unsworn` binary plus worker processes. `unsworn build --target image` writes the Dockerfile ([guide](docs/image.md)) |
-| AWS Lambda | The same image, with AWS's Lambda Web Adapter in it: `unsworn build --target lambda` ([guide](docs/lambda.md)) |
-
-**Inside a JavaScript platform, with handlers in the same process.** The
-router core does no I/O and compiles to WebAssembly, so it runs where a
-server can't. Every request still passes the same rules before its handler
-is called. But handlers are JavaScript or TypeScript only, and they share
-an isolate or a process with the core, so a handler can read the secrets
-the rules use, as far as the platform lets it.
-
-| Where | How |
-|---|---|
-| Cloudflare Workers | `unsworn build --target cloudflare`: the core in the Worker, with JS/TS handlers bundled in and called directly ([guide](docs/cloudflare.md)) |
-| Vercel Functions, Netlify Functions | `unsworn build --target vercel` or `netlify`: one function runs the whole project ([guide](docs/serverless.md)) |
-
-Some features need shared state on platforms that run many instances, such
-as rate limits and caches. `unsworn check --target <platform>` reports what
-a config needs on that target before you deploy.
+On the last two rows every request still passes the same rules before its
+handler is called. But a handler shares a process with the core there, so
+it can read the secrets the rules use, as far as the platform lets it.
+`unsworn check --target <platform>` reports what a config needs on a
+target before you deploy.
 
 ## Getting started
 
@@ -354,58 +264,18 @@ Install the latest release:
 curl -fsSL https://raw.githubusercontent.com/j4crev/unsworn/main/install.sh | sh
 ```
 
-On macOS everything works that doesn't read Linux's `/proc`. What differs:
-
-- **A handler isn't kept from the server's secrets.** macOS shows a
-  process's environment to any other process of the same user, and has
-  no switch for it as Linux has. Develop there; deploy on Linux.
-- **Pools grow only when calls wait.** A worker that takes many requests
-  at once is added to on Linux when it uses a whole core, which is read
-  from `/proc`. Set `workers` to a number to try more on a Mac.
-- **`unsworn top` has no CPU or memory figures,** for the same reason.
-
-By default, the installer verifies the release's build attestation if the
-GitHub CLI is installed and signed in. Otherwise, it installs without
-that check. To require successful verification before installing, set
-`UNSWORN_VERIFY=1`. To skip verification, set `UNSWORN_VERIFY=0`.
-See [`SECURITY.md`](SECURITY.md).
-
-
-For containers, `unsworn build --target image` writes a Dockerfile for the
-project: each runtime at the version your project names, dependencies
-from their lockfiles, compiled workers built in stages of their own (see
-[`docs/image.md`](docs/image.md)). Or extend the `ghcr.io/j4crev/unsworn`
-base image yourself. Either way it runs as the unprivileged user
-`unsworn`, and the project in `/app` stays owned by root, so handler code
-can't change the rules it runs under. For the same reason it skips
-runtimes' `build` steps at startup: compiled workers are built into the
-image. With Rust 1.88 or newer, `cargo install unsworn` works too.
-
-To try unreleased changes, build from `main`:
-
-```sh
-cargo install --git https://github.com/j4crev/unsworn unsworn
-```
+[Installing](docs/install.md) has the other ways to get it, what the
+installer verifies, what differs on macOS and how to run it in a
+container.
 
 ```sh
 unsworn init        # writes a starter unsworn.toml
 unsworn dev         # serves it, reloads on changes, verifies handler names
+unsworn check       # validates config, routes and handler files
+unsworn plan        # writes every route's rules to unsworn.plan
 ```
 
-| Command | What it does |
-|---|---|
-| `unsworn serve` | Run the router (`--listen`, `--log-format json`, `--no-build` for prebuilt workers); `SIGHUP` reloads |
-| `unsworn dev` | Serve with file watching, every runtime started up front, and detailed errors |
-| `unsworn check` | Validate config, routes and handler files; `--deep` asks workers whether every handler exists; `--target <t>` checks a deployment target |
-| `unsworn routes` | Print the route table and each route's source, including MCP tools; `--policies` shows merged policies and each tool's arguments |
-| `unsworn plan` | Write what every route and tool enforces to `unsworn.plan`, to commit with the config; `--check` fails when it's out of date |
-| `unsworn diff` | Show what changed in the rules since a git revision (or another directory), marking what got looser; `--fail-on looser` for CI |
-| `unsworn top` | Show each route's requests, latency and its handler's share of time and CPU on a running server, costliest first |
-| `unsworn gen` | Write typed request models for handlers (TypeScript, Python, Go, Rust) from each route's schemas; `--check` fails when one is out of date |
-| `unsworn openapi` | Print the OpenAPI document for what Unsworn serves |
-| `unsworn build` | Bundle the project for a deployment target: `--target image` writes a Dockerfile for the server and its workers, `lambda` writes one for AWS Lambda, `cloudflare` makes a Cloudflare Worker, and `vercel` and `netlify` make a function for each |
-| `unsworn conformance` | Test a runtime's workers against the protocol |
-| `unsworn schema` | Print the config's JSON Schema (also at [`schema/unsworn.schema.json`](schema/unsworn.schema.json)) |
+Every command is in [docs/cli.md](docs/cli.md).
 
 Handler SDKs:
 
@@ -418,12 +288,6 @@ Handler SDKs:
 
 Any other language runs as an [HTTP runtime](docs/http-runtime.md), with
 its own server and no SDK.
-
-[`examples/polyglot`](examples/polyglot) is a TypeScript and Python API in
-front of an existing app, [`examples/http-runtime`](examples/http-runtime)
-is a plain HTTP server run as a runtime, and
-[`examples/raw-python`](examples/raw-python) is a worker written without
-an SDK.
 
 ## Roadmap
 
