@@ -24,7 +24,7 @@ os=$(uname -s)
 arch=$(uname -m)
 case "$os" in
   Linux) os_part="unknown-linux-musl" ;;
-  # For development: see the README for what differs on macOS.
+  # For development: see docs/install.md for what differs on macOS.
   Darwin) os_part="apple-darwin" ;;
   *) echo "unsworn: unsupported OS: $os" >&2; exit 1 ;;
 esac

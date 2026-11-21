@@ -55,7 +55,7 @@ jobs:
       - run: cargo test --all
 
   # macOS is for development: the server builds and runs there, without
-  # what it reads from /proc on Linux (see the README). The tests about
+  # what it reads from /proc on Linux (see docs/install.md). The tests about
   # that are compiled out; the rest run, with every SDK's worker.
   macos:
     runs-on: macos-latest
