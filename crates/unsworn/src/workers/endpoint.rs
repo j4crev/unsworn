@@ -12,11 +12,19 @@
 //! and on a port on `127.0.0.1`, since not every HTTP client can use a
 //! socket. Anything on the machine can reach the port, so the token is
 //! what lets a call in.
+//!
+//! A token is a number Unsworn counts up and a signature of it, an HMAC
+//! with a key made once from the system's randomness. Nothing without the
+//! key can make one, and minting it needs no system call: asking the
+//! system for 128 random bits on every forwarded request cost about as
+//! much as the rest of the token together.
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
-use std::sync::{Arc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock, Weak};
+use std::time::Instant;
 
 use http::{HeaderValue, Method, Request, Response, StatusCode, header};
 use http_body_util::BodyExt;
@@ -88,9 +96,13 @@ impl Endpoint {
     }
 }
 
-/// A request in flight that a server may call for.
+/// A request in flight that a server may call for: what its calls'
+/// [`Caller`] is made from, when one is made.
 pub(super) struct Entry {
-    caller: Caller,
+    request_id: String,
+    context: serde_json::Map<String, Value>,
+    deadline: Instant,
+    trace: Option<TraceContext>,
     /// Changes (with an error) when the request ends.
     ended: watch::Receiver<()>,
 }
@@ -99,20 +111,21 @@ pub(super) struct Entry {
 /// which cancels the calls still running for it.
 pub struct CallToken {
     pool: Weak<Pool>,
-    token: String,
+    number: u64,
     _ended: watch::Sender<()>,
 }
 
 impl CallToken {
     pub fn header(&self) -> HeaderValue {
-        HeaderValue::from_str(&self.token).expect("a token is hex")
+        let key = signing_key().expect("a token was made, so there's a key");
+        HeaderValue::from_bytes(&encode(key, self.number)).expect("a token is hex")
     }
 }
 
 impl Drop for CallToken {
     fn drop(&mut self) {
         if let Some(pool) = self.pool.upgrade() {
-            pool.http_callers.lock().unwrap().remove(&self.token);
+            pool.http_callers.lock().unwrap().remove(&self.number);
         }
     }
 }
@@ -125,31 +138,46 @@ impl Pool {
         self: &Arc<Self>,
         request_id: String,
         context: serde_json::Map<String, Value>,
-        deadline: std::time::Instant,
+        deadline: Instant,
         headers: &http::HeaderMap,
     ) -> Option<CallToken> {
         self.peers.get()?;
-        let token = random_token()?;
+        signing_key()?;
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let number = NEXT.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = watch::channel(());
-        let caller = Caller {
+        let entry = Entry {
             request_id,
-            // What a function sees as `ctx.caller.from`.
-            handler: format!("runtime:{}", self.name),
             context,
             deadline,
             trace: TraceContext::from_headers(|name| {
                 headers.get(name).and_then(|v| v.to_str().ok())
             }),
+            ended: rx,
         };
-        self.http_callers
-            .lock()
-            .unwrap()
-            .insert(token.clone(), Entry { caller, ended: rx });
+        self.http_callers.lock().unwrap().insert(number, entry);
         Some(CallToken {
             pool: Arc::downgrade(self),
-            token,
+            number,
             _ended: tx,
         })
+    }
+
+    /// The request in flight that `token` was sent with, if it's one of
+    /// this runtime's and the token is genuine.
+    fn caller_for(&self, token: &[u8]) -> Option<(Caller, watch::Receiver<()>)> {
+        let number = decode(signing_key()?, token)?;
+        let callers = self.http_callers.lock().unwrap();
+        let entry = callers.get(&number)?;
+        let caller = Caller {
+            request_id: entry.request_id.clone(),
+            // What a function sees as `ctx.caller.from`.
+            handler: format!("runtime:{}", self.name),
+            context: entry.context.clone(),
+            deadline: entry.deadline,
+            trace: entry.trace.clone(),
+        };
+        Some((caller, entry.ended.clone()))
     }
 
     /// The endpoint for this pool's servers, started the first time one
@@ -176,13 +204,64 @@ impl Pool {
     }
 }
 
-/// 128 random bits, in hex. `None` only if the system has no randomness
-/// to give.
-fn random_token() -> Option<String> {
-    use ring::rand::SecureRandom;
-    let mut bytes = [0u8; 16];
-    ring::rand::SystemRandom::new().fill(&mut bytes).ok()?;
-    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
+/// How many bytes of a token's HMAC it carries: 128 bits, as many as
+/// someone without the key would have to guess.
+const TAG: usize = 16;
+
+/// A token's length in hex: the number's 8 bytes and the tag's.
+const TOKEN_LEN: usize = 2 * (8 + TAG);
+
+/// The key tokens are signed with, made the first time one is needed.
+/// `None` only if the system had no randomness to give.
+fn signing_key() -> Option<&'static ring::hmac::Key> {
+    static KEY: OnceLock<Option<ring::hmac::Key>> = OnceLock::new();
+    KEY.get_or_init(|| {
+        let rng = ring::rand::SystemRandom::new();
+        ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng)
+            .inspect_err(|_| tracing::error!("no randomness to sign call tokens with"))
+            .ok()
+    })
+    .as_ref()
+}
+
+/// The token for `number`: it, and the start of its HMAC, in hex.
+fn encode(key: &ring::hmac::Key, number: u64) -> [u8; TOKEN_LEN] {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let number = number.to_be_bytes();
+    let tag = ring::hmac::sign(key, &number);
+    let mut out = [0u8; TOKEN_LEN];
+    for (i, b) in number.iter().chain(&tag.as_ref()[..TAG]).enumerate() {
+        out[2 * i] = HEX[usize::from(b >> 4)];
+        out[2 * i + 1] = HEX[usize::from(b & 0xf)];
+    }
+    out
+}
+
+/// The number a token is for, if it's one `key` signed.
+fn decode(key: &ring::hmac::Key, token: &[u8]) -> Option<u64> {
+    fn nibble(c: u8) -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            _ => None,
+        }
+    }
+    if token.len() != TOKEN_LEN {
+        return None;
+    }
+    let mut bytes = [0u8; TOKEN_LEN / 2];
+    for (byte, [high, low]) in bytes.iter_mut().zip(token.as_chunks::<2>().0) {
+        *byte = nibble(*high)? << 4 | nibble(*low)?;
+    }
+    let (number, tag) = bytes.split_at(8);
+    let expected = ring::hmac::sign(key, number);
+    // Compared in constant time, so how long a wrong guess takes to turn
+    // down says nothing about how much of it was right.
+    let wrong = tag
+        .iter()
+        .zip(&expected.as_ref()[..TAG])
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b));
+    (wrong == 0).then(|| u64::from_be_bytes(number.try_into().unwrap()))
 }
 
 fn serve<IO>(io: IO, pool: Weak<Pool>)
@@ -238,13 +317,7 @@ async fn handle(pool: Weak<Pool>, req: Request<Incoming>) -> Response<Body> {
             Value::Null,
         );
     };
-    let found = token.to_str().ok().and_then(|token| {
-        let callers = pool.http_callers.lock().unwrap();
-        callers
-            .get(token)
-            .map(|entry| (entry.caller.clone(), entry.ended.clone()))
-    });
-    let Some((caller, mut ended)) = found else {
+    let Some((caller, mut ended)) = pool.caller_for(token.as_bytes()) else {
         return failure(
             409,
             "the Unsworn-Call token isn't one for a request in flight",
@@ -381,5 +454,36 @@ async fn fetch(
             Response::from_parts(parts, full(body))
         }
         Err((status, error)) => failure(status, &error, Value::Null),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_token_decodes_to_its_number() {
+        let key = signing_key().unwrap();
+        for number in [1, 2, 255, u64::MAX] {
+            let token = encode(key, number);
+            assert!(token.iter().all(u8::is_ascii_hexdigit));
+            assert_eq!(decode(key, &token), Some(number));
+        }
+    }
+
+    #[test]
+    fn a_changed_or_unsigned_token_is_turned_down() {
+        let key = signing_key().unwrap();
+        let token = encode(key, 7);
+        for at in [0, 15, 16, TOKEN_LEN - 1] {
+            let mut changed = token;
+            changed[at] = if changed[at] == b'0' { b'1' } else { b'0' };
+            assert_eq!(decode(key, &changed), None, "changed at {at}");
+        }
+        let other = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"not the key");
+        assert_eq!(decode(key, &encode(&other, 7)), None);
+        assert_eq!(decode(key, &token[..TOKEN_LEN - 2]), None);
+        assert_eq!(decode(key, b"mine"), None);
+        assert_eq!(decode(key, &token.to_ascii_uppercase()), None);
     }
 }

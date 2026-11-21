@@ -354,7 +354,7 @@ pub struct Pool {
     endpoint: std::sync::OnceLock<Option<endpoint::Endpoint>>,
     /// The requests in flight on an `http` runtime's servers, by the
     /// token each was sent with.
-    http_callers: Mutex<HashMap<String, endpoint::Entry>>,
+    http_callers: Mutex<HashMap<u64, endpoint::Entry>>,
 }
 
 /// A pool's CPU time so far. A worker's is read from `/proc` while it
