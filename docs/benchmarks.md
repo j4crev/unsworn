@@ -723,7 +723,11 @@ server.** Run on their own, the Go server is listening on its socket
 1.5 ms after it starts and the Bun server 3.5 ms after (the median of
 seven starts each). Unsworn checks whether the server is listening
 every 25 ms, so both are found at the second check, and most of the
-28 ms is that wait.
+28 ms is that wait. Since v0.5.0, Unsworn looks again after 1 ms and
+doubles the wait each time, up to 25 ms. In a separate comparison, the
+v0.5.0 binary and a build with that change started in turn nine times
+each, the first request took 7 ms with the Go server (28 before) and
+8 to 12 ms with the Bun server (28 before).
 
 **These times depend on the machine's state more than on the release.**
 The 10,000-route start took 157 ms in the v0.3.1 run and 89 ms in the

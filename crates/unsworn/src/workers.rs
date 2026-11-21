@@ -1211,8 +1211,12 @@ impl Pool {
         let target = Target::of(&upstream);
         let startup = rt.startup_timeout;
         let listening = async {
+            // Most servers listen within a few milliseconds, so look soon
+            // and then less often: 1, 2, 4, 8, 16, then every 25 ms.
+            let mut wait = LISTEN_FIRST_CHECK;
             while !accepts(&target).await {
-                tokio::time::sleep(Duration::from_millis(25)).await;
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(LISTEN_CHECK_EVERY);
             }
         };
         let place = match rt.listen {
@@ -2135,6 +2139,11 @@ fn free_port() -> std::io::Result<u16> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     Ok(listener.local_addr()?.port())
 }
+
+/// How soon after starting an `http` runtime's server Unsworn first looks
+/// again for it listening, and the longest it then waits between looks.
+const LISTEN_FIRST_CHECK: Duration = Duration::from_millis(1);
+const LISTEN_CHECK_EVERY: Duration = Duration::from_millis(25);
 
 /// Whether something accepts connections at `target`.
 async fn accepts(target: &Target) -> bool {
