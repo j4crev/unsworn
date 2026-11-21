@@ -135,6 +135,11 @@ pub struct ProxyRequest<B> {
     pub proxy: Arc<Proxy>,
     pub request: http::Request<Body<B>>,
     pub client_ip: IpAddr,
+    /// The request's context, as Unsworn recorded it: what a function an
+    /// `http` runtime's server calls for this request starts from.
+    pub context: Map<String, Value>,
+    /// When the request runs out of time, and so do the calls made for it.
+    pub deadline: Deadline,
 }
 
 /// Why an outgoing request (a JWKS document, an API-key verifier) failed.

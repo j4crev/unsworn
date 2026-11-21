@@ -123,6 +123,86 @@ workers = { min = 1, max = 4 } # more when the ones running are busy
 
 Requests go to the copy with the fewest in hand.
 
+## Calling functions and outbound services
+
+A handler calls a [function](functions.md) with `ctx.call` and an
+[outbound service](outbound.md) with `ctx.fetch`. A server does the same
+with plain HTTP requests to a local endpoint Unsworn runs for it, so
+nothing of Unsworn's has to be installed in the app.
+
+In a project with a `[[function]]` or an `[outbound.<name>]`, the server
+gets two more variables. Both lead to the same endpoint:
+
+| Variable | What it is |
+|---|---|
+| `UNSWORN_CALLS_SOCKET` | a Unix socket, in the directory only Unsworn's user can open |
+| `UNSWORN_CALLS_URL` | `http://127.0.0.1:<port>`, for an HTTP client that can't use a socket |
+
+Each request Unsworn forwards to the server comes with a token in the
+`Unsworn-Call` header. Send it back with each call. It tells Unsworn which
+request the call is for, and so what the function gets:
+
+| Request | What it does |
+|---|---|
+| `POST /call/<function>`, with the input as the JSON body | Calls the function. The answer is its status and JSON. |
+| `<any method> /fetch/<service>/<path>?<query>` | Sends the request to the service's `url` with that path and query, adding the service's `headers`. The answer is the service's own: status, headers and body. |
+
+```js
+// Node, Express: the embedding comes from a Python function.
+app.get("/search", async (req, res) => {
+  const r = await fetch(`${process.env.UNSWORN_CALLS_URL}/call/embed`, {
+    method: "POST",
+    headers: { "unsworn-call": req.get("unsworn-call"), "content-type": "application/json" },
+    body: JSON.stringify({ text: req.query.q }),
+  });
+  if (!r.ok) return res.status(502).json(await r.json());
+  res.json(await index.nearest(await r.json()));
+});
+```
+
+```python
+# Python, FastAPI, on the socket.
+calls = httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=os.environ["UNSWORN_CALLS_SOCKET"]))
+
+@app.post("/charge")
+async def charge(request: Request, amount: int):
+    token = {"unsworn-call": request.headers["unsworn-call"]}
+    r = await calls.post("http://unsworn/fetch/stripe/v1/charges", json={"amount": amount}, headers=token)
+    return r.json()
+```
+
+Most apps put this in a short helper that takes the incoming request, so
+the token and the address are written once.
+
+Calls and fetches work as they do from a handler. A function gets the
+request's verified context, and its `ctx.caller.from` is
+`runtime:<name>`. It has no more time than the route's `timeout` leaves.
+The request's `traceparent` goes along. The function's `input` schema and
+the service's allowed `methods` and `paths` are checked. The statuses are
+the ones in [`functions.md`](functions.md#calling) and
+[`outbound.md`](outbound.md#fetching), with these differences:
+
+- **Unsworn's own refusals carry an `Unsworn-Error` header** with the
+  reason, and a problem document (`application/problem+json`) as the body.
+  A function's or a service's own error status has no such header, so a
+  `404` from Stripe and "no `[outbound.stripe]` in the config" can be
+  told apart.
+- **A missing token is a `401`, and an unknown or expired one a `409`.**
+- **A body to a service is streamed** as the server sends it. The answer
+  is read whole, up to `max_response`, as it is for a handler.
+
+The token works until the response to its request has been sent,
+including a streamed one, and then stops: calls still running for the
+request are cancelled, with a `409`. A WebSocket's request gets a token,
+but it ends when the connection is upgraded, so calls can't be made
+during a WebSocket. A new request gets a new token.
+
+Anything on the machine can reach the port, so the token is what lets a
+call in. It's 128 random bits and lasts only as long as its request, but
+it's in the request's headers: an app that logs all its headers, or passes
+them on to another service, gives it away for that time. Leave
+`Unsworn-Call` out of what's logged or forwarded.
+
 ## What it doesn't have
 
 Compared with a handler in an SDK language:
@@ -133,8 +213,10 @@ Compared with a handler in an SDK language:
   serves a given path.
 - **No typed request.** Validated parameters arrive as the text in the
   URL, and `unsworn gen` writes nothing for it.
-- **No `ctx.call` or `ctx.fetch` yet.** Those go over a handler worker's
-  connection to Unsworn, which a server doesn't have.
+- **No `ctx` object.** A server calls functions and outbound services
+  with its own HTTP client ([above](#calling-functions-and-outbound-services)),
+  and nothing checks the names it uses until a request is made. `unsworn
+  gen` writes no types for them.
 - **Servers only.** Edge and serverless targets can't start a process, so
   `unsworn check --target` reports an HTTP runtime there. Deploy the
   server on its own and `proxy` to its URL, or use the server target.

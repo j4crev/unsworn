@@ -390,6 +390,10 @@ impl Host for ServerHost {
                 request_id: Some(self.request_id.clone()),
                 trusted_peer: self.trusted_peer,
             },
+            proxy::ForCalls {
+                context: request.context,
+                deadline: instant(request.deadline),
+            },
         )
         .await;
         resp.map(core::Body::Host)

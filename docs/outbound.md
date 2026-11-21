@@ -79,6 +79,7 @@ passed to workers, like every other credential the config reads (see
 | Python | `ctx.fetch("stripe", path, method=..., headers=..., json=..., body=...)`, with `await` in an `async def` handler | `status`, `ok`, `headers`, `body`, `text`, `json()` | raises `FetchError` (`status`) |
 | Go | `req.Fetch("stripe", path, &unsworn.Outbound{Method, Headers, JSON, Body})` | `Status`, `Headers`, `Body`, `OK()`, `Bind(&v)` | a `*unsworn.FetchError` |
 | Rust | `req.fetch("stripe", Outbound::post(path).json(&v)?).await?` | `status`, `headers`, `body`, `ok()`, `text()`, `json()` | `Err(FetchError { status, message })` |
+| An [HTTP runtime](http-runtime.md#calling-functions-and-outbound-services) | `<method> $UNSWORN_CALLS_URL/fetch/stripe<path>`, with the request's `Unsworn-Call` header | the service's own response | an `Unsworn-Error` header, with a problem document |
 
 The method defaults to `GET`, or `POST` when there's a body. A `json`
 body is sent with `content-type: application/json`.

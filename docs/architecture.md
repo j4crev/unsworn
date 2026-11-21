@@ -255,9 +255,10 @@ language with no SDK or an app with a framework of its own. Unsworn
 starts and supervises it as it does a worker, on a Unix socket only
 Unsworn can open, and forwards requests to it through the `proxy` path
 once the pipeline has passed them, with the request's context in a
-header. It trades handler references, typed requests and `ctx.call` for
-needing nothing of Unsworn's in the app. See
-[`http-runtime.md`](http-runtime.md).
+header. It calls functions and outbound services through a local endpoint
+Unsworn runs for it, with a token each request carries. It trades handler
+references, typed requests and the SDK's `ctx` for needing nothing of
+Unsworn's in the app. See [`http-runtime.md`](http-runtime.md).
 
 The **portable contract is the handler signature** provided by each language
 SDK, not the wire format. The same handler file runs in a Tier 2 worker, in

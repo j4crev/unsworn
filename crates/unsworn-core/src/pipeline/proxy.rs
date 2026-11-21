@@ -27,10 +27,18 @@ static KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
 /// the header's word.
 pub const CONTEXT: HeaderName = HeaderName::from_static("unsworn-context");
 
-/// Removes a context header the client sent, which would otherwise pass
-/// for Unsworn's.
+/// The header an `http` runtime's server finds its token in: what it
+/// sends back to Unsworn's local endpoint to call a function or an
+/// outbound service for the request it came with. Only a request to an
+/// `http` runtime in a project with functions or outbound services gets
+/// one, and it stops working when the response ends.
+pub const CALL_TOKEN: HeaderName = HeaderName::from_static("unsworn-call");
+
+/// Removes a context header or a call token the client sent, which would
+/// otherwise pass for Unsworn's.
 pub fn strip_context(headers: &mut HeaderMap) {
     headers.remove(&CONTEXT);
+    headers.remove(&CALL_TOKEN);
 }
 
 /// Puts the request's context on a request about to be forwarded, for an

@@ -104,7 +104,8 @@ async fn proxied<H: Host>(
     claims: Option<Map<String, Value>>,
 ) -> Resp<H> {
     let Some(call) = call else {
-        let forward = forward(ctx, upstream, parts, body, &context);
+        let deadline = ctx.deadline(eff.timeout);
+        let forward = forward(ctx, upstream, parts, body, context, deadline);
         return match ctx.host.timeout(eff.timeout, forward).await {
             Some(resp) => resp,
             None => problem(
@@ -125,7 +126,14 @@ async fn proxied<H: Host>(
         .host
         .timeout(
             timeout,
-            forward(ctx, upstream, parts, body, &checked.context),
+            forward(
+                ctx,
+                upstream,
+                parts,
+                body,
+                checked.context,
+                ctx.deadline(timeout),
+            ),
         )
         .await
     {
@@ -494,15 +502,18 @@ async fn forward<H: Host>(
     upstream: Arc<Proxy>,
     mut parts: http::request::Parts,
     body: Bytes,
-    context: &Map<String, Value>,
+    context: Map<String, Value>,
+    deadline: crate::pipeline::Deadline,
 ) -> Resp<H> {
     // The MCP server learns who the caller is, as a handler does.
-    crate::pipeline::proxy::forward_context(&mut parts.headers, context, &upstream);
+    crate::pipeline::proxy::forward_context(&mut parts.headers, &context, &upstream);
     ctx.host
         .proxy(ProxyRequest {
             proxy: upstream,
             request: http::Request::from_parts(parts, Body::bytes(Some(body))),
             client_ip: ctx.client_ip,
+            context,
+            deadline,
         })
         .await
 }

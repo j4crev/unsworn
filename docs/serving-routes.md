@@ -38,7 +38,7 @@ proxy = "http://old-api:8080"
 | Languages | TypeScript/JavaScript, Python, Go and Rust with an SDK; any other with a hand-written worker | Any language with an HTTP server |
 | Routes are written | Once, in the config or as route files | In the config for the rules, and again in the app |
 | Data input | Validated, and typed with [types generated](types.md) from the config | As sent in the URL and body |
-| Calling [other handlers](functions.md) and [outbound services](outbound.md) through Unsworn | Yes (`ctx.call`, `ctx.fetch`) | Not yet |
+| Calling [other handlers](functions.md) and [outbound services](outbound.md) through Unsworn | Yes (`ctx.call`, `ctx.fetch`) | Yes, as HTTP requests to a [local endpoint](http-runtime.md#calling-functions-and-outbound-services) |
 | Runs on | Servers and containers; JS/TS handlers also at the edge and in serverless functions | Servers and containers |
 
 The rules are the same either way: a route's `auth`, `require`, rate
