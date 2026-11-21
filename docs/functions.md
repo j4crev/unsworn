@@ -42,7 +42,8 @@ Unsworn, which runs the function in its own runtime's workers.
   verified credentials (`ctx.auth`) and whatever `before` handlers added,
   taken from Unsworn's own record of the request, not from the caller. It
   also has `ctx.caller`: `{ function, from, depth }`, where `from` is the
-  handler that called.
+  handler that called, or `runtime:<name>` for an
+  [HTTP runtime](http-runtime.md)'s server.
 - **Keeps to the request's time.** A function has its own `timeout`
   (default: `[server].timeout`) and never more time than the request it's
   called for has left. When that request ends, by timeout or because the
@@ -67,6 +68,7 @@ A function has no path. Nothing outside Unsworn reaches it, so it needs no
 | Python | `ctx.call("embed", {"text": text})`, with `await` in an `async def` handler | raises `CallError` (`status`, `json`) |
 | Go | `err := req.Call("embed", input, &out)` | a `*unsworn.CallError` (`Status`, `Message`, `JSON`) |
 | Rust | `req.call::<Vec<f32>>("embed", json!({ "text": text })).await?` | `Err(CallError { status, message, json })` |
+| An [HTTP runtime](http-runtime.md#calling-functions-and-outbound-services) | `POST $UNSWORN_CALLS_URL/call/embed`, with the request's `Unsworn-Call` header | a status of `400` or above; Unsworn's own failures also have an `Unsworn-Error` header |
 
 A call gives back the JSON the function answered with. It fails when the
 function answers `400` or above, or when it can't be run:

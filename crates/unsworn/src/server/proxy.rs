@@ -4,7 +4,7 @@ use http::{Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
 use unsworn_core::pipeline::proxy::{
-    ForwardInfo, is_upgrade, response_headers, rewrite, rewrite_to,
+    CALL_TOKEN, ForwardInfo, is_upgrade, response_headers, rewrite, rewrite_to,
 };
 use unsworn_core::project::{Proxy, Target};
 
@@ -16,14 +16,22 @@ use super::upstream::Peer;
 /// starting for the first time or again after it stopped.
 const RUNTIME_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// What a function an `http` runtime's server calls for a request starts
+/// from.
+pub struct ForCalls {
+    pub context: serde_json::Map<String, serde_json::Value>,
+    pub deadline: std::time::Instant,
+}
+
 /// Forwards a request to one of the proxy's upstreams.
 pub fn forward(
     shared: std::sync::Arc<Shared>,
     proxy: std::sync::Arc<Proxy>,
     req: Request<Body>,
     info: ForwardInfo,
+    for_calls: ForCalls,
 ) -> futures_util::future::BoxFuture<'static, Response<Body>> {
-    Box::pin(forward_inner(shared, proxy, req, info))
+    Box::pin(forward_inner(shared, proxy, req, info, for_calls))
 }
 
 async fn forward_inner(
@@ -31,6 +39,7 @@ async fn forward_inner(
     proxy: std::sync::Arc<Proxy>,
     mut req: Request<Body>,
     info: ForwardInfo,
+    for_calls: ForCalls,
 ) -> Response<Body> {
     let upgrade = is_upgrade(req.headers());
     let tunnel = req.extensions().get::<Tunnel>().cloned();
@@ -38,6 +47,7 @@ async fn forward_inner(
     let (mut parts, body) = req.into_parts();
     // An `http` runtime's server is wherever its pool started it, and
     // counts as busy with this request until it has answered.
+    let mut token = None;
     let lease = match &proxy.runtime {
         None => None,
         Some(name) => {
@@ -49,7 +59,22 @@ async fn forward_inner(
                 );
             };
             match pool.http_lease(RUNTIME_WAIT).await {
-                Ok(lease) => Some(lease),
+                Ok(lease) => {
+                    // The server calls functions and outbound services for
+                    // this request with this, until its response ends.
+                    let request_id = info.request_id.as_ref();
+                    let request_id = request_id.and_then(|v| v.to_str().ok());
+                    token = pool.call_token(
+                        request_id.unwrap_or_default().to_string(),
+                        for_calls.context,
+                        for_calls.deadline,
+                        &parts.headers,
+                    );
+                    if let Some(token) = &token {
+                        parts.headers.insert(&CALL_TOKEN, token.header());
+                    }
+                    Some(lease)
+                }
                 Err(e) => {
                     tracing::error!(runtime = %name, "{e}");
                     return problem(
@@ -129,5 +154,16 @@ async fn forward_inner(
 
     let (mut parts, body) = resp.into_parts();
     response_headers(&mut parts.headers, parts.version);
+    // The token works while the response is being sent, and ends with it:
+    // a server may call while it streams.
+    let body = match token {
+        Some(token) => body
+            .map_frame(move |frame| {
+                let _ = &token;
+                frame
+            })
+            .boxed_unsync(),
+        None => body,
+    };
     Response::from_parts(parts, body)
 }

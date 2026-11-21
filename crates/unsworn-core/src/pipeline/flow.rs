@@ -67,8 +67,8 @@ impl Router {
         client_ip: IpAddr,
     ) -> Handled<H::ResponseBody> {
         let mut req = normalized(req);
-        // What Unsworn tells a proxied app about the caller is never the
-        // caller's own to send.
+        // What Unsworn tells a proxied app about the caller, and the token
+        // an app calls back with, are never the caller's own to send.
         super::proxy::strip_context(req.headers_mut());
         // Whatever the host passed, IPv4 is IPv4 (see `ClientIp::resolve`).
         let client_ip = client_ip.to_canonical();
@@ -862,6 +862,8 @@ async fn run_action<H: Host>(
                     proxy: p.clone(),
                     request: http::Request::from_parts(parts, body),
                     client_ip: ctx.client_ip,
+                    context,
+                    deadline,
                 })
                 .await
         }

@@ -32,6 +32,8 @@ use unsworn_proto::{
     PROTOCOL_VERSION, Request, Response, Verify,
 };
 
+mod endpoint;
+
 use crate::scale::{self, Decision, Sample, Scaler};
 use crate::server::support::{Body, HttpClient};
 pub use unsworn_core::pipeline::{BODY_IDLE, BodyError, CallError};
@@ -347,6 +349,12 @@ pub struct Pool {
     name: Arc<str>,
     /// CPU time its workers have used, for `unsworn top`.
     cpu: Mutex<CpuSeen>,
+    /// Where an `http` runtime's servers call functions and outbound
+    /// services, once one has started.
+    endpoint: std::sync::OnceLock<Option<endpoint::Endpoint>>,
+    /// The requests in flight on an `http` runtime's servers, by the
+    /// token each was sent with.
+    http_callers: Mutex<HashMap<String, endpoint::Entry>>,
 }
 
 /// A pool's CPU time so far. A worker's is read from `/proc` while it
@@ -525,7 +533,7 @@ impl Pools {
     /// What a call is checked against and turned into is the core's
     /// (`unsworn_core::calls`), the same as on every other host.
     async fn call_function(&self, call: proto::Call, caller: Caller) -> proto::CallResult {
-        let outcome = self.run_function(&call, caller).await;
+        let outcome = self.run_function(&call.function, &call.json, caller).await;
         let (status, json, error) = match outcome {
             Ok((status, json)) => (status, json, None),
             Err(failure) => (failure.status, failure.json, Some(failure.error)),
@@ -540,13 +548,14 @@ impl Pools {
 
     async fn run_function(
         &self,
-        call: &proto::Call,
+        name: &str,
+        input: &Value,
         caller: Caller,
     ) -> Result<(u16, Value), calls::Failure> {
         let (function, request) = calls::prepare(
             &self.functions,
-            &call.function,
-            &call.json,
+            name,
+            input,
             calls::Caller {
                 handler: caller.handler,
                 context: caller.context,
@@ -592,20 +601,48 @@ impl Pools {
                 ..Default::default()
             }))
         };
-        let service = match outbound::service(&self.outbound, &fetch.service) {
-            Ok(service) => service,
+        let body = crate::server::support::full(body.unwrap_or_default());
+        let sent = self
+            .send_outbound(
+                &fetch.service,
+                &fetch.method,
+                &fetch.path,
+                &fetch.headers,
+                body,
+                caller,
+            )
+            .await;
+        let (parts, body) = match sent {
+            Ok(answer) => answer,
             Err((status, error)) => return fail(status, error),
         };
-        let planned = match outbound::plan(
-            service,
-            &fetch.method,
-            &fetch.path,
-            &fetch.headers,
-            caller.trace.as_ref(),
-        ) {
-            Ok(planned) => planned,
-            Err((status, why)) => return fail(status, why),
-        };
+        let headers = outbound::response_headers(&parts.headers);
+        let fetched = Message::Fetched(proto::Fetched {
+            id: id.clone(),
+            status: parts.status.as_u16(),
+            headers,
+            ..Default::default()
+        });
+        if body.is_empty() {
+            return Frame::new(fetched);
+        }
+        Frame::with_body(fetched, body).unwrap_or_else(|e| fail(502, e.to_string()))
+    }
+
+    /// Sends a request to the outbound service `name`, with the service's
+    /// own headers added, and reads its answer. `Err` is the status and
+    /// the reason the caller gets when there's no answer to give.
+    async fn send_outbound(
+        &self,
+        name: &str,
+        method: &str,
+        path: &str,
+        headers: &BTreeMap<String, String>,
+        body: Body,
+        caller: &Caller,
+    ) -> Result<(http::response::Parts, Bytes), (u16, String)> {
+        let service = outbound::service(&self.outbound, name)?;
+        let planned = outbound::plan(service, method, path, headers, caller.trace.as_ref())?;
         let method = planned.method;
         let mut request = http::Request::builder()
             .method(method.as_str())
@@ -613,10 +650,9 @@ impl Pools {
         for (name, value) in &planned.headers {
             request = request.header(name, value);
         }
-        let request = match request.body(crate::server::support::full(body.unwrap_or_default())) {
-            Ok(request) => request,
-            Err(e) => return fail(400, format!("the request can't be made: {e}")),
-        };
+        let request = request
+            .body(body)
+            .map_err(|e| (400, format!("the request can't be made: {e}")))?;
 
         let started = Instant::now();
         let deadline = caller.deadline.min(started + service.timeout);
@@ -644,17 +680,17 @@ impl Pools {
             Ok::<_, String>((parts, body))
         };
         let outcome = tokio::time::timeout_at(deadline.into(), answer).await;
-        let path = fetch.path.split('?').next().unwrap_or_default();
+        let path = path.split('?').next().unwrap_or_default();
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         let (parts, body) = match outcome {
             Ok(Ok(found)) => found,
             Ok(Err(error)) => {
                 tracing::warn!(target: "outbound", service = %service.name, %method, %path, id = %caller.request_id, "{error}");
-                return fail(502, error);
+                return Err((502, error));
             }
             Err(_) => {
                 tracing::warn!(target: "outbound", service = %service.name, %method, %path, id = %caller.request_id, "timed out");
-                return fail(504, "the service took too long to answer".into());
+                return Err((504, "the service took too long to answer".into()));
             }
         };
         // What a handler reached, and when: the query is left out, since
@@ -668,17 +704,7 @@ impl Pools {
             ms = format_args!("{ms:.3}"),
             id = %caller.request_id,
         );
-        let headers = outbound::response_headers(&parts.headers);
-        let fetched = Message::Fetched(proto::Fetched {
-            id: id.clone(),
-            status: parts.status.as_u16(),
-            headers,
-            ..Default::default()
-        });
-        if body.is_empty() {
-            return Frame::new(fetched);
-        }
-        Frame::with_body(fetched, body).unwrap_or_else(|e| fail(502, e.to_string()))
+        Ok((parts, body))
     }
 }
 
@@ -713,6 +739,8 @@ impl Pool {
             peers: std::sync::OnceLock::new(),
             name: Arc::from(name),
             cpu: Mutex::default(),
+            endpoint: std::sync::OnceLock::new(),
+            http_callers: Mutex::default(),
         })
     }
 
@@ -1130,6 +1158,14 @@ impl Pool {
                 format!("http://127.0.0.1:{port}").into()
             }
         };
+        // Where it calls functions and outbound services, in a project
+        // that has them.
+        if self.peers.get().is_some()
+            && let Some(endpoint) = self.endpoint()
+        {
+            cmd.env("UNSWORN_CALLS_SOCKET", &endpoint.socket)
+                .env("UNSWORN_CALLS_URL", &endpoint.url);
+        }
         cmd.env("UNSWORN_TRANSPORT", "http")
             .stdin(Stdio::null())
             // A group of its own, so that asking it to stop reaches the

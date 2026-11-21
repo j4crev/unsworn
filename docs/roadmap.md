@@ -170,10 +170,11 @@ on the way out. In the order planned:
      its copy everywhere. What differs there: handlers share a process
      with the core, so a service's key isn't kept from them, and a
      shadow's differences are logged but not counted.
-   - **`ctx.call` and `ctx.fetch` for HTTP runtimes.** A server run as
-     an [HTTP runtime](http-runtime.md) has no connection to Unsworn to
-     ask over. A local endpoint on a socket, which any HTTP client can
-     use, would give it both without an SDK.
+   - ~~**`ctx.call` and `ctx.fetch` for HTTP runtimes.**~~ Done: a
+     server run as an [HTTP runtime](http-runtime.md) calls functions and
+     outbound services with plain HTTP requests to a local endpoint, on a
+     socket or a port, sending back the token its request came with. See
+     [`http-runtime.md`](http-runtime.md#calling-functions-and-outbound-services).
    - **Limits on what a worker can reach.** An outbound service keeps the
      credential from a handler, but nothing stops the handler opening its
      own connections or reading a file Unsworn's user can read (a TLS
