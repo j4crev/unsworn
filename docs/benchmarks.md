@@ -1,10 +1,11 @@
 # Benchmarks
 
 What Unsworn costs, measured: in front of an existing app, around a
-handler call, for each policy, and at startup. The harness is in
-[`bench/`](../bench), and every number here comes from one run of it
-against the released v0.4.0 binary, saved in
-[`bench/results/2026-11-19-v0.4.0-intel-core-i5-1145g7.json`](../bench/results/2026-11-19-v0.4.0-intel-core-i5-1145g7.json),
+handler call, in front of a server it starts (an HTTP runtime), for each
+policy, and at startup. The harness is in [`bench/`](../bench), and
+every number here comes from one run of it against the released v0.5.0
+binary, saved in
+[`bench/results/2026-11-21-v0.5.0-intel-core-i5-1145g7.json`](../bench/results/2026-11-21-v0.5.0-intel-core-i5-1145g7.json),
 except where a paragraph says it's from a separate comparison.
 
 ## Summary
@@ -14,13 +15,15 @@ On two cores of a laptop CPU (an Intel i5-1145G7, details in
 
 | What Unsworn does | Requests/s | CPU per request | p50 latency at 1,000 req/s |
 |---|--:|--:|--:|
-| Answers a static `respond`, `redirect`, 404 or rejection | 179,000–223,000 | 15–19 µs | 0.16 ms (Go `net/http`: 0.15 ms) |
-| `proxy` to an existing app | 70,000 | 45 µs | 0.24 ms (the app directly: 0.15 ms) |
-| `proxy` with JWT and a rate limit | 59,000 | 59 µs | 0.26 ms |
-| Calls a TypeScript handler on Bun that only answers "hello" | 71,000 | 51 µs | 0.22 ms (Bun on its own: 0.15 ms) |
-| Calls a Rust handler that only answers "hello" | 70,000 | 51 µs | 0.21 ms |
-| Calls a TypeScript handler on Bun that searches 2,000 names | 3,300 | 1.2 ms | 1.3 ms at 20 req/s |
-| Calls the same search handler in Rust | 4,900 | 0.82 ms | 1.1 ms at 20 req/s |
+| Answers a static `respond`, `redirect`, 404 or rejection | 179,000–220,000 | 15–19 µs | 0.16 ms (Go `net/http`: 0.15 ms) |
+| `proxy` to an existing app | 70,000 | 45 µs | 0.22 ms (the app directly: 0.16 ms) |
+| `proxy` with JWT and a rate limit | 58,000 | 61 µs | 0.25 ms |
+| Calls a TypeScript handler on Bun that only answers "hello" | 71,000 | 50 µs | 0.23 ms (Bun on its own: 0.15 ms) |
+| Calls a Rust handler that only answers "hello" | 71,000 | 50 µs | 0.21 ms |
+| Forwards to a Go `net/http` server it started (HTTP runtime) that only answers "hello" | 60,000 | 60 µs | 0.15 ms (Go on its own: 0.16 ms) |
+| Forwards to a `Bun.serve` server it started that only answers "hello" | 75,000 | 43 µs | 0.22 ms |
+| Calls a TypeScript handler on Bun that searches 2,000 names | 3,300 | 1.2 ms | 1.2 ms at 20 req/s |
+| Calls the same search handler in Rust | 4,900 | 0.82 ms | 1.0 ms at 20 req/s |
 
 The "hello" rows measure the call into a handler, which costs about the
 same in every language. They say nothing about how fast a language runs
@@ -28,7 +31,7 @@ your code. The search rows do: see
 [A handler that does work](#a-handler-that-does-work).
 
 - **Requests Unsworn answers itself cost 15 to 25 µs of CPU each.** Go's
-  standard library serving "hello" takes 17 µs.
+  standard library serving "hello" takes 18 µs.
 - **A handler call or a proxied request adds about 0.05 to 0.11 ms** when
   the server isn't overloaded. It costs 39 to 62 µs of CPU for the proxy
   and for a Bun, Node or Rust handler, about 80 µs for a Go handler and
@@ -39,12 +42,21 @@ your code. The search rows do: see
   handler doesn't read costs 0.15 to 0.24 ms of CPU, about what raw bytes
   do. Read by the handler and sent back, it costs 1.2 to 1.4 ms.
 - **Route count doesn't matter:** 10,000 routes match as fast as 10.
-- **The binary is ready in about 5 ms** with 10 routes and about 150 ms
+- **An HTTP runtime costs what a handler call does, or less.** Unsworn
+  forwarding to a Go or Bun server it started, on a Unix socket, costs
+  43 to 60 µs of CPU a request, the server's own work included, against
+  50 to 79 µs for a handler in the same language. A 1 MB body costs
+  half to two thirds of what it does through a handler, since it's
+  streamed. A request that makes one call to a function or a service,
+  through Unsworn's local endpoint, costs 157 to 213 µs in all: 12 to
+  43 µs more than the same request to a handler using `ctx.call` or
+  `ctx.fetch`.
+- **The binary is ready in about 3 ms** with 10 routes and about 160 ms
   with 10,000, on a machine that's already busy (see
   [Startup](#startup)). On a serverless function, the wasm core answers
   its first request about 145 ms after Node starts.
 - **A trivial handler won't beat its language on its own.** Bun serves
-  "hello" at 158,000 req/s on one core by itself, and at 71,000 through
+  "hello" at 166,000 req/s on one core by itself, and at 71,000 through
   Unsworn. What Unsworn adds is the rules in front of it, and the same
   rules for every language.
 - **The language matters once the handler does work.** One search
@@ -88,15 +100,21 @@ machine.
 - Handlers are the [conformance handlers](conformance.md) each SDK ships
   with. `text` answers `201` with `hello`, `binary` echoes the request
   body, and `status` answers with the status it's asked for. The baselines
-  answer the same thing. The one exception is the search handler in
+  answer the same thing. The exceptions are the search handler in
   [`bench/handlers/`](../bench/handlers), described under
-  [A handler that does work](#a-handler-that-does-work).
+  [A handler that does work](#a-handler-that-does-work), and the HTTP
+  runtimes, which are the baseline servers in
+  [`bench/servers/`](../bench/servers) started by Unsworn.
 
 **How precise they are.** This is a laptop with a `powersave` CPU
-governor. Half of the 78 scenarios had their three rounds within 2% of
-each other, and two thirds within 5%. But 15 differed by 12% or more, 12
-of those because the first round was the slow one, and one differed by
-47% (see [Handler calls](#handler-calls)).
+governor. Of the 107 scenarios, 48 had their three rounds within 2% of
+each other, and 75 within 5%. But 17 differed by 12% or more, 12 of
+those because the first round was the slow one. Three policy rows each
+had one round far off, during the same minute: the API key did 82,500
+req/s in its first round and 180,000 in the other two, CORS 114,000 in
+one round against 190,000, and all the policies together 84,000 against
+114,000. The tables show the median of the three, so one slow round
+doesn't move it.
 
 The processor also slows under load that lasts. In a separate test of
 the `proxy` route, its clock fell from about 2.9 to 2.6 GHz once the load
@@ -163,6 +181,12 @@ thread, and sends a JSON body to a worker as it arrived, to be read by
 whoever needs it. The search handler's rows didn't move: they measure
 the handler's own code.
 
+**Against v0.4.0.** v0.5.0 adds HTTP runtimes and their calls, and
+changes nothing on the paths the earlier tables measure. Every one of
+the 78 scenarios the two runs share, two days apart, is within 5% of
+its v0.4.0 figure, in either direction. v0.4.0's results file is in this
+repository's history under `bench/results/`.
+
 ### Setup
 
 | | |
@@ -170,7 +194,7 @@ the handler's own code.
 | CPU | Intel Core i5-1145G7 (4 cores, 8 threads), `powersave` governor |
 | Memory | 16 GB |
 | OS | Linux 7.2 |
-| Unsworn | 0.4.0, the released `x86_64-unknown-linux-musl` binary |
+| Unsworn | 0.5.0, the released `x86_64-unknown-linux-musl` binary |
 | Runtimes | Bun 1.4.4, Node 26.13.0, Python 3.14.8, Go 1.27.1, Rust 1.97.1 |
 | Comparisons | Caddy 2.11.9, nginx 1.30.7 and Redis 7.4.12, in Docker with host networking |
 | Load | wrk (git `f8eb608`), oha 1.17.0 |
@@ -185,20 +209,20 @@ HTTP server costs on this machine.
 
 | Scenario | Req/s | CPU µs/req | p50 ms | p99 ms | p50 ms @ 1k/s | p99 ms @ 1k/s | p99.9 ms @ 1k/s | Peak memory |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
-| Go net/http, for reference | 198,139 | 16.7 | 0.293 | 1.25 | 0.147 | 0.348 | 0.393 | 16 MB |
-| `respond` (static JSON) | 178,977 | 18.7 | 0.349 | 0.618 | 0.156 | 0.335 | 0.416 | 130 MB |
-| `redirect` | 223,378 | 15.0 | 0.278 | 0.492 | 0.156 | 0.402 | 0.461 | 128 MB |
-| No route (404) | 207,225 | 16.3 | 0.300 | 0.563 | 0.156 | 0.361 | 0.417 | 128 MB |
-| Rejected: missing JWT (401) | 195,450 | 17.4 | 0.320 | 0.586 | 0.157 | 0.397 | 0.500 | 130 MB |
-| Rejected: rate limited (429) | 182,515 | 18.8 | 0.343 | 0.638 | 0.155 | 0.416 | 0.462 | 129 MB |
-| Cache hit | 139,056 | 24.9 | 0.456 | 0.852 | 0.166 | 0.354 | 0.384 | 129 MB |
-| Same handler, uncached (Bun, Tier 2) | 71,539 | 50.0 | 0.805 | 5.16 | 0.217 | 0.591 | 0.844 | 358 MB |
+| Go net/http, for reference | 189,524 | 17.7 | 0.304 | 1.33 | 0.151 | 0.375 | 0.427 | 17 MB |
+| `respond` (static JSON) | 178,550 | 18.7 | 0.351 | 0.621 | 0.158 | 0.348 | 0.390 | 130 MB |
+| `redirect` | 220,375 | 15.2 | 0.282 | 0.502 | 0.155 | 0.374 | 0.397 | 128 MB |
+| No route (404) | 211,586 | 15.9 | 0.294 | 0.549 | 0.154 | 0.394 | 0.502 | 129 MB |
+| Rejected: missing JWT (401) | 195,149 | 17.4 | 0.320 | 0.598 | 0.158 | 0.407 | 0.467 | 129 MB |
+| Rejected: rate limited (429) | 184,473 | 18.6 | 0.340 | 0.630 | 0.161 | 0.381 | 0.408 | 128 MB |
+| Cache hit | 145,865 | 23.9 | 0.432 | 0.806 | 0.164 | 0.390 | 0.438 | 129 MB |
+| Same handler, uncached (Bun, Tier 2) | 70,653 | 50.6 | 0.811 | 5.09 | 0.222 | 0.612 | 0.842 | 357 MB |
 
 - A static answer, a redirect, a 404, a rejection and a cache hit all cost
   about the same: 15 to 25 µs of CPU. None of them reaches a worker.
 - A cache hit costs about half of the handler call it replaces.
 - Memory here includes the four Bun workers this project starts for its
-  handler routes. Unsworn on its own uses 19 to 29 MB (see
+  handler routes. Unsworn on its own uses 20 to 33 MB (see
   [Startup](#startup)).
 
 ### In front of an existing app
@@ -210,15 +234,15 @@ TCP port.
 
 | Scenario | Req/s | CPU µs/req | p50 ms | p99 ms | p50 ms @ 1k/s | p99 ms @ 1k/s | p99.9 ms @ 1k/s | Peak memory |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
-| Direct to the app, no proxy | 192,427 | 17.2 | 0.301 | 1.33 | 0.149 | 0.320 | 0.440 | 16 MB |
-| Unsworn `proxy` | 69,999 | 45.0 | 0.866 | 2.50 | 0.239 | 0.464 | 0.735 | 29 MB |
-| Unsworn `proxy` with JWT and a rate limit | 59,368 | 58.8 | 1.04 | 2.37 | 0.258 | 0.475 | 0.773 | 30 MB |
-| Unsworn `proxy`, access log off | 60,110 | 50.7 | 1.01 | 2.91 | 0.243 | 0.467 | 0.716 | 28 MB |
-| Unsworn `proxy`, the app on a Unix socket | 87,975 | 39.5 | 0.691 | 1.86 | 0.139 | 0.368 | 0.452 | 28 MB |
-| Caddy `reverse_proxy` | 31,108 | 117 | 1.86 | 6.47 | 0.189 | 0.370 | 0.552 | 27 MB |
-| nginx `proxy_pass`, keepalive, access log off | 89,631 | 22.5 | 0.677 | 2.03 | 0.217 | 0.434 | 0.625 | 13 MB |
+| Direct to the app, no proxy | 186,699 | 17.9 | 0.308 | 1.39 | 0.155 | 0.350 | 0.452 | 17 MB |
+| Unsworn `proxy` | 69,593 | 44.6 | 0.873 | 2.48 | 0.219 | 0.485 | 0.824 | 30 MB |
+| Unsworn `proxy` with JWT and a rate limit | 57,575 | 60.6 | 1.06 | 2.48 | 0.254 | 0.468 | 0.803 | 31 MB |
+| Unsworn `proxy`, access log off | 59,137 | 51.2 | 1.04 | 2.98 | 0.255 | 0.467 | 0.721 | 28 MB |
+| Unsworn `proxy`, the app on a Unix socket | 87,567 | 39.6 | 0.701 | 1.85 | 0.140 | 0.374 | 0.445 | 29 MB |
+| Caddy `reverse_proxy` | 31,117 | 116 | 1.85 | 6.39 | 0.178 | 0.353 | 0.632 | 25 MB |
+| nginx `proxy_pass`, keepalive, access log off | 87,998 | 23.0 | 0.696 | 2.08 | 0.216 | 0.463 | 0.694 | 13 MB |
 
-- Unsworn adds about 0.09 ms at the median when it isn't busy, and
+- Unsworn adds about 0.06 ms at the median when it isn't busy, and
   handles 70,000 req/s on two cores. Its upstream connections are reused,
   not opened per request.
 - nginx uses half of Unsworn's CPU per request, so it reaches about 1.3
@@ -227,7 +251,7 @@ TCP port.
   pipeline on every request.
 - **With the app on a Unix socket, the proxy reaches 88,000 req/s** for
   40 µs of CPU a request, and adds nothing measurable when it isn't busy
-  (0.14 ms, against 0.15 ms for the app directly over TCP).
+  (0.14 ms, against 0.16 ms for the app directly over TCP).
 - **The "access log off" row is lower because of where it falls in the
   run, not because of the log.** It's measured third, on a processor
   that has slowed by then (see
@@ -238,7 +262,7 @@ TCP port.
   request. It measured the same on a static route: 20.1 µs with it and
   17.9 µs without.
 - The JWT and rate limit row is measured second on the same server, so
-  part of its 14 µs over the plain row is likely the slower processor
+  part of its 16 µs over the plain row is likely the slower processor
   too. On a static route the two policies cost about 10 µs together (see
   [Policies](#policies)).
 - Caddy ran with its default `reverse_proxy` settings and wasn't tuned.
@@ -254,23 +278,23 @@ all get the same four hardware threads.
 
 | Scenario | Req/s | CPU µs/req | p50 ms | p99 ms | p50 ms @ 1k/s | p99 ms @ 1k/s | p99.9 ms @ 1k/s | Peak memory |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
-| Go on its own | 174,691 | 18.9 | 0.332 | 1.41 | 0.149 | 0.344 | 0.414 | 16 MB |
-| Bun on its own, 1 process | 157,689 | 4.7 | 0.390 | 0.730 | 0.145 | 0.355 | 0.398 | 36 MB |
-| Bun on its own, 4 processes (reusePort) | 243,501 | 10.9 | 0.127 | 0.503 | 0.148 | 0.331 | 0.381 | 144 MB |
-| Node on its own, 1 process | 84,231 | 10.1 | 0.733 | 1.00 | 0.156 | 0.408 | 0.489 | 90 MB |
-| Node on its own, 4 processes (cluster) | 152,951 | 22.7 | 0.446 | 1.19 | 0.171 | 0.389 | 0.476 | 418 MB |
-| Unsworn → TypeScript on Bun, Tier 2, 1 worker | 74,978 | 41.4 | 0.776 | 2.81 | 0.222 | 0.653 | 0.806 | 113 MB |
-| Unsworn → TypeScript on Bun, Tier 2, 4 workers | 70,796 | 50.5 | 0.812 | 4.90 | 0.218 | 0.611 | 0.887 | 351 MB |
-| Unsworn → TypeScript on Bun, Tier 1, 4 workers | 65,281 | 55.0 | 0.886 | 5.00 | 0.230 | 0.625 | 0.796 | 330 MB |
-| Unsworn → TypeScript on Node, Tier 2, 4 workers | 59,206 | 61.6 | 0.999 | 2.96 | 0.264 | 0.668 | 0.770 | 642 MB |
-| Unsworn → Python, Tier 2, 4 workers | 32,403 | 116 | 1.86 | 4.28 | 0.222 | 0.499 | 0.812 | 131 MB |
-| Unsworn → Python, Tier 1, 4 workers | 33,029 | 114 | 1.82 | 4.20 | 0.252 | 0.675 | 0.934 | 132 MB |
-| Unsworn → Python, no SDK, Tier 1, 4 workers | 43,998 | 75.7 | 1.44 | 7.45 | 0.243 | 0.615 | 0.759 | 90 MB |
-| Unsworn → Go, Tier 2, 4 workers | 47,616 | 77.1 | 1.26 | 4.15 | 0.197 | 0.388 | 0.693 | 106 MB |
-| Unsworn → Go, Tier 1, 4 workers | 45,663 | 80.0 | 1.31 | 4.01 | 0.130 | 0.336 | 0.413 | 106 MB |
-| Unsworn → Rust, Tier 2, 4 workers | 70,489 | 50.6 | 0.846 | 2.31 | 0.212 | 0.506 | 0.698 | 59 MB |
-| Unsworn → Rust, Tier 1, 4 workers | 89,770 | 39.4 | 0.667 | 1.92 | 0.213 | 0.566 | 0.694 | 59 MB |
-| Unsworn → Rust, 4 threads in each worker, Tier 2, 4 workers | 61,300 | 60.4 | 0.973 | 2.62 | 0.165 | 0.410 | 0.616 | 67 MB |
+| Go on its own | 180,133 | 18.8 | 0.320 | 1.36 | 0.154 | 0.362 | 0.407 | 17 MB |
+| Bun on its own, 1 process | 165,526 | 4.5 | 0.374 | 0.685 | 0.145 | 0.312 | 0.417 | 37 MB |
+| Bun on its own, 4 processes (reusePort) | 244,147 | 10.8 | 0.126 | 0.481 | 0.149 | 0.350 | 0.397 | 146 MB |
+| Node on its own, 1 process | 84,298 | 10.2 | 0.737 | 0.960 | 0.159 | 0.399 | 0.468 | 89 MB |
+| Node on its own, 4 processes (cluster) | 156,302 | 21.9 | 0.412 | 1.12 | 0.169 | 0.398 | 0.485 | 411 MB |
+| Unsworn → TypeScript on Bun, Tier 2, 1 worker | 75,077 | 40.8 | 0.779 | 2.83 | 0.232 | 0.610 | 0.767 | 113 MB |
+| Unsworn → TypeScript on Bun, Tier 2, 4 workers | 71,148 | 50.4 | 0.807 | 4.84 | 0.228 | 0.622 | 0.761 | 354 MB |
+| Unsworn → TypeScript on Bun, Tier 1, 4 workers | 64,881 | 56.0 | 0.886 | 5.03 | 0.233 | 0.607 | 0.863 | 329 MB |
+| Unsworn → TypeScript on Node, Tier 2, 4 workers | 59,144 | 60.7 | 1.00 | 3.01 | 0.252 | 0.699 | 0.843 | 625 MB |
+| Unsworn → Python, Tier 2, 4 workers | 32,075 | 116 | 1.88 | 4.36 | 0.236 | 0.576 | 0.940 | 135 MB |
+| Unsworn → Python, Tier 1, 4 workers | 32,597 | 114 | 1.85 | 4.33 | 0.222 | 0.569 | 0.877 | 135 MB |
+| Unsworn → Python, no SDK, Tier 1, 4 workers | 43,357 | 74.6 | 1.47 | 7.58 | 0.245 | 0.623 | 0.703 | 92 MB |
+| Unsworn → Go, Tier 2, 4 workers | 47,695 | 77.4 | 1.25 | 4.05 | 0.193 | 0.385 | 0.704 | 105 MB |
+| Unsworn → Go, Tier 1, 4 workers | 45,231 | 80.2 | 1.32 | 4.20 | 0.130 | 0.340 | 0.436 | 106 MB |
+| Unsworn → Rust, Tier 2, 4 workers | 71,008 | 50.2 | 0.841 | 2.31 | 0.210 | 0.546 | 0.660 | 64 MB |
+| Unsworn → Rust, Tier 1, 4 workers | 90,169 | 39.5 | 0.664 | 1.91 | 0.208 | 0.569 | 0.698 | 62 MB |
+| Unsworn → Rust, 4 threads in each worker, Tier 2, 4 workers | 61,169 | 60.6 | 0.979 | 2.57 | 0.159 | 0.428 | 0.627 | 71 MB |
 
 - **These rows compare the SDKs, not the languages.** The handler does
   nothing, so each row is Unsworn's side of the call plus that SDK's
@@ -279,30 +303,148 @@ all get the same four hardware threads.
 - When the server isn't busy, a handler call adds up to about 0.1 ms over
   the language on its own.
 - At full load, a call costs 39 to 80 µs of CPU, Unsworn's side and the
-  worker's together, and four threads handle 46,000 to 90,000 calls a
+  worker's together, and four threads handle 45,000 to 90,000 calls a
   second in every SDK except Python's, which costs about 115 µs and
   handles 32,000 to 33,000.
 - More workers don't help a handler this small: one Bun worker does as
   well as four. They matter for handlers that do real work.
 - **The two tiers are close for small requests, except in Rust.** Bun,
-  Python and Go were within 9% of each other on the two, in either
+  Python and Go were within 10% of each other on the two, in either
   direction. Rust was 27% faster on Tier 1. Tier 2's advantage shows
   with large bodies (see [Request bodies](#request-bodies)).
 - **The Python SDK costs about one and a half times what a worker
-  without an SDK does** (114 against 76 µs per request on Tier 1). These
+  without an SDK does** (114 against 75 µs per request on Tier 1). These
   handlers are sync functions, which the SDK runs on a thread.
-- Memory is mostly the workers: four Node processes take about 640 MB,
+- Memory is mostly the workers: four Node processes take about 630 MB,
   four Bun processes about 350 MB, and four Rust processes about 60 MB.
 - **A Rust worker uses one thread unless it's given more.** With
-  `UNSWORN_WORKER_THREADS=4`, the same handler costs 60 µs a call against
-  51 µs, because every request crosses threads on its way in and out of
+  `UNSWORN_WORKER_THREADS=4`, the same handler costs 61 µs a call against
+  50 µs, because every request crosses threads on its way in and out of
   the worker. The extra threads do answer sooner when the server is
-  nearly idle: 0.17 ms against 0.21 ms at 1,000 requests a second.
-- **One round of a row can be far off.** Go on Tier 2 did 25,100 req/s
-  in the first round and 47,600 in the other two. Five of the Bun and
-  Node rows were 15 to 22% slower in their first round than in the
-  others. The table shows the median of the three, so one slow round
-  doesn't move it.
+  nearly idle: 0.16 ms against 0.21 ms at 1,000 requests a second.
+- The rounds agreed more closely than in earlier runs: every row here
+  was within 13% across its three, and all but one within 6%.
+
+### HTTP runtimes
+
+An ordinary server that Unsworn starts, supervises and forwards to
+(`protocol = "http"`, see [`http-runtime.md`](http-runtime.md)). The
+servers are the "on its own" baselines from
+[`bench/servers/`](../bench/servers), Go's `net/http` and `Bun.serve`,
+answering `/text` as the conformance `text` handler does, and started
+with Unsworn (`eager = true`). The rows for the same server on its own,
+for Unsworn's `proxy` to it and for a handler in the same language
+repeat scenarios from the tables above, measured again in this group's
+turn.
+
+| Scenario | Req/s | CPU µs/req | p50 ms | p99 ms | p50 ms @ 1k/s | p99 ms @ 1k/s | p99.9 ms @ 1k/s | Peak memory |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| Go on its own | 183,837 | 18.2 | 0.315 | 1.34 | 0.158 | 0.333 | 0.373 | 17 MB |
+| Unsworn `proxy` → Go, which Unsworn didn't start (Unix socket) | 81,056 | 43.4 | 0.749 | 1.99 | 0.161 | 0.389 | 0.504 | 29 MB |
+| Unsworn → Go server, on a socket, 1 server | 59,694 | 59.5 | 0.992 | 3.00 | 0.146 | 0.384 | 0.724 | 53 MB |
+| Unsworn → Go server, on a port, 1 server | 45,166 | 73.8 | 1.31 | 3.90 | 0.203 | 0.452 | 0.648 | 54 MB |
+| Unsworn → Go server, on a socket, 4 servers | 49,064 | 75.6 | 1.21 | 5.55 | 0.162 | 0.409 | 0.719 | 114 MB |
+| Unsworn → Go handler, Tier 2, 4 workers | 46,079 | 79.0 | 1.29 | 4.21 | 0.183 | 0.391 | 0.681 | 105 MB |
+| Bun on its own, 1 process | 160,830 | 4.6 | 0.382 | 0.740 | 0.144 | 0.306 | 0.379 | 36 MB |
+| Unsworn → Bun server, on a socket, 1 server | 75,486 | 43.4 | 0.822 | 1.53 | 0.218 | 0.551 | 0.705 | 72 MB |
+| Unsworn → Bun server, on a socket, 4 servers | 59,721 | 61.4 | 1.01 | 2.59 | 0.206 | 0.566 | 0.730 | 176 MB |
+| Unsworn → TypeScript handler on Bun, Tier 2, 4 workers | 70,564 | 50.8 | 0.816 | 4.68 | 0.223 | 0.602 | 0.779 | 330 MB |
+
+- **The CPU column counts the server when Unsworn started it.** It's
+  Unsworn's child, on Unsworn's cores, as a handler's workers are. The
+  `proxy` row's Go server isn't counted: it's the upstream, on a core of
+  its own. That's why the `proxy` row costs 43 µs and the HTTP runtime
+  60: the difference is about what the Go server takes on its own
+  (18 µs).
+- **Forwarding to a server costs less than calling a handler in the
+  same language.** The Go server takes 60 µs a request and answers
+  60,000 a second, where a Go handler takes 79 µs and answers 46,000.
+  The Bun server takes 43 µs and answers 75,000, where a TypeScript
+  handler on Bun takes 51 µs and answers 71,000. Both servers are built
+  to speak HTTP; a handler call goes through the SDK's own reading and
+  writing at the worker's end.
+- **When it isn't busy, the Go server adds nothing measurable:** 0.15 ms
+  at the median, against 0.16 ms for Go on its own. The Bun server adds
+  about 0.07 ms (0.22 against 0.14 ms).
+- **The socket is cheaper than the port.** On a port, the Go server
+  costs 74 µs a request against 60, answers 45,000 a second against
+  60,000, and takes 0.20 ms at the median against 0.15 when it isn't
+  busy. The socket is the default, and the one that keeps other
+  processes from reaching the server.
+- **One server is enough for these.** Both already use every core they
+  get, so four copies on the same four hardware threads cost more: 76 µs
+  a request against 60 for Go, 61 against 43 for Bun, with two to three
+  times the memory. `workers` is for a server that can't use more than
+  one core on its own, which wasn't measured here.
+- Five of these rows, and the 1 KB and 64 KB HTTP runtime rows under
+  [Request bodies](#request-bodies), were 11 to 27% slower in their
+  first round than in the other two.
+
+### Calls from an HTTP runtime
+
+A server reaches a [function](functions.md) or an
+[outbound service](outbound.md) through a local endpoint Unsworn runs for
+it (see
+[`http-runtime.md`](http-runtime.md#calling-functions-and-outbound-services)).
+These rows make one call per request:
+
+- `POST /relay?fn=text` calls the function `text`, which is the
+  conformance `text` handler on four Bun workers, and answers
+  `{"answer":"hello"}`.
+- `POST /outbound?path=/echo` sends its 1 KB body to an outbound service,
+  the Go upstream, which sends it back, and answers with what came back.
+
+The servers are the ones above, one of each, on a socket. They call the
+endpoint over its Unix socket (`UNSWORN_CALLS_SOCKET`) or its port
+(`UNSWORN_CALLS_URL`), with an HTTP client that keeps its connections.
+The handlers are the conformance `relay` and `outbound` handlers, with
+`ctx.call` and `ctx.fetch` (`req.Call` and `req.Fetch` in Go). The
+TypeScript handler shares the four Bun workers with the function, as it
+would in a project; the Go handler has four workers of its own. The CPU
+column counts Unsworn, the server or the handler's workers, and the
+function's workers, but not the Go upstream.
+
+| Scenario | Req/s | CPU µs/req | p50 ms | p99 ms | p50 ms @ 1k/s | p99 ms @ 1k/s | p99.9 ms @ 1k/s | Peak memory |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| Go server, `GET /text`, in a project with functions (a token per request) | 54,965 | 65.1 | 1.07 | 3.39 | 0.147 | 0.363 | 0.610 | 160 MB |
+| Go server → function, endpoint's socket | 17,321 | 213 | 3.46 | 8.29 | 0.243 | 0.573 | 1.47 | 364 MB |
+| Go server → function, endpoint's port | 14,971 | 238 | 3.98 | 9.76 | 0.261 | 0.589 | 1.54 | 350 MB |
+| Go handler → function (`req.Call`), Tier 2 | 19,818 | 192 | 2.99 | 9.43 | 0.203 | 0.442 | 1.86 | 424 MB |
+| Bun server → function, endpoint's socket | 21,934 | 161 | 2.79 | 5.63 | 0.210 | 0.494 | 1.74 | 403 MB |
+| Bun server → function, endpoint's port | 20,727 | 164 | 2.96 | 5.94 | 0.218 | 0.480 | 1.35 | 400 MB |
+| TypeScript handler on Bun → function (`ctx.call`), Tier 2 | 31,062 | 118 | 1.90 | 6.67 | 0.178 | 0.476 | 1.22 | 369 MB |
+| Go server → the app directly, without Unsworn | 22,199 | 156 | 2.64 | 7.26 | 0.211 | 0.388 | 0.720 | 289 MB |
+| Go server → service, endpoint's socket | 16,865 | 211 | 3.55 | 7.98 | 0.263 | 0.493 | 0.940 | 289 MB |
+| Go server → service, endpoint's port | 15,310 | 226 | 3.95 | 8.72 | 0.266 | 0.489 | 0.823 | 288 MB |
+| Go handler → service (`req.Fetch`), Tier 2 | 18,552 | 199 | 3.24 | 8.94 | 0.259 | 0.469 | 1.24 | 346 MB |
+| Bun server → service, endpoint's socket | 21,177 | 157 | 2.94 | 5.07 | 0.252 | 0.519 | 0.715 | 313 MB |
+| TypeScript handler on Bun → service (`ctx.fetch`), Tier 2 | 25,411 | 144 | 2.35 | 6.86 | 0.239 | 0.537 | 1.25 | 320 MB |
+
+- **A call costs a little more from a server than from a handler.** A
+  request that calls the function costs 213 µs from the Go server
+  against 192 from a Go handler, and 161 from the Bun server against 118
+  from a TypeScript handler. One that fetches from the service costs 211
+  against 199 in Go, and 157 against 144 on Bun. The server's call is a
+  second HTTP request that Unsworn parses and matches to its token; a
+  handler's goes as a message over the connection its worker already
+  has.
+- **The endpoint adds about 55 µs to a fetch.** The Go server sending
+  the same body straight to the upstream costs 156 µs a request and
+  manages 22,200 a second. Through the endpoint, where Unsworn checks the
+  token and the service's rules and sends the request on, it's 211 µs
+  and 16,900. When the server isn't busy, that's 0.26 ms at the median
+  against 0.21.
+- **The endpoint's socket is cheaper than its port** for the Go server's
+  client, by 15 to 25 µs a call. For Bun's client the two were within
+  3 µs.
+- **A project with functions or services pays for a token on every
+  forwarded request,** whether the server makes a call or not. The Go
+  server's `GET /text` costs 65 µs here against 60 in the project
+  without them. In a separate comparison, the two configs taken in turn
+  for six rounds, in both orders, the token cost about 7 µs a request
+  (57.4 against 64.7 µs), and throughput fell from 61,400 to 55,100
+  req/s.
+- The memory column includes the four Bun workers that run the function.
 
 ### A handler that does work
 
@@ -318,22 +460,22 @@ language keeps up with.
 
 | Scenario | Req/s | CPU µs/req | p50 ms @ 20/s | p99 ms @ 20/s | Peak memory |
 |---|--:|--:|--:|--:|--:|
-| Unsworn → TypeScript on Bun | 3,330 | 1,195 | 1.27 | 1.61 | 223 MB |
-| Unsworn → TypeScript on Node | 2,406 | 1,659 | 1.58 | 1.87 | 498 MB |
-| Unsworn → Python | 75 | 52,951 | 21.55 | 22.32 | 119 MB |
-| Unsworn → Go | 4,606 | 863 | 1.05 | 1.36 | 113 MB |
-| Unsworn → Rust | 4,870 | 815 | 1.10 | 1.39 | 62 MB |
+| Unsworn → TypeScript on Bun | 3,283 | 1,210 | 1.23 | 1.61 | 222 MB |
+| Unsworn → TypeScript on Node | 2,404 | 1,658 | 1.56 | 1.84 | 484 MB |
+| Unsworn → Python | 76 | 52,848 | 21.59 | 22.48 | 122 MB |
+| Unsworn → Go | 4,643 | 854 | 1.08 | 1.34 | 110 MB |
+| Unsworn → Rust | 4,863 | 816 | 1.04 | 1.31 | 67 MB |
 
-- **Rust does this work for 0.82 ms of CPU, Go for 0.86 ms, Bun for
+- **Rust does this work for 0.82 ms of CPU, Go for 0.85 ms, Bun for
   1.2 ms, Node for 1.7 ms and Python for 53 ms.** So moving this endpoint
   from TypeScript on Bun to Rust gives 1.5 times the requests per core,
   from Node twice as many, and from Python about 65 times.
 - The call into the handler is about 50 µs of each figure, which is why
   it decides the "hello" rows above and hardly shows here.
-- One request on a quiet server takes 1.1 ms in Rust and in Go, 1.3 ms
-  on Bun, 1.6 ms on Node and 22 ms in Python.
-- The Rust workers take 62 MB between them, about a quarter of Bun's
-  223 MB and an eighth of Node's 498 MB.
+- One request on a quiet server takes 1.0 ms in Rust, 1.1 ms in Go,
+  1.2 ms on Bun, 1.6 ms on Node and 22 ms in Python.
+- The Rust workers take 67 MB between them, under a third of Bun's
+  222 MB and about a seventh of Node's 484 MB.
 - A loop over small integers is the kind of code JavaScript engines
   compile well, so the gap between TypeScript and Rust is likely wider
   for work that builds many objects or strings. Python code that needed
@@ -411,22 +553,22 @@ server, with and without the schema.
 
 | Scenario | Req/s | CPU µs/req | p50 ms | p99 ms | p50 ms @ 1k/s | p99 ms @ 1k/s | p99.9 ms @ 1k/s | Peak memory |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
-| No policy | 211,103 | 15.8 | 0.298 | 0.525 | 0.160 | 0.397 | 0.431 | 26 MB |
-| JWT (HS256) | 148,029 | 23.4 | 0.430 | 0.764 | 0.168 | 0.368 | 0.400 | 26 MB |
-| API key | 178,875 | 19.1 | 0.350 | 0.646 | 0.161 | 0.383 | 0.414 | 26 MB |
-| Rate limit, memory store | 186,642 | 18.1 | 0.338 | 0.625 | 0.161 | 0.393 | 0.434 | 27 MB |
-| Rate limit, Redis store | 87,129 | 27.7 | 0.703 | 1.23 | 0.335 | 0.600 | 0.763 | 27 MB |
-| CORS (request with Origin) | 190,533 | 17.7 | 0.330 | 0.603 | 0.159 | 0.386 | 0.442 | 27 MB |
-| Path and query validation | 175,240 | 19.5 | 0.358 | 0.674 | 0.162 | 0.387 | 0.424 | 27 MB |
-| All of JWT, rate limit, CORS, path and query | 117,088 | 30.4 | 0.543 | 1.01 | 0.173 | 0.426 | 0.528 | 27 MB |
-| `proxy`, 1 KB JSON body | 56,326 | 51.2 | 1.09 | 3.16 | 0.246 | 0.470 | 0.623 | 31 MB |
-| `proxy`, same body checked against a JSON Schema | 50,259 | 70.4 | 1.23 | 2.65 | 0.229 | 0.453 | 0.552 | 31 MB |
+| No policy | 210,083 | 16.0 | 0.298 | 0.526 | 0.160 | 0.340 | 0.383 | 29 MB |
+| JWT (HS256) | 145,611 | 24.1 | 0.435 | 0.781 | 0.168 | 0.404 | 0.452 | 28 MB |
+| API key | 180,103 | 19.1 | 0.348 | 0.649 | 0.164 | 0.389 | 0.496 | 27 MB |
+| Rate limit, memory store | 182,970 | 18.5 | 0.344 | 0.654 | 0.161 | 0.349 | 0.397 | 27 MB |
+| Rate limit, Redis store | 86,254 | 27.7 | 0.709 | 1.27 | 0.343 | 0.643 | 0.814 | 28 MB |
+| CORS (request with Origin) | 190,105 | 17.7 | 0.330 | 0.619 | 0.160 | 0.401 | 0.491 | 28 MB |
+| Path and query validation | 178,131 | 19.1 | 0.354 | 0.658 | 0.160 | 0.403 | 0.493 | 27 MB |
+| All of JWT, rate limit, CORS, path and query | 114,001 | 31.1 | 0.557 | 1.03 | 0.176 | 0.441 | 0.519 | 27 MB |
+| `proxy`, 1 KB JSON body | 55,505 | 52.6 | 1.10 | 3.30 | 0.256 | 0.466 | 0.759 | 32 MB |
+| `proxy`, same body checked against a JSON Schema | 49,788 | 71.2 | 1.23 | 2.69 | 0.253 | 0.467 | 0.571 | 33 MB |
 
 | Policy | Added CPU per request |
 |---|--:|
 | API key, rate limit (memory), CORS, path and query validation | 2 to 4 µs each |
 | JWT, HS256 | 8 µs |
-| Rate limit, Redis store | 12 µs, plus a round trip to Redis (0.17 ms here) |
+| Rate limit, Redis store | 86,254 | 27.7 | 0.709 | 1.27 | 0.343 | 0.643 | 0.814 | 28 MB |
 | JSON Schema on a 1 KB body | 19 µs |
 
 - None of them adds measurable latency at 1,000 req/s, except Redis's
@@ -444,10 +586,10 @@ against its input schema, and `tools/list`.
 
 | Scenario | Req/s | CPU µs/req | p50 ms | p99 ms | p50 ms @ 1k/s | p99 ms @ 1k/s | p99.9 ms @ 1k/s | Peak memory |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
-| `GET /text` (the route) | 71,099 | 50.4 | 0.809 | 4.96 | 0.223 | 0.592 | 0.787 | 356 MB |
-| `tools/call text` (the same handler) | 45,407 | 81.9 | 1.30 | 4.61 | 0.252 | 0.673 | 0.819 | 285 MB |
-| `tools/call echo`, arguments checked against its schema | 36,293 | 104 | 1.66 | 5.24 | 0.279 | 0.581 | 0.890 | 293 MB |
-| `tools/list` | 94,610 | 38.5 | 0.652 | 1.41 | 0.178 | 0.415 | 0.558 | 206 MB |
+| `GET /text` (the route) | 70,693 | 51.0 | 0.806 | 4.86 | 0.225 | 0.632 | 0.787 | 358 MB |
+| `tools/call text` (the same handler) | 45,549 | 82.4 | 1.29 | 4.60 | 0.258 | 0.675 | 0.850 | 290 MB |
+| `tools/call echo`, arguments checked against its schema | 36,119 | 106 | 1.65 | 5.18 | 0.298 | 0.638 | 0.886 | 293 MB |
+| `tools/list` | 97,725 | 37.2 | 0.632 | 1.36 | 0.176 | 0.495 | 0.583 | 214 MB |
 
 - A tool call costs about one and a half times the route it wraps (82
   against 50 µs of CPU), and adds about 0.03 ms of latency: the JSON-RPC
@@ -462,13 +604,13 @@ each with a path parameter, and a catch-all behind them.
 
 | Scenario | Req/s | CPU µs/req | p50 ms | p99 ms | p50 ms @ 1k/s | p99 ms @ 1k/s | p99.9 ms @ 1k/s | Peak memory |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
-| 10 routes | 206,831 | 16.1 | 0.304 | 0.546 | 0.162 | 0.366 | 0.460 | 23 MB |
-| 1,000 routes | 199,786 | 16.5 | 0.312 | 0.657 | 0.157 | 0.344 | 0.401 | 28 MB |
-| 10,000 routes | 204,562 | 16.5 | 0.308 | 0.552 | 0.158 | 0.346 | 0.417 | 65 MB |
+| 10 routes | 205,911 | 16.4 | 0.303 | 0.551 | 0.158 | 0.403 | 0.445 | 25 MB |
+| 1,000 routes | 206,641 | 16.4 | 0.304 | 0.547 | 0.159 | 0.388 | 0.448 | 28 MB |
+| 10,000 routes | 206,483 | 16.4 | 0.303 | 0.539 | 0.161 | 0.347 | 0.372 | 67 MB |
 
 Matching costs the same at every size, since routes are matched with a
-radix tree. Memory grows with the table: 10,000 routes take 65 MB under
-load, and 127 MB just after startup (see [Startup](#startup)).
+radix tree. Memory grows with the table: 10,000 routes take 67 MB under
+load, and 137 MB just after startup (see [Startup](#startup)).
 
 ### Request bodies
 
@@ -483,42 +625,56 @@ inside a small object.
 
 | Scenario | Req/s | MB/s in | CPU µs/req | p50 ms | p99 ms | Peak memory |
 |---|--:|--:|--:|--:|--:|--:|
-| 1 KB: Go on its own | 147,495 | 151 | 22.9 | 0.390 | 1.77 | 16 MB |
-| 64 KB: Go on its own | 18,426 | 1,208 | 175 | 3.78 | 23.39 | 20 MB |
-| 1 MB: Go on its own | 2,207 | 2,315 | 1321 | 6.56 | 22.92 | 48 MB |
-| 64 KB JSON: Go on its own | 17,938 | 1,141 | 181 | 3.87 | 24.95 | 24 MB |
-| 1 KB: Unsworn `proxy` → Go | 55,415 | 57 | 53.0 | 1.10 | 3.32 | 29 MB |
-| 64 KB: Unsworn `proxy` → Go | 9,109 | 597 | 127 | 7.33 | 42.92 | 87 MB |
-| 1 MB: Unsworn `proxy` → Go | 1,196 | 1,254 | 976 | 12.36 | 43.67 | 124 MB |
-| 64 KB JSON: Unsworn `proxy` → Go | 9,706 | 617 | 111 | 5.63 | 43.45 | 58 MB |
-| 1 KB: Unsworn → Bun, Tier 2 | 62,939 | 64 | 57.9 | 0.902 | 5.21 | 334 MB |
-| 64 KB: Unsworn → Bun, Tier 2 | 15,673 | 1,027 | 235 | 3.89 | 9.18 | 520 MB |
-| 1 MB: Unsworn → Bun, Tier 2 | 1,017 | 1,066 | 3689 | 15.47 | 25.73 | 611 MB |
-| 64 KB JSON: Unsworn → Bun, Tier 2 | 25,472 | 1,620 | 146 | 2.36 | 6.70 | 493 MB |
-| 64 KB JSON, sent back as JSON: Unsworn → Bun, Tier 2 | 3,324 | 211 | 1187 | 19.00 | 33.29 | 429 MB |
-| 1 KB: Unsworn → Bun, Tier 1 | 68,536 | 70 | 52.9 | 0.832 | 4.49 | 341 MB |
-| 64 KB: Unsworn → Bun, Tier 1 | 12,442 | 815 | 295 | 4.96 | 9.87 | 497 MB |
-| 1 MB: Unsworn → Bun, Tier 1 | 891 | 934 | 4052 | 17.82 | 25.93 | 550 MB |
-| 1 KB: Unsworn → Go, Tier 2 | 42,966 | 44 | 86.2 | 1.38 | 4.51 | 102 MB |
-| 64 KB: Unsworn → Go, Tier 2 | 11,794 | 773 | 319 | 5.13 | 12.46 | 125 MB |
-| 1 MB: Unsworn → Go, Tier 2 | 1,011 | 1,060 | 3711 | 15.17 | 30.52 | 226 MB |
-| 64 KB JSON: Unsworn → Go, Tier 2 | 15,528 | 988 | 243 | 3.90 | 9.87 | 126 MB |
-| 64 KB JSON, sent back as JSON: Unsworn → Go, Tier 2 | 2,885 | 184 | 1360 | 20.90 | 59.08 | 131 MB |
-| 1 KB: Unsworn → Go, Tier 1 | 49,786 | 51 | 73.6 | 1.19 | 3.95 | 105 MB |
-| 64 KB: Unsworn → Go, Tier 1 | 11,456 | 751 | 326 | 5.32 | 11.71 | 181 MB |
-| 1 MB: Unsworn → Go, Tier 1 | 959 | 1,005 | 3911 | 16.29 | 26.90 | 252 MB |
+| 1 KB: Go on its own | 144,844 | 148 | 23.4 | 0.397 | 1.77 | 17 MB |
+| 64 KB: Go on its own | 18,476 | 1,211 | 174 | 3.76 | 23.56 | 21 MB |
+| 1 MB: Go on its own | 2,173 | 2,278 | 1335 | 6.69 | 23.96 | 47 MB |
+| 64 KB JSON: Go on its own | 18,024 | 1,147 | 179 | 3.85 | 24.99 | 24 MB |
+| 1 KB: Unsworn `proxy` → Go | 53,423 | 55 | 54.6 | 1.14 | 3.40 | 30 MB |
+| 64 KB: Unsworn `proxy` → Go | 8,956 | 587 | 130 | 7.37 | 43.69 | 78 MB |
+| 1 MB: Unsworn `proxy` → Go | 1,177 | 1,235 | 997 | 12.36 | 44.05 | 130 MB |
+| 64 KB JSON: Unsworn `proxy` → Go | 9,483 | 603 | 111 | 5.81 | 43.16 | 56 MB |
+| 1 KB: Unsworn → Bun, Tier 2 | 62,885 | 64 | 58.0 | 0.904 | 5.24 | 343 MB |
+| 64 KB: Unsworn → Bun, Tier 2 | 15,668 | 1,027 | 238 | 3.89 | 9.24 | 533 MB |
+| 1 MB: Unsworn → Bun, Tier 2 | 1,023 | 1,073 | 3618 | 15.39 | 25.04 | 621 MB |
+| 64 KB JSON: Unsworn → Bun, Tier 2 | 25,302 | 1,610 | 146 | 2.38 | 6.64 | 497 MB |
+| 64 KB JSON, sent back as JSON: Unsworn → Bun, Tier 2 | 3,328 | 212 | 1185 | 19.00 | 33.16 | 435 MB |
+| 1 KB: Unsworn → Bun, Tier 1 | 68,381 | 70 | 53.0 | 0.832 | 4.65 | 344 MB |
+| 64 KB: Unsworn → Bun, Tier 1 | 12,294 | 806 | 293 | 5.03 | 9.86 | 504 MB |
+| 1 MB: Unsworn → Bun, Tier 1 | 887 | 930 | 4028 | 17.91 | 26.07 | 540 MB |
+| 1 KB: Unsworn → Go, Tier 2 | 43,230 | 44 | 85.2 | 1.37 | 4.59 | 106 MB |
+| 64 KB: Unsworn → Go, Tier 2 | 11,664 | 764 | 315 | 5.19 | 12.64 | 132 MB |
+| 1 MB: Unsworn → Go, Tier 2 | 1,007 | 1,056 | 3765 | 15.26 | 30.56 | 226 MB |
+| 64 KB JSON: Unsworn → Go, Tier 2 | 15,477 | 985 | 240 | 3.92 | 10.07 | 127 MB |
+| 64 KB JSON, sent back as JSON: Unsworn → Go, Tier 2 | 2,868 | 182 | 1367 | 21.08 | 59.50 | 137 MB |
+| 1 KB: Unsworn → Go, Tier 1 | 48,990 | 50 | 75.3 | 1.20 | 3.93 | 105 MB |
+| 64 KB: Unsworn → Go, Tier 1 | 11,417 | 748 | 328 | 5.31 | 11.77 | 179 MB |
+| 1 MB: Unsworn → Go, Tier 1 | 957 | 1,003 | 3907 | 16.41 | 26.35 | 257 MB |
+| 1 KB: Unsworn → Go server (HTTP runtime), 1 server | 50,257 | 51 | 70.1 | 1.17 | 3.60 | 51 MB |
+| 64 KB: Unsworn → Go server (HTTP runtime), 1 server | 10,185 | 667 | 326 | 6.20 | 26.38 | 102 MB |
+| 1 MB: Unsworn → Go server (HTTP runtime), 1 server | 1,432 | 1,502 | 2461 | 10.92 | 19.19 | 183 MB |
+| 1 KB: Unsworn → Bun server (HTTP runtime), 1 server | 63,952 | 65 | 54.1 | 0.966 | 1.98 | 73 MB |
+| 64 KB: Unsworn → Bun server (HTTP runtime), 1 server | 18,412 | 1,207 | 165 | 3.33 | 6.77 | 122 MB |
+| 1 MB: Unsworn → Bun server (HTTP runtime), 1 server | 1,288 | 1,351 | 1871 | 12.27 | 17.14 | 193 MB |
 
-- The proxy streams bodies: it moves 1.25 GB/s of 1 MB bodies in about
-  125 MB of memory. Its 64 KB and 1 MB rows are limited by the upstream,
+- The proxy streams bodies: it moves 1.24 GB/s of 1 MB bodies in about
+  130 MB of memory. Its 64 KB and 1 MB rows are limited by the upstream,
   which has a single core here.
 - A handler has to receive the whole body and send it back, so large
   bodies cost more than through the proxy: 930 to 1,070 MB/s of 1 MB
   bodies for Bun and Go.
 - Tier 2 beats Tier 1 for Bun at 64 KB and above (by about 25% and 15%).
-  For Go the two are within 3 to 5%. A pipe holds 64 KB, so a large body
+  For Go the two are within 2 to 5%. A pipe holds 64 KB, so a large body
   likely takes more reads and writes on Tier 1.
-- 1 MB bodies cost 3.7 to 4.1 ms of CPU each through a handler, about
+- 1 MB bodies cost 3.6 to 4.0 ms of CPU each through a handler, about
   three times what the Go server takes on its own.
+- **An HTTP runtime streams bodies both ways,** as `proxy` does, so a
+  large one costs half to two thirds of what it does through a handler:
+  1.9 ms of CPU for 1 MB through the Bun server and 2.5 ms through the
+  Go one, against 3.6 and 3.8 ms through a Tier 2 handler, in 183 to 193 MB of
+  memory against 226 to 621 MB. At 64 KB the Bun server costs 165 µs
+  against 238 for a Bun handler, and the Go server about what a Go
+  handler does (326 against 315 µs). These counts include the server's
+  own copy of the body, which it reads whole before it sends it back.
 - **A JSON body a handler doesn't read costs what carrying it does.** A
   route with no body schema hands the body to its handler as it arrived,
   and the SDK parses it when the handler first asks for it. Unread, 64 KB
@@ -540,32 +696,42 @@ of its route table:
 
 | Routes | Start to first response, ms | Memory at idle |
 |--:|--:|--:|
-| 10 | 5.52 | 19 MB |
-| 1,000 | 14.31 | 29 MB |
-| 10,000 | 153 | 127 MB |
+| 10 | 3.20 | 20 MB |
+| 1,000 | 12.10 | 36 MB |
+| 10,000 | 161 | 137 MB |
 
-The first request to a handler, with the runtime's workers started on
-that first request (the default) or at boot (`eager = true`):
+The first request to a handler or an HTTP runtime, with the runtime's
+workers or server started on that first request (the default) or at
+boot (`eager = true`):
 
 | Runtime | Lazy: ready, ms | Lazy: first request, ms | Lazy: second request, ms | Eager: ready, ms |
 |---|--:|--:|--:|--:|
-| Bun, Tier 2 | 3.30 | 67.34 | 0.452 | 70.54 |
-| Node, Tier 2 | 4.78 | 313 | 0.627 | 289 |
-| Python, Tier 2 | 2.62 | 199 | 0.558 | 207 |
-| Go, Tier 2 | 3.54 | 12.53 | 0.359 | 15.81 |
-| Rust, Tier 2 | 4.74 | 8.39 | 0.374 | 11.26 |
+| Bun, Tier 2 | 2.61 | 68.18 | 0.462 | 70.46 |
+| Node, Tier 2 | 2.59 | 309 | 0.583 | 289 |
+| Python, Tier 2 | 2.61 | 200 | 0.577 | 207 |
+| Go, Tier 2 | 2.66 | 11.59 | 0.380 | 16.98 |
+| Rust, Tier 2 | 2.50 | 8.35 | 0.301 | 11.31 |
+| Go `net/http` server, HTTP runtime | 2.55 | 27.53 | 0.493 | 30.89 |
+| `Bun.serve` server, HTTP runtime | 2.54 | 27.90 | 0.487 | 31.14 |
 
 Lazy start moves the workers' startup from boot to the first request:
-about 10 ms for compiled workers, 67 ms for Bun, and 200 to 310 ms for
+about 10 ms for compiled workers, 68 ms for Bun, and 200 to 310 ms for
 Python and Node.
+
+**An HTTP runtime's first request takes about 28 ms, whatever the
+server.** Run on their own, the Go server is listening on its socket
+1.5 ms after it starts and the Bun server 3.5 ms after (the median of
+seven starts each). Unsworn checks whether the server is listening
+every 25 ms, so both are found at the second check, and most of the
+28 ms is that wait.
 
 **These times depend on the machine's state more than on the release.**
 The 10,000-route start took 157 ms in the v0.3.1 run and 89 ms in the
 v0.3.0 run; timed side by side, those two binaries both ranged from about
-115 to 250 ms. The 10-route start was 3.2 ms in the v0.3.1 run and is
-5.5 ms here. In a separate comparison, the v0.3.1 and v0.4.0 binaries
-were started in turn 25 times each on an idle machine, and took the same
-time: about 21 ms at the median with 10 routes and 56 ms with 1,000. Their
+115 to 250 ms. The 10-route start was 3.2 ms in the v0.3.1 run, 5.5 ms
+in the v0.4.0 run and 3.2 ms here. In a separate comparison, the v0.3.1
+and v0.4.0 binaries were started in turn 25 times each on an idle
+machine, and took the same time: about 21 ms at the median with 10 routes and 56 ms with 1,000. Their
 fastest starts with 10 routes were 3.1 and 3.2 ms. The tables above were
 taken at the end of the run, on a processor that had been busy for over
 an hour.
@@ -577,9 +743,9 @@ with a body schema. The platform's own startup isn't included.
 
 | Routes | Node started, ms | SDK imported, ms | First response, ms | Total, ms | Warm request, µs | First request to another route, ms |
 |--:|--:|--:|--:|--:|--:|--:|
-| 1 | 15.45 | 53.55 | 77.89 | 146 | 157 | – |
-| 100 | 15.39 | 54.95 | 94.72 | 169 | 159 | 5.30 |
-| 1,000 | 15.38 | 53.57 | 159 | 229 | 156 | 5.25 |
+| 1 | 14.94 | 51.13 | 77.11 | 145 | 152 | – |
+| 100 | 15.25 | 51.79 | 92.28 | 160 | 154 | 5.18 |
+| 1,000 | 14.81 | 52.26 | 162 | 230 | 156 | 5.21 |
 
 - A cold start answers about 145 ms after Node starts, with most of it in
   importing the SDK and compiling the wasm module.
@@ -593,15 +759,15 @@ with a body schema. The platform's own startup isn't included.
 
 | | |
 |---|--:|
-| `unsworn` binary (x86_64 musl, as released) | 19.4 MB |
-| wasm core (`unsworn_bg.wasm`) | 4.6 MB, 1.42 MB gzipped |
+| `unsworn` binary (x86_64 musl, as released) | 19.8 MB |
+| wasm core (`unsworn_bg.wasm`) | 4.7 MB, 1.44 MB gzipped |
 
 ## Running them
 
 ```sh
 cargo install oha                 # wrk comes from your package manager
-python3 bench/run.py build        # Unsworn, the SDK workers, the Go upstream, the wasm core
-python3 bench/run.py run          # about an hour and a quarter; writes bench/results/<date>-<cpu>.json
+python3 bench/run.py build        # Unsworn, the SDK workers, the Go upstream and HTTP runtime, the wasm core
+python3 bench/run.py run          # about an hour and three quarters; writes bench/results/<date>-<cpu>.json
 python3 bench/run.py report bench/results/<file>.json   # these tables, as markdown
 ```
 
@@ -609,16 +775,16 @@ python3 bench/run.py report bench/results/<file>.json   # these tables, as markd
 another binary, such as a released one, set `UNSWORN_BIN` to its path.
 
 `run` takes `--only` with a comma-separated list of groups
-(`declarative`, `proxy`, `handlers`, `work`, `policies`, `mcp`,
-`routes`, `bodies`, `startup`), and `--quick` for a single 3-second pass to check the
+(`declarative`, `proxy`, `handlers`, `http`, `calls`, `work`,
+`policies`, `mcp`, `routes`, `bodies`, `startup`), and `--quick` for a single 3-second pass to check the
 harness. It needs Go, Bun, Node and Python 3 for the handler groups, and
 Docker for the Caddy, nginx and Redis rows, which it skips without Docker.
 It waits for the machine to go quiet before it starts: anything else
 running (a build, a browser) skews the results.
 
 Each scenario's config is in [`bench/projects/`](../bench/projects), or
-generated by `bench/run.py` into `target/bench/projects/` for the handler
-and route-count groups.
+generated by `bench/run.py` into `target/bench/projects/` for the handler,
+HTTP runtime and route-count groups.
 
 A dedicated server with a fixed CPU frequency would give steadier
 numbers than this laptop; results from one are welcome in
