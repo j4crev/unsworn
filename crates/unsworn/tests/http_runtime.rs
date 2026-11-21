@@ -546,7 +546,7 @@ fn a_server_calls_functions_and_services_through_unsworn() {
         "{first}"
     );
     let token = first["token"].as_str().unwrap().to_string();
-    assert_eq!(token.len(), 32, "{first}");
+    assert_eq!(token.len(), 48, "{first}");
     assert_ne!(get("/api/token")["token"].as_str(), Some(token.as_str()));
     // A client can't send one of its own.
     let r = s.request(

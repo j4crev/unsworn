@@ -198,10 +198,11 @@ but it ends when the connection is upgraded, so calls can't be made
 during a WebSocket. A new request gets a new token.
 
 Anything on the machine can reach the port, so the token is what lets a
-call in. It's 128 random bits and lasts only as long as its request, but
-it's in the request's headers: an app that logs all its headers, or passes
-them on to another service, gives it away for that time. Leave
-`Unsworn-Call` out of what's logged or forwarded.
+call in. It's signed with a random key only Unsworn has, so it can't be
+guessed or made up, and it lasts only as long as its request. But it's in
+the request's headers: an app that logs all its headers, or passes them
+on to another service, gives it away for that time. Leave `Unsworn-Call`
+out of what's logged or forwarded.
 
 ## What it doesn't have
 
