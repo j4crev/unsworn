@@ -2682,7 +2682,7 @@ checksum = "b39abd59bf32521c7f2301b52d05a6a2c975b6003521cbd0c6dc1582f0a22104"
 
 [[package]]
 name = "unsworn"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arc-swap",
  "async-compression",
@@ -2721,14 +2721,14 @@ dependencies = [
 
 [[package]]
 name = "unsworn-bench-handlers"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "unsworn-sdk",
 ]
 
 [[package]]
 name = "unsworn-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base64",
  "bytes",
@@ -2757,7 +2757,7 @@ dependencies = [
 
 [[package]]
 name = "unsworn-proto"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytes",
  "serde",
@@ -2767,7 +2767,7 @@ dependencies = [
 
 [[package]]
 name = "unsworn-sdk"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2782,7 +2782,7 @@ dependencies = [
 
 [[package]]
 name = "unsworn-wasm"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytes",
  "futures-util",
