@@ -1,6 +1,6 @@
 [project]
 name = "unsworn"
-version = "0.5.0"
+version = "0.6.0"
 description = "Write Unsworn handlers in Python."
 readme = "README.md"
 license = "MIT"
