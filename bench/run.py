@@ -747,7 +747,7 @@ def scenarios() -> list[S]:
     relay = dict(method="POST", headers=json_h, body="call input", answer={"answer": "hello"})
     fetch = dict(method="POST", headers=octet, body="1 KB", echo=True)
     out += [
-        S("calls", "Go server, `GET /text`, in a project with functions (a token per request)", "unsworn:http:go:socket:1:socket", "/text", expect=201),
+        S("calls", "Go server, `GET /text`, with `calls` (a token per request)", "unsworn:http:go:socket:1:socket", "/text", expect=201),
         S("calls", "Go server → function, endpoint's socket", "unsworn:http:go:socket:1:socket", "/relay?fn=text", **relay),
         S("calls", "Go server → function, endpoint's port", "unsworn:http:go:socket:1:url", "/relay?fn=text", **relay),
         S("calls", "Go handler → function (`req.Call`), Tier 2", "unsworn:calls:go-framed", "/relay?fn=text", **relay),
