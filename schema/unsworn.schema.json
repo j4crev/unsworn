@@ -1852,6 +1852,14 @@
             "null"
           ]
         },
+        "calls": {
+          "default": [],
+          "description": "The `[[function]]`s and `[outbound.<name>]` services an `http`\nruntime's server may call through Unsworn, by name, or `[\"*\"]` for\nall of them. Default: none, so it isn't given the endpoint and its\nrequests carry no `Unsworn-Call` token.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "command": {
           "type": "string"
         },

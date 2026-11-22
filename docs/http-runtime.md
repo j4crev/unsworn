@@ -130,8 +130,25 @@ A handler calls a [function](functions.md) with `ctx.call` and an
 with plain HTTP requests to a local endpoint Unsworn runs for it, so
 nothing of Unsworn's has to be installed in the app.
 
-In a project with a `[[function]]` or an `[outbound.<name>]`, the server
-gets two more variables. Both lead to the same endpoint:
+A server calls only what its runtime's `calls` names, and nothing by
+default:
+
+```toml
+[runtimes.app]
+command  = "node server.js"
+protocol = "http"
+calls    = ["embed", "stripe"]   # a [[function]] and an [outbound.stripe]
+```
+
+Each name is a `[[function]]` or an `[outbound.<name>]` in the config, and
+`unsworn check` says so when one isn't. `calls = ["*"]` allows every
+function and outbound service the config has. Without `calls`, the server
+isn't told about the endpoint and its requests carry no token, so an app
+that never calls back, or one you didn't write, never holds a way to use
+the project's functions or the credentials in its services' `headers`.
+
+A server whose `calls` names something gets two more variables. Both lead
+to the same endpoint:
 
 | Variable | What it is |
 |---|---|
@@ -188,6 +205,8 @@ the ones in [`functions.md`](functions.md#calling) and
   `404` from Stripe and "no `[outbound.stripe]` in the config" can be
   told apart.
 - **A missing token is a `401`, and an unknown or expired one a `409`.**
+- **A function or service the runtime's `calls` doesn't name is a
+  `403`**, which says to add it.
 - **A body to a service is streamed** as the server sends it. The answer
   is read whole, up to `max_response`, as it is for a handler.
 

@@ -173,7 +173,8 @@ on the way out. In the order planned:
    - ~~**`ctx.call` and `ctx.fetch` for HTTP runtimes.**~~ Done: a
      server run as an [HTTP runtime](http-runtime.md) calls functions and
      outbound services with plain HTTP requests to a local endpoint, on a
-     socket or a port, sending back the token its request came with. See
+     socket or a port, sending back the token its request came with. It
+     calls only what its runtime's `calls` names. See
      [`http-runtime.md`](http-runtime.md#calling-functions-and-outbound-services).
    - **Limits on what a worker can reach.** An outbound service keeps the
      credential from a handler, but nothing stops the handler opening its

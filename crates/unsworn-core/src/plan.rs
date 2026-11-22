@@ -561,6 +561,14 @@ fn runtime(r: &crate::project::Runtime) -> Entry {
     if r.eager {
         e.plain("eager", "yes");
     }
+    match &r.calls {
+        crate::project::Calls::None => {}
+        crate::project::Calls::All => e.plain("calls", "every function and outbound service"),
+        crate::project::Calls::Only(names) => {
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            e.plain("calls", names.join(", "));
+        }
+    }
     if !r.env.is_empty() {
         // Names only: a value may be a secret someone wrote into the config.
         let names: Vec<&str> = r.env.keys().map(String::as_str).collect();

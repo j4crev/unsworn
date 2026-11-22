@@ -280,6 +280,36 @@ fn check_says_what_an_http_runtime_is_for() {
     let e = errors("[runtimes.ts]\ncommand = \"bun run worker.ts\"\n", &[]);
     assert!(e.contains("no extensions"), "{e}");
 
+    // What a server may call is a function or an outbound service in the
+    // config, or all of them, and only a server calls that way.
+    let function = "\n[[function]]\nname = \"embed\"\nhandler = \"f.ts#embed\"\n";
+    let e = errors(
+        &format!("{base}calls = [\"embed\", \"stripe\"]\n{function}"),
+        &[],
+    );
+    assert!(
+        e.contains("no [[function]] or [outbound.stripe] is named \"stripe\""),
+        "{e}"
+    );
+    assert!(!e.contains("is named \"embed\""), "{e}");
+    let e = errors(&format!("{base}calls = [\"*\"]\n"), &[]);
+    assert!(
+        e.contains("no functions or outbound services to call"),
+        "{e}"
+    );
+    let e = errors(
+        &format!("{base}calls = [\"*\", \"embed\"]\n{function}"),
+        &[],
+    );
+    assert!(e.contains("already allows every function"), "{e}");
+    let e = errors(
+        &format!(
+            "[runtimes.ts]\nextensions = [\".ts\"]\ncommand = \"bun run worker.ts\"\ncalls = [\"embed\"]\n{function}"
+        ),
+        &[],
+    );
+    assert!(e.contains("handlers call with `ctx.call`"), "{e}");
+
     // The plan says how the server is reached.
     let ok =
         format!("{base}\n[[route]]\npath = \"/x/{{*rest}}\"\nproxy = {{ runtime = \"api\" }}\n");
@@ -294,6 +324,16 @@ fn check_says_what_an_http_runtime_is_for() {
         plan.contains("  proxy              runtime api\n"),
         "{plan}"
     );
+    let ok = format!(
+        "{base}calls = [\"embed\"]\n\n[[function]]\nname = \"embed\"\nhandler = \"f.py#embed\"\n\n[[route]]\npath = \"/x/{{*rest}}\"\nproxy = {{ runtime = \"api\" }}\n"
+    );
+    let p = Project::new(&[
+        ("unsworn.toml", &ok),
+        ("f.py", "def embed(req, ctx): pass\n"),
+    ]);
+    let out = p.command(&["plan", "-o", "-"]);
+    let plan = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(plan.contains("  calls              embed\n"), "{plan}");
 }
 
 /// A server that calls functions and outbound services through Unsworn's
@@ -468,13 +508,21 @@ fn echo_service() -> std::net::SocketAddr {
     addr
 }
 
-fn calling_project() -> Project {
+/// The calling server, with `calls` set to this (left out when empty),
+/// in a project with functions and an outbound service.
+fn calling_project(calls: &str) -> Project {
     let service = echo_service();
+    let calls = if calls.is_empty() {
+        String::new()
+    } else {
+        format!("calls = {calls}\n")
+    };
     let config = format!(
         r#"
 [runtimes.api]
 command = "python3 app.py"
 protocol = "http"
+{calls}
 
 [runtimes.py]
 extensions = [".py"]
@@ -520,7 +568,7 @@ fn a_server_calls_functions_and_services_through_unsworn() {
     if !python() {
         return;
     }
-    let p = calling_project();
+    let p = calling_project(r#"["*"]"#);
     let s = serve(&p);
     let get = |path: &str| {
         let r = s.request("GET", path, &[("x-api-key", "k1")], b"");
@@ -647,4 +695,50 @@ fn a_server_calls_functions_and_services_through_unsworn() {
         !get("/api/late-result").is_null()
     });
     assert_eq!(get("/api/late-result")["status"], 409);
+}
+
+#[test]
+fn a_server_calls_only_what_its_calls_names() {
+    if !python() {
+        return;
+    }
+    let p = calling_project(r#"["whoami", "svc"]"#);
+    let s = serve(&p);
+    let get = |path: &str| {
+        let r = s.request("GET", path, &[("x-api-key", "k1")], b"");
+        assert_eq!(r.status, 200, "{path}: {}\n{}", r.text(), s.logs());
+        r.json()
+    };
+    let out = get("/api/call/whoami?input=%7B%7D");
+    assert_eq!(out["status"], 200, "{out}\n{}", s.logs());
+    let out = get("/api/fetch/things?via=socket");
+    assert_eq!(out["status"], 201, "{out}");
+    // A function in the project, but not one it may call.
+    let out = get("/api/call/refuse?input=%7B%7D");
+    assert_eq!(out["status"], 403, "{out}");
+    assert!(
+        out["error"]
+            .as_str()
+            .unwrap()
+            .contains("[runtimes.api] may not call the function \"refuse\""),
+        "{out}"
+    );
+    assert_eq!(out["type"], "application/problem+json");
+}
+
+#[test]
+fn a_server_without_calls_gets_no_endpoint_or_token() {
+    if !python() {
+        return;
+    }
+    // The project has functions and a service, but the server's `calls`
+    // names none of them.
+    let p = calling_project("");
+    let s = serve(&p);
+    let r = s.request("GET", "/api/token", &[("x-api-key", "k1")], b"");
+    assert_eq!(r.status, 200, "{}\n{}", r.text(), s.logs());
+    let out = r.json();
+    assert_eq!(out["token"], Value::Null, "{out}");
+    assert_eq!(out["env"]["UNSWORN_CALLS_URL"], Value::Null, "{out}");
+    assert_eq!(out["env"]["UNSWORN_CALLS_SOCKET"], Value::Null, "{out}");
 }

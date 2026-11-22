@@ -1158,9 +1158,10 @@ impl Pool {
                 format!("http://127.0.0.1:{port}").into()
             }
         };
-        // Where it calls functions and outbound services, in a project
-        // that has them.
-        if self.peers.get().is_some()
+        // Where it calls functions and outbound services, if its `calls`
+        // names any.
+        if self.runtime.calls.any()
+            && self.peers.get().is_some()
             && let Some(endpoint) = self.endpoint()
         {
             cmd.env("UNSWORN_CALLS_SOCKET", &endpoint.socket)
