@@ -437,13 +437,17 @@ function's workers, but not the Go upstream.
 - **The endpoint's socket is cheaper than its port** for the Go server's
   client, by 15 to 25 µs a call. For Bun's client the two were within
   3 µs.
-- **A project with functions or services pays for a token on every
-  forwarded request,** whether the server makes a call or not. The Go
-  server's `GET /text` costs 65 µs here against 60 in the project
-  without them. In a separate comparison, the two configs taken in turn
-  for six rounds, in both orders, the token cost about 7 µs a request
-  (57.4 against 64.7 µs), and throughput fell from 61,400 to 55,100
-  req/s.
+- **A server that may call pays for a token on every forwarded
+  request,** whether it makes a call or not. In 0.5.0 that was every
+  server in a project with functions or services. The Go server's
+  `GET /text` costs 65 µs here against 60 in the project without them. In
+  a separate comparison, the two configs taken in turn for six rounds, in
+  both orders, the token cost about 7 µs a request (57.4 against
+  64.7 µs), and throughput fell from 61,400 to 55,100 req/s. Since this
+  run, a token is signed instead of drawn from the system's randomness,
+  which took the same request from 64.8 to 59.7 µs in an interleaved
+  comparison. A server gets tokens only when its runtime's `calls` names
+  something, so one that never calls pays nothing.
 - The memory column includes the four Bun workers that run the function.
 
 ### A handler that does work

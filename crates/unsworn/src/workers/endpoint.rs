@@ -2,7 +2,8 @@
 //! outbound services through: what `ctx.call` and `ctx.fetch` are for a
 //! handler, as plain HTTP, so a server needs no SDK to use them.
 //!
-//! Each request Unsworn forwards to the server carries a token in the
+//! Only a runtime whose `calls` names something has one. Each request
+//! Unsworn forwards to its server carries a token in the
 //! `Unsworn-Call` header. The server sends it back with each call, and
 //! Unsworn finds the request it's for: the context the function gets,
 //! the time left, the trace. A token stops working when its request's
@@ -133,7 +134,7 @@ impl Drop for CallToken {
 impl Pool {
     /// A token for a request forwarded to this `http` runtime's server, to
     /// call functions and outbound services with while it's in flight.
-    /// `None` when the project has neither, so there's nothing to call.
+    /// `None` when its `calls` names nothing, so it may call nothing.
     pub fn call_token(
         self: &Arc<Self>,
         request_id: String,
@@ -141,6 +142,9 @@ impl Pool {
         deadline: Instant,
         headers: &http::HeaderMap,
     ) -> Option<CallToken> {
+        if !self.runtime.calls.any() {
+            return None;
+        }
         self.peers.get()?;
         signing_key()?;
         static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -326,11 +330,27 @@ async fn handle(pool: Weak<Pool>, req: Request<Incoming>) -> Response<Body> {
     };
 
     let path = req.uri().path().to_string();
+    let refused = |kind: &str, name: &str| {
+        let runtime = &pool.runtime.name;
+        failure(
+            403,
+            &format!(
+                "[runtimes.{runtime}] may not call the {kind} \"{name}\": add it to the runtime's `calls`"
+            ),
+            Value::Null,
+        )
+    };
     let work = async {
         if let Some(name) = path.strip_prefix("/call/") {
+            if !pool.runtime.calls.allows(name) {
+                return refused("function", name);
+            }
             call(&pools, name.to_string(), req, caller).await
         } else if let Some(rest) = path.strip_prefix("/fetch/") {
             let (service, rest) = rest.split_once('/').unwrap_or((rest, ""));
+            if !pool.runtime.calls.allows(service) {
+                return refused("outbound service", service);
+            }
             let mut path = format!("/{rest}");
             if let Some(query) = req.uri().query() {
                 path = format!("{path}?{query}");

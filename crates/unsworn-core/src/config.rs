@@ -294,6 +294,12 @@ pub struct RawRuntime {
     pub startup_timeout: Option<ConfigDuration>,
     /// Where an `http` runtime's server listens. Default: `"socket"`.
     pub listen: Option<Listen>,
+    /// The `[[function]]`s and `[outbound.<name>]` services an `http`
+    /// runtime's server may call through Unsworn, by name, or `["*"]` for
+    /// all of them. Default: none, so it isn't given the endpoint and its
+    /// requests carry no `Unsworn-Call` token.
+    #[serde(default)]
+    pub calls: Vec<String>,
 }
 
 /// Where an `http` runtime's server listens for Unsworn.

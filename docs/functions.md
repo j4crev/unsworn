@@ -68,7 +68,7 @@ A function has no path. Nothing outside Unsworn reaches it, so it needs no
 | Python | `ctx.call("embed", {"text": text})`, with `await` in an `async def` handler | raises `CallError` (`status`, `json`) |
 | Go | `err := req.Call("embed", input, &out)` | a `*unsworn.CallError` (`Status`, `Message`, `JSON`) |
 | Rust | `req.call::<Vec<f32>>("embed", json!({ "text": text })).await?` | `Err(CallError { status, message, json })` |
-| An [HTTP runtime](http-runtime.md#calling-functions-and-outbound-services) | `POST $UNSWORN_CALLS_URL/call/embed`, with the request's `Unsworn-Call` header | a status of `400` or above; Unsworn's own failures also have an `Unsworn-Error` header |
+| An [HTTP runtime](http-runtime.md#calling-functions-and-outbound-services) whose `calls` names it | `POST $UNSWORN_CALLS_URL/call/embed`, with the request's `Unsworn-Call` header | a status of `400` or above; Unsworn's own failures also have an `Unsworn-Error` header |
 
 A call gives back the JSON the function answered with. It fails when the
 function answers `400` or above, or when it can't be run:

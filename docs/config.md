@@ -164,8 +164,10 @@ protocol   = "http"               # an HTTP server of its own; see http-runtime.
 
 A runtime with `protocol = "http"` is an ordinary HTTP server, in any
 language, that Unsworn starts and forwards requests to. It has no
-`extensions`: routes reach it with `proxy = { runtime = "api" }`. See
-[`http-runtime.md`](http-runtime.md).
+`extensions`: routes reach it with `proxy = { runtime = "api" }`. Its
+`calls` lists the `[[function]]`s and `[outbound.<name>]` services the
+server may call through Unsworn, or `["*"]` for all of them; by default
+it may call none. See [`http-runtime.md`](http-runtime.md).
 
 Runtime names are arbitrary, and a runtime you write is taken as written:
 Unsworn runs its `command` and asks nothing about the language.

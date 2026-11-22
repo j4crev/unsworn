@@ -1,6 +1,6 @@
 //! Compiling a project into a route table, and matching requests.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -70,6 +70,40 @@ pub struct Runtime {
     pub startup_timeout: Duration,
     /// Where an `http` runtime's server listens.
     pub listen: config::Listen,
+    /// What an `http` runtime's server may call through Unsworn.
+    pub calls: Calls,
+}
+
+/// The functions and outbound services an `http` runtime's server may
+/// call (its `calls`). A handler's runtime has none: handlers call with
+/// `ctx.call` and `ctx.fetch`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Calls {
+    /// Nothing: the server isn't given the endpoint, and its requests
+    /// carry no token.
+    #[default]
+    None,
+    /// Every function and outbound service (`["*"]`).
+    All,
+    /// These, by name. A name can be a function's, a service's, or both.
+    Only(BTreeSet<String>),
+}
+
+impl Calls {
+    /// Whether the server may call anything at all.
+    pub fn any(&self) -> bool {
+        *self != Calls::None
+    }
+
+    /// Whether the server may call the function or service `name`.
+    pub fn allows(&self, name: &str) -> bool {
+        match self {
+            Calls::None => false,
+            Calls::All => true,
+            Calls::Only(names) => names.contains(name),
+        }
+    }
 }
 
 /// How many worker processes a runtime runs: `min` to start with, and up
@@ -1755,6 +1789,9 @@ impl<'h> Compiler<'h> {
         self.warnings(&routes, &entries);
 
         let (routers, slots, catch_alls) = self.build_routers(&routes);
+        let functions = self.functions(&raw, server_timeout);
+        let outbound = self.outbound(&raw, server_timeout);
+        self.check_calls(&functions, &outbound);
 
         Some(Project {
             config_file: self.config_file.clone(),
@@ -1768,8 +1805,8 @@ impl<'h> Compiler<'h> {
             cache_ttl_max,
             openapi: openapi_meta,
             mcp,
-            functions: self.functions(&raw, server_timeout),
-            outbound: self.outbound(&raw, server_timeout),
+            functions,
+            outbound,
             generated: self.generated(&raw),
             files: std::mem::take(&mut self.files),
             routes_dir,
@@ -1784,6 +1821,44 @@ impl<'h> Compiler<'h> {
     /// compile leaves there. Checks of the value's form don't apply to it.
     fn unresolved(&self, value: &str) -> bool {
         self.symbolic && value.contains("{env.")
+    }
+
+    /// Every name in an `http` runtime's `calls` is a function or an
+    /// outbound service.
+    fn check_calls(
+        &mut self,
+        functions: &BTreeMap<String, Arc<Function>>,
+        outbound: &BTreeMap<String, Arc<Outbound>>,
+    ) {
+        for (name, runtime) in &self.runtimes {
+            let loc = format!("[runtimes.{name}].calls");
+            match &runtime.calls {
+                Calls::None => {}
+                Calls::All if functions.is_empty() && outbound.is_empty() => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            &loc,
+                            "this project has no functions or outbound services to call",
+                        )
+                        .hint("add a [[function]] or an [outbound.<name>], or remove `calls`"),
+                    );
+                }
+                Calls::All => {}
+                Calls::Only(names) => {
+                    for called in names {
+                        if !functions.contains_key(called) && !outbound.contains_key(called) {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    &loc,
+                                    format!("no [[function]] or [outbound.{called}] is named \"{called}\""),
+                                )
+                                .hint("name a function or an outbound service in this config, or use \"*\" for all of them"),
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn functions(
@@ -2198,6 +2273,31 @@ impl<'h> Compiler<'h> {
                     "only an `http` runtime listens: this one's workers connect to Unsworn",
                 );
             }
+            let calls = if r.calls.is_empty() {
+                Calls::None
+            } else if !http {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!("{loc}.calls"),
+                        "`calls` is for an `http` runtime's server: handlers call with `ctx.call` and `ctx.fetch`",
+                    )
+                    .hint("remove `calls`"),
+                );
+                Calls::None
+            } else if r.calls.iter().any(|c| c == "*") {
+                if r.calls.len() > 1 {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!("{loc}.calls"),
+                            "\"*\" already allows every function and outbound service",
+                        )
+                        .hint("set calls = [\"*\"], or name only the ones it calls"),
+                    );
+                }
+                Calls::All
+            } else {
+                Calls::Only(r.calls.iter().cloned().collect())
+            };
             let mut env = BTreeMap::new();
             for (k, v) in &r.env {
                 env.insert(k.clone(), self.subst(v, &format!("{loc}.env.{k}")));
@@ -2245,6 +2345,7 @@ impl<'h> Compiler<'h> {
                     env,
                     startup_timeout: r.startup_timeout.map_or(Duration::from_secs(30), |d| d.0),
                     listen: r.listen.unwrap_or_default(),
+                    calls,
                 }),
             );
         }
@@ -2770,6 +2871,7 @@ impl<'h> Compiler<'h> {
                 env: BTreeMap::new(),
                 startup_timeout: Duration::from_secs(startup),
                 listen: config::Listen::default(),
+                calls: Calls::None,
             }),
         );
         Some(key)
