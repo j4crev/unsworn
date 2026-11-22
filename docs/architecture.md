@@ -246,9 +246,9 @@ and the variable it's read from is kept out of workers' environments. See
 
 Both tiers carry the **same message model**, so the router has one dispatch
 pipeline with two codecs. Neither is the fast one across the board: for
-small requests the two are within 9% of each other on Bun, Python and Go,
-and Tier 1 is 27% ahead in Rust. From about 64 KB of body, Tier 2 is ahead
-by 15 to 25% on Bun and 3 to 5% in Go (see [benchmarks](benchmarks.md)).
+small requests Tier 1 is 7 to 11% ahead in every SDK, and from about 64 KB
+of body Tier 2 is ahead by 17 to 23% on Bun and 13 to 14% in Go (see
+[benchmarks](benchmarks.md)).
 
 A runtime can also be an ordinary HTTP server (`protocol = "http"`), for a
 language with no SDK or an app with a framework of its own. Unsworn

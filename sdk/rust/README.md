@@ -152,9 +152,8 @@ On one thread, a handler that blocks or computes for long holds up the
 worker's other requests. Move that work off the thread with
 `tokio::task::spawn_blocking`, or set `UNSWORN_WORKER_THREADS` in the
 runtime's `env` to give every worker a multi-threaded runtime with that many
-threads. More threads cost a small handler about a fifth more CPU,
-because every request then crosses threads on its way in and out, though
-they answer a little sooner when the server is nearly idle (see the
+threads. More threads cost a small handler about two fifths more CPU,
+because every request then crosses threads on its way in and out (see the
 [benchmarks](../../docs/benchmarks.md#handler-calls)).
 Inside a runtime of your own, call `unsworn_sdk::serve(handlers).await`.
 

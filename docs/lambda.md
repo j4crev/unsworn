@@ -103,9 +103,9 @@ url     = "{env.REDIS_URL}"        # redis:// or rediss://, reachable from the f
 ## What's different from a server that stays up
 
 - **Cold starts.** A new instance starts the server (a few milliseconds)
-  and then each runtime's first worker on its first request: about 10 ms
-  for Go and Rust, 70 ms for Bun, and 200 to 300 ms for Python and Node
-  (see [benchmarks](benchmarks.md#startup)). `eager = true` moves a
+  and then each runtime's first worker on its first request: about 7 to
+  12 ms for Go and Rust, 140 ms for Bun, and 200 to 400 ms for Python and
+  Node (see [benchmarks](benchmarks.md#startup)). `eager = true` moves a
   runtime's start into the instance's own, before its first request.
 - **Frozen between requests.** Lambda stops an instance's processes when
   it isn't handling a request. Connections kept open across that, to
