@@ -76,7 +76,7 @@ version.
 
 ```sh
 unsworn build --target image --out docker        # write docker/Dockerfile instead
-unsworn build --target image --from registry.example/unsworn:0.5.0   # take the binary from another image
+unsworn build --target image --from registry.example/unsworn:0.6.0   # take the binary from another image
 ```
 
 ## Limits
