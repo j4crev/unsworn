@@ -9,3 +9,5 @@ node_modules/
 # The WebAssembly prototype builds on its own.
 /bench/wasm-prototype/*/target
 /bench/wasm-prototype/*/Cargo.lock
+# Local agent harness state.
+.harness/
