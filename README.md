@@ -46,13 +46,18 @@ method  = "POST"
 handler = "src/chat.py"              # assumes 'def handler'
 
 
-[runtimes.bun]                       # way 2: an HTTP server
+[runtimes.bun]                       # way 2: an HTTP server Unsworn manages
 command  = "bun run server.ts"
 protocol = "http"
 
-[[route]]                            # a route for way 2
+[[route]]                            # a route to the server Unsworn manages
 path  = "/invoices/{*rest}"
 proxy = { runtime = "bun" }
+
+
+[[route]]                            # way 2: an HTTP server you manage
+path  = "/reports/{*rest}"
+proxy = "http://127.0.0.1:3000"      # where your own bun instance listens
 ```
 
 ## Why Unsworn
@@ -78,7 +83,7 @@ You, or your agents, can review changes to the rules using `unsworn plan`. It wr
 a branch changes and marks what it loosens:
 
 ```
-$ unsworn diff origin/main
+my-api fix/auth-none ❯ unsworn diff origin/main
 ~ * /admin/{*rest}
   ! auth               jwt → none  (looser)
 ```
@@ -138,9 +143,10 @@ mcp     = { tool = "get_user", description = "Look up a user by id" }
 
 ### Performance
 
-- **Declarative endpoints run entirely in Rust.** Static responses,
-  redirects, proxies, cached responses and rejected requests never reach a
-  handler.
+- **Some requests never reach your code.** Unsworn answers static files,
+  redirects, fixed `respond` bodies, cached responses and rejected requests
+  itself, with no handler call. Proxied routes skip the handler step too:
+  Unsworn forwards them straight to your app.
 - **Handlers run in worker pools that grow with the load,** without any
   clustering setup in your code.
 - **A CPU-heavy endpoint can move to a faster language** without changing
