@@ -27,7 +27,8 @@ def reply(rid, status=200, **fields):
     send({"type": "response", "id": rid, "status": status, **fields})
 
 
-send({"type": "ready", "protocol": 1})
+# `raw_body`: the loop below reads the raw bytes after a message.
+send({"type": "ready", "protocol": 1, "raw_body": True})
 
 stdin = sys.stdin.buffer
 while True:

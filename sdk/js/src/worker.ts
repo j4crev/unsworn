@@ -425,9 +425,10 @@ function ready() {
     verify: true,
     stream_body: true,
     raw_json: rawJson,
+    raw_body: true,
     calls: canCall,
     fetch: canFetch,
-    sdk: "unsworn-js/0.6.0",
+    sdk: "unsworn-js/0.7.0",
   });
 }
 

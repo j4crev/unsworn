@@ -21,7 +21,7 @@ variables:
 | Variable | Example | Meaning |
 |---|---|---|
 | `UNSWORN_PROTOCOL` | `1` | Protocol version Unsworn speaks |
-| `UNSWORN_VERSION` | `0.6.0` | Unsworn version |
+| `UNSWORN_VERSION` | `0.7.0` | Unsworn version |
 | `UNSWORN_TRANSPORT` | `stdio` or `unix:/run/unsworn/ts-0.sock` | Where to talk |
 | `UNSWORN_ROOT` | `/app` | Project root; handler paths are relative to it |
 | `UNSWORN_WORKER_ID` | `ts-0` | Worker id, for logs |
@@ -42,12 +42,13 @@ arrives, so a worker never has to handle a greeting.
 ## Message model
 
 Every message has a `type`. Messages about a request carry its `id`, a
-string chosen by Unsworn that is unique per worker connection.
+string chosen by Unsworn that is unique per worker connection. What's in it
+means nothing to a worker, and can't be guessed from another one.
 
 ### `ready` (worker → Unsworn)
 
 ```json
-{"type":"ready","protocol":1,"max_in_flight":1,"verify":true,"sdk":"unsworn-python/0.6.0"}
+{"type":"ready","protocol":1,"max_in_flight":1,"verify":true,"sdk":"unsworn-python/0.7.0"}
 ```
 
 - `protocol`: required. Unsworn stops the worker if it can't speak this
@@ -69,6 +70,12 @@ string chosen by Unsworn that is unique per worker connection.
 - `raw_json`: optional, default `false`. Whether the worker reads a JSON
   request body from the raw bytes after the message. See
   [JSON as the raw body](#json-as-the-raw-body-raw_json-and-body_json).
+- `raw_body`: optional, default `false`. Whether the worker reads the raw
+  bytes after a message that has `body_len`. A Tier 1 worker that doesn't
+  say so is sent none: a request whose body isn't JSON gets `415` before it
+  reaches the worker. `raw_json` and `stream_body` say it too. Tier 2
+  workers needn't, because a frame's length covers its body. See
+  [reading lines safely](#reading-lines-safely).
 - `sdk`: optional, for logs and diagnostics.
 
 ### `request` (Unsworn → worker)
@@ -107,7 +114,8 @@ string chosen by Unsworn that is unique per worker connection.
   - `body_len` with `"body_json": true`: the JSON body as raw bytes, for a
     worker whose `ready` has `raw_json`
   - `text`: a UTF-8 text body
-  - `body_len`: the number of raw body bytes that follow (see each tier)
+  - `body_len`: the number of raw body bytes that follow (see each tier).
+    On Tier 1, only for a worker whose `ready` has `raw_body`
   - `"stream": true`: the body follows as `chunk` messages, on routes with
     `stream_body` (see [below](#streamed-request-bodies-chunk-end-and-ack))
 - `deadline_ms`: time left before Unsworn times the request out.
@@ -386,7 +394,8 @@ types are needed: a tool call is a normal `request`.
   Unsworn logs it as a warning and keeps going instead of failing the worker.
 - **Raw bodies.** If a message has `body_len: N`, exactly `N` raw bytes follow
   immediately after its newline, then the next message starts. This carries
-  binary data without base64.
+  binary data without base64. Unsworn sends a request with one only to a
+  worker whose `ready` has `raw_body`.
 - Workers flush stdout after each message.
 
 ### A complete worker with no SDK
@@ -396,8 +405,10 @@ import json, sys
 
 print(json.dumps({"type": "ready", "protocol": 1}), flush=True)
 
-for line in sys.stdin:
+stdin = sys.stdin.buffer
+while line := stdin.readline():
     msg = json.loads(line)
+    body = stdin.read(msg.get("body_len") or 0)  # never read as messages
     if msg["type"] != "request":
         continue  # e.g. cancel: safe to ignore in a sequential worker
     user = {"id": msg["params"]["id"], "name": "Ada"}
@@ -407,9 +418,26 @@ for line in sys.stdin:
     print(json.dumps(reply), flush=True)
 ```
 
-This worker never receives `body_len` messages if its routes don't accept
-raw bodies. Handling them needs reading `N` bytes from stdin's underlying
-binary buffer, which is the kind of detail an SDK takes care of.
+Its `ready` doesn't have `raw_body`, so a request whose body isn't JSON gets
+`415` and the worker never sees it. It reads `body_len` bytes all the same,
+because Unsworn 0.6.0 and older send raw bodies to every worker.
+
+### Reading lines safely
+
+A worker trusts what it's sent: that the caller passed the route's `auth`,
+and that `context` says who they are. The caller wrote the body, so a worker
+that takes part of a body for a message lets its callers skip those rules.
+A worker written by hand has to get two things right:
+
+- **Read exactly `body_len` raw bytes** after a message that has it, whether
+  or not the handler wants them, before reading the next line. Say
+  `"raw_body": true` in `ready` only if it does. Read lines and bytes
+  through the same buffer.
+- **End a line only at `\n`.** Many line readers also stop at `\r`, such as
+  Java's `BufferedReader.readLine` and C#'s `ReadLine`, and Node's `readline`
+  stops at U+2028 and U+2029 too. Unsworn writes no `\r` into a message, and
+  escapes U+0085, U+2028 and U+2029, so such a reader works. Unsworn 0.6.0
+  and older don't do that.
 
 ## Tier 2: length-prefixed frames over a Unix socket
 

@@ -176,6 +176,11 @@ pub struct Ready {
     /// message (`body_json`) instead of from its `json` member.
     #[serde(default, skip_serializing_if = "is_false")]
     pub raw_json: bool,
+    /// The worker reads the `body_len` raw bytes after a request. Tier 1
+    /// workers that don't say so get no raw bodies. See
+    /// [`Ready::takes_raw_bodies`].
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub raw_body: bool,
     /// The worker's handlers can call functions (see [`Call`]). Nothing
     /// in Unsworn depends on it; the conformance suite reads it.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -186,6 +191,15 @@ pub struct Ready {
     pub fetch: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sdk: Option<String>,
+}
+
+impl Ready {
+    /// Whether the worker says it reads the raw bytes after a message.
+    /// `raw_json` and `stream_body` can't be answered without doing that,
+    /// so either says it too, as SDKs from before `raw_body` do.
+    pub fn takes_raw_bodies(&self) -> bool {
+        self.raw_body || self.raw_json || self.stream_body
+    }
 }
 
 /// Which step of the request a handler runs for.
@@ -767,16 +781,57 @@ pub mod jsonl {
         check_body(frame)?;
         let start = out.len();
         message_json(&frame.message, out)?;
-        // A line feed ends the message. One can only have come from raw
-        // JSON text, where it is whitespace between tokens, so a space says
-        // the same.
+        one_line(out, start);
+        out.push(b'\n');
+        Ok(())
+    }
+
+    /// Leaves nothing in `out[start..]`, a JSON text, that any reader takes
+    /// for the end of a line.
+    ///
+    /// Only a line feed ends a message, but a worker reads its lines with
+    /// whatever its language has. Many of those also stop at a carriage
+    /// return, and some at the line separators Unicode has. A caller could
+    /// then end the message early, and write the next one.
+    fn one_line(out: &mut Vec<u8>, start: usize) {
+        // Both can only have come from raw JSON text, where they are
+        // whitespace between tokens, so a space says the same.
         for byte in &mut out[start..] {
-            if *byte == b'\n' {
+            if matches!(*byte, b'\n' | b'\r') {
                 *byte = b' ';
             }
         }
-        out.push(b'\n');
-        Ok(())
+        // The others can only be inside a string, where an escape says the
+        // same.
+        fn separator(text: &[u8]) -> Option<(usize, &'static [u8])> {
+            match text {
+                [0xC2, 0x85, ..] => Some((2, b"\\u0085")),
+                [0xE2, 0x80, 0xA8, ..] => Some((3, b"\\u2028")),
+                [0xE2, 0x80, 0xA9, ..] => Some((3, b"\\u2029")),
+                _ => None,
+            }
+        }
+        let text = &out[start..];
+        if text.is_ascii() {
+            return;
+        }
+        let Some(first) = (0..text.len()).find(|i| separator(&text[*i..]).is_some()) else {
+            return;
+        };
+        let rest = out.split_off(start + first);
+        let mut at = 0;
+        while at < rest.len() {
+            match separator(&rest[at..]) {
+                Some((len, escape)) => {
+                    out.extend_from_slice(escape);
+                    at += len;
+                }
+                None => {
+                    out.push(rest[at]);
+                    at += 1;
+                }
+            }
+        }
     }
 
     pub fn encode_to_vec(frame: &Frame) -> Result<Vec<u8>, EncodeError> {
@@ -1026,10 +1081,79 @@ mod tests {
                 stream_body: false,
                 calls: false,
                 raw_json: false,
+                raw_body: false,
                 fetch: false,
                 sdk: None
             })
         );
+    }
+
+    #[test]
+    fn workers_say_they_take_raw_bodies() {
+        let takes = |flags: &str| {
+            let text = format!(r#"{{"type":"ready","protocol":1{flags}}}"#);
+            match Message::from_json(text.as_bytes()).unwrap() {
+                Message::Ready(ready) => ready.takes_raw_bodies(),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert!(!takes(""));
+        assert!(!takes(r#","max_in_flight":4,"verify":true,"calls":true"#));
+        assert!(takes(r#","raw_body":true"#));
+        // What the SDKs sent before `raw_body`.
+        assert!(takes(r#","raw_json":true"#));
+        assert!(takes(r#","stream_body":true"#));
+    }
+
+    #[test]
+    fn a_line_has_no_other_line_ends() {
+        // Every character some language's line reader stops at that JSON
+        // text can hold as it is.
+        let breaks = ['\u{85}', '\u{2028}', '\u{2029}'];
+        let inner: String = breaks.iter().flat_map(|c| ['é', *c, '\u{2027}']).collect();
+        let text = format!("[1,\r{{\"type\":\"request\"}}\r\n,\"{inner}\"]");
+        let want: Value = serde_json::from_str(&text).unwrap();
+        let mut request = Request {
+            id: "r-1".into(),
+            raw_query: Some(inner.clone()),
+            json: Some(Json::raw(Bytes::from(text.clone()))),
+            ..Default::default()
+        };
+        request.headers.insert("x-test".into(), inner.clone());
+        request.query.insert(inner.clone(), json!(inner));
+        let sent = Frame::with_body(
+            Message::Request(Request {
+                json: None,
+                ..request.clone()
+            }),
+            Bytes::from_static(b"a\r\nb"),
+        )
+        .unwrap();
+        // A raw body is sent as it is.
+        assert!(jsonl::encode_to_vec(&sent).unwrap().ends_with(b"}\na\r\nb"));
+
+        let result = Message::Result(CallResult {
+            id: "c-1".into(),
+            status: 200,
+            json: want.clone(),
+            error: None,
+        });
+        for message in [Message::Request(request), result] {
+            let bytes = jsonl::encode_to_vec(&Frame::new(message)).unwrap();
+            let line = std::str::from_utf8(&bytes).unwrap();
+            let line = line.strip_suffix('\n').unwrap();
+            assert!(
+                !line.contains(|c: char| c.is_control() || breaks.contains(&c)),
+                "{line:?}"
+            );
+            let value: Value = serde_json::from_str(line).unwrap();
+            assert_eq!(value["json"], want);
+            if value["type"] == "request" {
+                assert_eq!(value["raw_query"], json!(inner));
+                assert_eq!(value["headers"]["x-test"], json!(inner));
+                assert_eq!(value["query"][&inner], json!(inner));
+            }
+        }
     }
 
     #[test]

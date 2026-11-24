@@ -94,6 +94,9 @@ pub enum CallError {
     /// not to be JSON when the host had to read it. Holds the `400`'s
     /// detail.
     BadJson(String),
+    /// The request's body isn't JSON, and the worker doesn't take raw
+    /// bodies.
+    RawBody,
 }
 
 impl std::fmt::Display for CallError {
@@ -110,6 +113,10 @@ impl std::fmt::Display for CallError {
             }
             CallError::Body(BodyError::Read) => write!(f, "couldn't read the request body"),
             CallError::BadJson(detail) => f.write_str(detail),
+            CallError::RawBody => write!(
+                f,
+                "the body isn't JSON, and the worker takes no others (its `ready` has no `raw_body`)"
+            ),
         }
     }
 }

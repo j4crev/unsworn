@@ -654,6 +654,7 @@ def _ready() -> dict:
         "verify": True,
         "stream_body": True,
         "raw_json": RAW_JSON,
+        "raw_body": True,
         "calls": CALLS,
         "fetch": FETCH,
         "sdk": f"unsworn-python/{__version__}",

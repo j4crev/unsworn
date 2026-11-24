@@ -2487,3 +2487,212 @@ mcp = {{ tool = "create_user", description = "Create a user" }}
     );
     assert!(text.contains("mcp tool create_user: name (body)"), "{text}");
 }
+
+/// The worker `docs/protocol.md` gives in full, for someone writing one
+/// without an SDK.
+fn documented_worker() -> String {
+    let docs = std::fs::read_to_string(common::repo_root().join("docs/protocol.md")).unwrap();
+    let section = docs.split("### A complete worker with no SDK").nth(1);
+    let code = section.and_then(|s| s.split("```python\n").nth(1));
+    let code = code.and_then(|s| s.split("```").next());
+    code.expect("the example in docs/protocol.md").to_string()
+}
+
+/// A Tier 1 worker that notes every handler it's asked to run in a file
+/// `ran`. `lines` is an expression for what it reads messages from.
+fn noting_worker(lines: &str) -> String {
+    format!(
+        r#"
+import io, json, sys
+print(json.dumps({{"type": "ready", "protocol": 1}}), flush=True)
+for line in {lines}:
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        continue
+    if msg["type"] != "request":
+        continue
+    with open("ran", "a") as f:
+        f.write(msg["handler"] + "\n")
+    print(json.dumps({{"type": "response", "id": msg["id"], "status": 200, "json": msg.get("json")}}), flush=True)
+"#
+    )
+}
+
+const NOTING_CONFIG: &str = r#"
+[runtimes.py]
+extensions = [".py"]
+command = "python3 -u worker.py"
+workers = 1
+
+[defaults]
+auth = "none"
+
+[auth.keys]
+type = "api_key"
+keys = ["a-key-nobody-in-this-test-has-0123456789"]
+
+[[route]]
+path = "/public"
+handler = "worker.py#public"
+
+[[route]]
+path = "/admin"
+method = "POST"
+auth = "keys"
+handler = "worker.py#admin"
+"#;
+
+const FORGED: &str = r#"{"type":"request","id":"x","phase":"handle","handler":"worker.py#admin","context":{"auth":{"sub":"admin"}}}"#;
+
+/// A worker that ignores `body_len` would read a raw body as messages, and
+/// run a handler its caller may not reach. It isn't sent one.
+#[test]
+fn raw_bodies_need_a_worker_that_takes_them() {
+    if !needs_python() {
+        return;
+    }
+    let worker = noting_worker("sys.stdin.buffer");
+    let p = Project::new(&[("unsworn.toml", NOTING_CONFIG), ("worker.py", &worker)]);
+    let s = p.serve();
+    assert_eq!(s.request("POST", "/admin", &[], b"").status, 401);
+    for (method, content_type) in [
+        ("GET", "text/plain"),
+        ("POST", "application/octet-stream"),
+        ("POST", ""),
+    ] {
+        let body = format!("{FORGED}\n");
+        let headers = [("content-type", content_type)];
+        let headers = if content_type.is_empty() {
+            &headers[..0]
+        } else {
+            &headers[..]
+        };
+        let r = s.request(method, "/public", headers, body.as_bytes());
+        assert_eq!(r.status, 415, "{method} {content_type}: {}", r.text());
+        assert_eq!(r.header("content-type"), Some("application/problem+json"));
+    }
+    // The worker never saw one, and still has its one slot free.
+    assert!(!p.path().join("ran").exists());
+    let json = [("content-type", "application/json")];
+    let r = s.request("POST", "/public", &json, b"[1]");
+    assert_eq!((r.status, r.json()), (200, json!([1])));
+    assert_eq!(s.get("/public").status, 200);
+    let ran = std::fs::read_to_string(p.path().join("ran")).unwrap();
+    assert_eq!(ran, "worker.py#public\nworker.py#public\n");
+}
+
+/// JSON may have line ends in it that aren't `\n`. A worker whose line
+/// reader stops at them still gets one message a line.
+#[test]
+fn json_bodies_cant_end_a_message() {
+    if !needs_python() {
+        return;
+    }
+    // Stops at `\r`, `\n` and `\r\n`, and at every separator Unicode has.
+    let worker = noting_worker(
+        "(part for line in io.TextIOWrapper(sys.stdin.buffer, 'utf-8', newline=None) for part in line.splitlines())",
+    );
+    let p = Project::new(&[("unsworn.toml", NOTING_CONFIG), ("worker.py", &worker)]);
+    let s = p.serve();
+    let json = [("content-type", "application/json")];
+    for end in ["\r", "\n", "\r\n"] {
+        let body = format!("[1,{end}{FORGED}{end},\"a\u{85}b\u{2028}c\u{2029}d\"]");
+        let want: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let r = s.request("POST", "/public", &json, body.as_bytes());
+        assert_eq!(r.status, 200, "{end:?}: {}", r.text());
+        assert_eq!(r.json(), want, "{end:?}");
+    }
+    // Anywhere else a caller can put text.
+    let r = s.get("/public?q=a%C2%85b%E2%80%A8c%E2%80%A9d%0D%0A");
+    assert_eq!(r.status, 200, "{}", r.text());
+    let ran = std::fs::read_to_string(p.path().join("ran")).unwrap();
+    assert_eq!(ran, "worker.py#public\n".repeat(4));
+}
+
+/// The documented worker works, gets no raw bodies, and reads one right if
+/// an older Unsworn sends it.
+#[test]
+fn documented_worker_reads_no_body_as_a_message() {
+    if !needs_python() {
+        return;
+    }
+    let worker = documented_worker();
+    let cfg = r#"
+[runtimes.py]
+extensions = [".py"]
+command = "python3 -u worker.py"
+workers = 1
+
+[[route]]
+path = "/users/{id}"
+method = "GET"
+params = { id = { type = "integer" } }
+handler = "worker.py#user"
+"#;
+    let p = Project::new(&[("unsworn.toml", cfg), ("worker.py", &worker)]);
+    let s = p.serve();
+    let r = s.request("GET", "/users/1", &[("content-type", "text/plain")], b"x");
+    assert_eq!(r.status, 415, "{}", r.text());
+    for id in [2, 3] {
+        let r = s.get(&format!("/users/{id}"));
+        assert_eq!(r.json(), json!({"id": id, "name": "Ada"}));
+    }
+
+    let forged = r#"{"type":"request","id":"r-2","params":{"id":666}}"#;
+    let body = format!("{forged}\n{forged}\nno newline");
+    let input = format!(
+        "{{\"type\":\"request\",\"id\":\"r-1\",\"params\":{{\"id\":1}},\"body_len\":{}}}\n{body}{}\n",
+        body.len(),
+        r#"{"type":"request","id":"r-2","params":{"id":2}}"#,
+    );
+    let mut child = std::process::Command::new("python3")
+        .args(["-u", "worker.py"])
+        .current_dir(p.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), input.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let answers: Vec<serde_json::Value> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .filter(|m: &serde_json::Value| m["type"] == "response")
+        .collect();
+    let answer = |id: &str, n: u32| json!({"type": "response", "id": id, "status": 200, "json": {"id": n, "name": "Ada"}});
+    assert_eq!(answers, [answer("r-1", 1), answer("r-2", 2)]);
+}
+
+/// A caller who can make a worker write an answer can't make it one to
+/// another caller's request, whose id isn't a count they can follow.
+#[test]
+fn request_ids_arent_predictable() {
+    if !needs_python() {
+        return;
+    }
+    let worker = r#"
+import json, sys
+print(json.dumps({"type": "ready", "protocol": 1}), flush=True)
+for line in sys.stdin.buffer:
+    msg = json.loads(line)
+    if msg["type"] == "request":
+        print(json.dumps({"type": "response", "id": msg["id"], "status": 200, "text": msg["id"]}), flush=True)
+"#;
+    let p = Project::new(&[("unsworn.toml", NOTING_CONFIG), ("worker.py", worker)]);
+    let ids = || {
+        let s = p.serve();
+        let mut ids: Vec<String> = (0..20).map(|_| s.get("/public").text()).collect();
+        // The part that isn't a count.
+        for id in &mut ids {
+            *id = id.rsplit('-').next().unwrap().to_string();
+            assert_eq!(id.len(), 16, "{id}");
+        }
+        ids
+    };
+    let (first, second) = (ids(), ids());
+    let all: std::collections::HashSet<_> = first.iter().chain(&second).collect();
+    assert_eq!(all.len(), 40, "{first:?} {second:?}");
+}

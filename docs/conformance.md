@@ -34,7 +34,7 @@ Each handler is called by name (`<file>#<name>`). Every request arrives with
 |---|---|---|
 | `echo` | handle | Respond `200` with a JSON body: `{ "method", "params", "query", "context", "json", "header" }`, where `header` is the value of the request's `x-test` header and the rest are copied from the request. A worker whose `ready` has `raw_json` answers `400` if the body isn't JSON (an SDK does this when the handler reads the body). |
 | `text` | handle | Respond `201` with the text body `hello` and the header `x-conformance: yes`. |
-| `binary` | handle | Respond `200` with the request's raw body bytes as the raw response body. |
+| `binary` | handle | Respond `200` with the request's raw body bytes as the raw response body. Only called when the worker's `ready` has `raw_body` (or `raw_json` or `stream_body`, which say the same), or on Tier 2. |
 | `status` | handle | Respond with the status in `query.code` (a number) and no body. |
 | `stream` | handle | Stream the body `a`, `b`, `c` as three chunks, then end. |
 | `fail` | handle | Fail with an `error` message whose text contains `boom` (in an SDK: throw an error). |
