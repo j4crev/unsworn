@@ -323,7 +323,7 @@ import json, sys
 out = sys.stdout.buffer
 def send(m):
     out.write(json.dumps(m).encode() + b"\n"); out.flush()
-send({"type": "ready", "protocol": 1})
+send({"type": "ready", "protocol": 1, "raw_body": True})
 count = 0
 stdin = sys.stdin.buffer
 while True:

@@ -59,6 +59,24 @@ impl Suite {
             .await
     }
 
+    /// Whether the worker answers the next two requests it gets, as it
+    /// doesn't if it read part of the last one as a message.
+    async fn still_answers(&self) -> Result<(), String> {
+        for _ in 0..2 {
+            let r = self
+                .call(self.request("text"), None, Duration::from_secs(5))
+                .await;
+            match expect_response(r) {
+                Ok((resp, _)) if resp.status == 201 => {}
+                Ok((resp, _)) => {
+                    return Err(format!("the next request got status {}", resp.status));
+                }
+                Err(e) => return Err(format!("the next request failed: {e}")),
+            }
+        }
+        Ok(())
+    }
+
     fn report(&mut self, name: &str, result: Result<(), String>) {
         match result {
             Ok(()) => {
@@ -347,27 +365,80 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
     });
     s.report("text responses with status and headers", res);
 
-    // binary round trip
-    let payload = Bytes::from_static(b"\x00\x01binary\nbody\xff");
-    let r = s
-        .call(
-            s.request("binary"),
-            Some(payload.clone()),
-            Duration::from_secs(5),
-        )
-        .await;
+    // A JSON body with what some line readers take for the end of a line,
+    // and a message where the next line would be. The handler gets the
+    // value. Read as a message, it would stop the worker.
+    let forged = format!(
+        r#"{{"type":"request","id":"forged","phase":"handle","handler":"{handlers}#crash"}}"#
+    );
+    let text = format!("[\"a\u{2028}b\u{2029}c\u{85}d\",\r{forged}\r\n,\n{forged}\n]");
+    let want: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let mut req = s.request("echo");
+    req.json = Some(unsworn_proto::Json::unchecked(Bytes::from(text)));
+    let r = s.call(req, None, Duration::from_secs(5)).await;
     let res = expect_response(r).and_then(|(resp, body)| {
-        let got = body_bytes(body);
-        if resp.status != 200 || got != payload {
-            Err(format!(
-                "status {}, body {got:?} (want the request bytes back)",
-                resp.status
-            ))
-        } else {
+        let text = match resp.json {
+            Some(j) => j.to_bytes(),
+            None => body_bytes(body),
+        };
+        let v: Value = serde_json::from_slice(&text).map_err(|e| format!("not JSON: {e}"))?;
+        if v["json"] == want {
             Ok(())
+        } else {
+            Err(format!("got {v}, want the body back as `json`"))
         }
     });
-    s.report("raw binary bodies in both directions", res);
+    let res = match res {
+        Ok(()) => s.still_answers().await,
+        e => e,
+    };
+    s.report("line ends in a JSON body don't end the message", res);
+
+    // A raw body that reads like messages.
+    if pool.raw_body_supported() {
+        let payload = Bytes::from(format!("{forged}\n{forged}\nno newline"));
+        let r = s
+            .call(
+                s.request("binary"),
+                Some(payload.clone()),
+                Duration::from_secs(5),
+            )
+            .await;
+        let res = match expect_response(r) {
+            Ok((_, body)) => match body_bytes(body) == payload {
+                true => s.still_answers().await,
+                false => Err("want the request bytes back".into()),
+            },
+            Err(e) => Err(e),
+        };
+        s.report("a raw body isn't read as messages", res);
+    }
+
+    if pool.raw_body_supported() {
+        // binary round trip
+        let payload = Bytes::from_static(b"\x00\x01binary\nbody\xff");
+        let r = s
+            .call(
+                s.request("binary"),
+                Some(payload.clone()),
+                Duration::from_secs(5),
+            )
+            .await;
+        let res = expect_response(r).and_then(|(resp, body)| {
+            let got = body_bytes(body);
+            if resp.status != 200 || got != payload {
+                Err(format!(
+                    "status {}, body {got:?} (want the request bytes back)",
+                    resp.status
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        s.report("raw binary bodies in both directions", res);
+    } else {
+        println!("  - raw bodies: not supported by this worker (optional)");
+    }
 
     // calls to functions
     if pool.calls_supported() {

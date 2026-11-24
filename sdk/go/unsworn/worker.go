@@ -116,6 +116,7 @@ func run(c codec, out io.Writer) error {
 		Verify:      true,
 		StreamBody:  true,
 		RawJSON:     w.rawJSON,
+		RawBody:     true,
 		Calls:       w.canCall,
 		Fetch:       w.canFetch,
 		SDK:         "unsworn-go/" + Version,

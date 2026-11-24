@@ -65,6 +65,7 @@ type readyMessage struct {
 	Verify      bool   `json:"verify"`
 	StreamBody  bool   `json:"stream_body"`
 	RawJSON     bool   `json:"raw_json,omitempty"`
+	RawBody     bool   `json:"raw_body"`
 	Calls       bool   `json:"calls,omitempty"`
 	Fetch       bool   `json:"fetch,omitempty"`
 	SDK         string `json:"sdk"`

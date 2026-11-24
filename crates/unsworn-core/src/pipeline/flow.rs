@@ -1019,7 +1019,7 @@ fn call_error<B>(dev: bool, handler: &HandlerRef, e: CallError) -> Response<B> {
     if let CallError::BadJson(detail) = e {
         return problem(StatusCode::BAD_REQUEST, detail);
     }
-    if matches!(e, CallError::Body(_)) {
+    if matches!(e, CallError::Body(_) | CallError::RawBody) {
         tracing::info!(handler = %handler.raw, "{e}");
     } else {
         tracing::error!(handler = %handler.raw, "{e}");
@@ -1049,6 +1049,10 @@ fn call_error<B>(dev: bool, handler: &HandlerRef, e: CallError) -> Response<B> {
         }
         // Answered above, with its own detail.
         CallError::BadJson(_) => (StatusCode::BAD_REQUEST, "the body isn't valid JSON"),
+        CallError::RawBody => (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "the body must be JSON (Content-Type: application/json)",
+        ),
     };
     if dev {
         problem(status, format!("{e} ({})", handler.raw))

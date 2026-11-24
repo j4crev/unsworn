@@ -332,6 +332,7 @@ where
         verify: true,
         stream_body: true,
         raw_json,
+        raw_body: true,
         calls: can_call,
         fetch: can_fetch,
         sdk: Some(format!("unsworn-rust/{}", crate::VERSION)),

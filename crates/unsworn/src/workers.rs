@@ -9,6 +9,7 @@
 //! (see [`Pool::http_lease`]) for the proxy to forward to.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::hash::{BuildHasher, RandomState};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -177,6 +178,8 @@ struct Worker {
     /// The worker reads a JSON request body from the raw bytes after the
     /// message.
     raw_json: bool,
+    /// It can be sent a raw body after a message.
+    raw_body: bool,
     /// Its handlers can call functions.
     can_call: bool,
     /// Its handlers can ask for requests to outbound services.
@@ -332,6 +335,8 @@ pub struct Pool {
     /// Handlers whose routes stream request bodies.
     stream_handlers: Vec<String>,
     next_id: AtomicU64,
+    /// What makes the ids of messages hard to guess.
+    id_key: RandomState,
     shutting_down: AtomicBool,
     crashes: Mutex<Vec<Instant>>,
     /// The fewest workers to run, and the number started first.
@@ -730,6 +735,7 @@ impl Pool {
             missing: Mutex::new(HashMap::new()),
             stream_handlers,
             next_id: AtomicU64::new(1),
+            id_key: RandomState::new(),
             shutting_down: AtomicBool::new(false),
             crashes: Mutex::new(Vec::new()),
             min,
@@ -797,6 +803,20 @@ impl Pool {
     /// requests to outbound services.
     pub fn fetch_supported(&self) -> bool {
         self.workers.lock().unwrap().iter().any(|w| w.can_fetch)
+    }
+
+    /// Whether this runtime's workers can be sent raw bodies.
+    pub fn raw_body_supported(&self) -> bool {
+        self.workers.lock().unwrap().iter().any(|w| w.raw_body)
+    }
+
+    /// A new id for a message: a count, so it's never used twice, and a
+    /// keyed hash of it. A worker's answer goes to whoever is waiting for
+    /// its id, so a caller who gets a worker to write an answer of theirs
+    /// shouldn't know the id another caller is waiting for.
+    fn message_id(&self, kind: &str) -> String {
+        let n = self.next_id.fetch_add(1, Ordering::Relaxed);
+        format!("{kind}-{n}-{:016x}", self.id_key.hash_one(n))
     }
 
     /// Whether this runtime's workers accept streamed request bodies.
@@ -1257,6 +1277,7 @@ impl Pool {
             verify: false,
             stream_body: true,
             raw_json: false,
+            raw_body: true,
             can_call: false,
             can_fetch: false,
             credits: Mutex::new(HashMap::new()),
@@ -1386,6 +1407,10 @@ impl Pool {
             verify: ready.verify,
             stream_body: ready.stream_body,
             raw_json: ready.raw_json,
+            // On Tier 2 a frame's length covers its body, so a worker that
+            // ignores the body still finds the next message. On Tier 1 it
+            // would read the body, which the caller wrote, as messages.
+            raw_body: protocol != Protocol::Jsonl || ready.takes_raw_bodies(),
             can_call: ready.calls,
             can_fetch: ready.fetch,
             credits: Mutex::new(HashMap::new()),
@@ -1411,7 +1436,7 @@ impl Pool {
 
         if ready.verify && !self.handlers.is_empty() {
             let (vtx, vrx) = oneshot::channel();
-            let id = format!("v-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+            let id = self.message_id("v");
             worker
                 .pending
                 .lock()
@@ -1803,7 +1828,7 @@ impl Pool {
             }
         };
 
-        let id = format!("r-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        let id = self.message_id("r");
         if matches!(body, CallBody::Stream(_)) && !worker.stream_body {
             self.release(&worker, &id);
             return Err(CallError::Unavailable(
@@ -1828,6 +1853,10 @@ impl Pool {
                 request.json = Some(Json::raw(raw.text().clone()));
             }
             json => request.json = json,
+        }
+        if matches!(body, CallBody::Bytes(_)) && !worker.raw_body {
+            self.release(&worker, &id);
+            return Err(CallError::RawBody);
         }
         request.id = id.clone();
         request.deadline_ms = Some(
