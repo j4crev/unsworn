@@ -64,8 +64,9 @@ for you.
 A hand-written worker can be
 [about a dozen lines](protocol.md#a-complete-worker-with-no-sdk), because
 it only implements what its handlers use.
-[`examples/raw-python`](../examples/raw-python) is one. Use an SDK when
-your language has one.
+[`examples/raw-python`](../examples/raw-python) is one, and
+[`examples/cobol`](../examples/cobol) is one in a language with no JSON
+parser. Use an SDK when your language has one.
 
 ## Which function a reference finds
 

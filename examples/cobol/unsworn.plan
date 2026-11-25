@@ -1,0 +1,53 @@
+# What this project enforces, worked out from unsworn.toml and everything it
+# brings in: each route's merged policies and checks, the auth schemes,
+# the server's limits. Written by `unsworn plan`; don't edit it. Change
+# the config, run `unsworn plan` again and commit both, so a review shows
+# what a change does to the rules. `unsworn plan --check` fails when
+# this file is out of date.
+
+plan 1
+
+server
+  listen             127.0.0.1:8080
+  tls                off
+  max_body           0B
+  timeout            30s
+  max_connections    10000
+  idle_timeout       5m
+
+store
+  backend            memory
+
+runtime cobol
+  extensions         .cbl
+  command            .unsworn/worker
+  build              mkdir -p .unsworn && cobc -x -free -O2 -I src/copy -o .unsworn/worker src/worker.cbl src/json.cbl src/loans.cbl
+  protocol           jsonl
+
+* /health
+  respond            200 json {"ok":true}
+  auth               none
+
+GET /loans/afford
+  handler            src/loans.cbl#afford (cobol)
+  auth               none
+  rate_limit         600 per 1m by ip, counted for * /loans/{*rest}
+  query.months       required {"maximum":480,"minimum":1,"type":"integer"}
+  query.payment      required {"pattern":"^[1-9][0-9]{0,6}(\\.[0-9]{1,2})?$","type":"string"}
+  query.rate         required {"pattern":"^[0-9]{1,2}(\\.[0-9]{1,4})?$","type":"string"}
+
+GET /loans/payment
+  handler            src/loans.cbl#payment (cobol)
+  auth               none
+  rate_limit         600 per 1m by ip, counted for * /loans/{*rest}
+  query.months       required {"maximum":480,"minimum":1,"type":"integer"}
+  query.principal    required {"pattern":"^[1-9][0-9]{2,8}(\\.[0-9]{1,2})?$","type":"string"}
+  query.rate         required {"pattern":"^[0-9]{1,2}(\\.[0-9]{1,4})?$","type":"string"}
+
+GET /loans/schedule
+  handler            src/loans.cbl#schedule (cobol)
+  auth               none
+  rate_limit         600 per 1m by ip, counted for * /loans/{*rest}
+  query.months       required {"maximum":480,"minimum":1,"type":"integer"}
+  query.principal    required {"pattern":"^[1-9][0-9]{2,8}(\\.[0-9]{1,2})?$","type":"string"}
+  query.rate         required {"pattern":"^[0-9]{1,2}(\\.[0-9]{1,4})?$","type":"string"}

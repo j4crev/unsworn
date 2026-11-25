@@ -1,0 +1,56 @@
+#:schema ../../schema/unsworn.schema.json
+# A loan calculator written in COBOL, with no SDK.
+# Run from this directory: unsworn dev
+
+[server]
+listen   = "127.0.0.1:8080"
+max_body = "0B"                      # no bodies: the worker relies on it
+
+# The worker in src/worker.cbl reads requests as lines of JSON on stdin and
+# answers on stdout. It takes one request at a time, so Unsworn runs more
+# of them when requests have to wait.
+[runtimes.cobol]
+extensions = [".cbl"]
+build      = "mkdir -p .unsworn && cobc -x -free -O2 -I src/copy -o .unsworn/worker src/worker.cbl src/json.cbl src/loans.cbl"
+command    = ".unsworn/worker"
+
+[[route]]
+path    = "/health"
+respond = { status = 200, json = { ok = true } }
+
+[[route]]
+path       = "/loans/{*rest}"
+rate_limit = { requests = 600, per = "1m", key = "ip" }
+
+# Money and rates are strings here, so the digits in the URL are the digits
+# COBOL computes with: they're never a binary floating-point number. The
+# patterns are what makes the handlers' fixed-size fields safe.
+[[route]]
+path    = "/loans/payment"
+method  = "GET"
+handler = "src/loans.cbl#payment"
+
+[route.query]
+principal = { type = "string", required = true, pattern = '^[1-9][0-9]{2,8}(\.[0-9]{1,2})?$' }  # 100 to 999999999.99
+rate      = { type = "string", required = true, pattern = '^[0-9]{1,2}(\.[0-9]{1,4})?$' }       # percent a year
+months    = { type = "integer", required = true, min = 1, max = 480 }
+
+[[route]]
+path    = "/loans/schedule"
+method  = "GET"
+handler = "src/loans.cbl#schedule"
+
+[route.query]
+principal = { type = "string", required = true, pattern = '^[1-9][0-9]{2,8}(\.[0-9]{1,2})?$' }
+rate      = { type = "string", required = true, pattern = '^[0-9]{1,2}(\.[0-9]{1,4})?$' }
+months    = { type = "integer", required = true, min = 1, max = 480 }
+
+[[route]]
+path    = "/loans/afford"
+method  = "GET"
+handler = "src/loans.cbl#afford"
+
+[route.query]
+payment = { type = "string", required = true, pattern = '^[1-9][0-9]{0,6}(\.[0-9]{1,2})?$' }    # 1 to 9999999.99
+rate    = { type = "string", required = true, pattern = '^[0-9]{1,2}(\.[0-9]{1,4})?$' }
+months  = { type = "integer", required = true, min = 1, max = 480 }
