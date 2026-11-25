@@ -15,75 +15,52 @@ FILE-CONTROL.
 
 DATA DIVISION.
 FILE SECTION.
-FD  REQUESTS RECORD VARYING FROM 1 TO 2097152 DEPENDING ON IN-LEN.
+FD  REQUESTS RECORD VARYING FROM 1 TO 2097152 DEPENDING ON MSG-LEN.
 01  REQUEST-LINE            PIC X(2097152).
 
 WORKING-STORAGE SECTION.
 COPY "message.cpy".
-COPY "response.cpy".
-
 01  IN-STATUS               PIC XX.
-01  IN-LEN                  PIC 9(9) COMP-5.
-01  FLUSH-RESULT            BINARY-LONG.
-01  FOUND-TEXT              PIC X(128).
-01  FOUND-LEN               BINARY-LONG.
+01  MSG-TYPE                PIC X(16).
 01  REQUEST-ID              PIC X(128).
-01  REQUEST-ID-LEN          BINARY-LONG.
+01  HANDLER                 PIC X(128).
+01  ANSWER                  PIC X(65536).
+01  ANSWER-LEN              BINARY-LONG.
 
 PROCEDURE DIVISION.
 MAIN-LOOP.
     OPEN INPUT REQUESTS
     DISPLAY '{"type":"ready","protocol":1}'
-    PERFORM FLUSH-OUTPUT
-    PERFORM READ-LINE
-    PERFORM UNTIL IN-STATUS NOT = "00"
-        CALL "JSON-FIND" USING MSG " " "type" FOUND-TEXT FOUND-LEN
-        IF FOUND-TEXT = "request"
-            PERFORM HANDLE-REQUEST
-        END-IF
+    PERFORM FOREVER
         PERFORM READ-LINE
-    END-PERFORM
-    *> Status 10 is the end of the input, which is how Unsworn stops it.
-    IF IN-STATUS NOT = "10"
-        DISPLAY "can't read a message: status " IN-STATUS UPON SYSERR
-        STOP RUN RETURNING 1
-    END-IF
-    STOP RUN.
+        *> Anything but a request, such as `cancel`, is safe to ignore for
+        *> a worker that takes one request at a time.
+        CALL "JSON-FIND" USING MSG " " "type" MSG-TYPE
+        IF MSG-TYPE = "request"
+            CALL "JSON-FIND" USING MSG " " "id" REQUEST-ID
+            CALL "JSON-FIND" USING MSG " " "handler" HANDLER
+            CALL "LOANS" USING HANDLER MSG ANSWER ANSWER-LEN
+            DISPLAY '{"type":"response","id":"' FUNCTION TRIM(REQUEST-ID)
+                '","status":200,"json":' ANSWER(1:ANSWER-LEN) '}'
+        END-IF
+    END-PERFORM.
 
-HANDLE-REQUEST.
-    CALL "JSON-FIND" USING MSG " " "id" REQUEST-ID REQUEST-ID-LEN
-    CALL "JSON-FIND" USING MSG " " "handler" FOUND-TEXT FOUND-LEN
-    EVALUATE FOUND-TEXT
-        WHEN "src/loans.cbl#payment"
-            CALL "PAYMENT" USING MSG RESP
-        WHEN "src/loans.cbl#schedule"
-            CALL "SCHEDULE" USING MSG RESP
-        WHEN "src/loans.cbl#afford"
-            CALL "AFFORD" USING MSG RESP
-        WHEN OTHER
-            DISPLAY "no handler " FOUND-TEXT UPON SYSERR
-            STOP RUN RETURNING 1
-    END-EVALUATE
-    DISPLAY '{"type":"response","id":"' REQUEST-ID(1:REQUEST-ID-LEN)
-        '","status":200,"json":' RESP-BODY(1:RESP-LEN) '}'
-    PERFORM FLUSH-OUTPUT.
-
+*> Unsworn stops the worker by closing its input, which is status 10.
+*>
 *> A line that fills the record may have more to come, and the rest could be
 *> read as a line of its own: part of one caller's request, taken for a
-*> message. So the worker stops, as it does on any status but "00". (Some
-*> versions of GnuCOBOL give a line that's too long "06", and some "00".)
+*> message. So the worker stops. (Some versions of GnuCOBOL give such a line
+*> status 06, and some 00.)
 READ-LINE.
     READ REQUESTS
-    IF IN-STATUS = "00"
-        IF IN-LEN >= LENGTH OF REQUEST-LINE
-            MOVE "06" TO IN-STATUS
-        ELSE
-            MOVE IN-LEN TO MSG-LEN
-            MOVE REQUEST-LINE(1:IN-LEN) TO MSG-TEXT(1:IN-LEN)
-        END-IF
-    END-IF.
-
-FLUSH-OUTPUT.
-    CALL "fflush" USING BY VALUE 0 RETURNING FLUSH-RESULT.
+    IF IN-STATUS = "10"
+        STOP RUN
+    END-IF
+    IF IN-STATUS NOT = "00" OR MSG-LEN >= LENGTH OF REQUEST-LINE
+        DISPLAY "a message is too long, or can't be read: status "
+            IN-STATUS UPON SYSERR
+        STOP RUN RETURNING 1
+    END-IF
+    MOVE REQUEST-LINE(1:MSG-LEN) TO MSG-TEXT(1:MSG-LEN).
 
 END PROGRAM WORKER.

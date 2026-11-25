@@ -25,8 +25,8 @@ payment takes up what that leaves over.
 
 | File | |
 |---|---|
-| [`src/loans.cbl`](src/loans.cbl) | The handlers: one program each, and the arithmetic |
-| [`src/worker.cbl`](src/worker.cbl) | The loop that reads requests, calls a handler and writes its response |
+| [`src/loans.cbl`](src/loans.cbl) | The handlers: a paragraph each, and the arithmetic |
+| [`src/worker.cbl`](src/worker.cbl) | The loop that reads requests, calls `src/loans.cbl` and writes its response |
 | [`src/json.cbl`](src/json.cbl) | Looks up a member of a message. GnuCOBOL can't parse JSON |
 | [`unsworn.toml`](unsworn.toml) | The routes and their rules, and how to build and run the worker |
 
@@ -53,7 +53,7 @@ In COBOL that takes some care:
 
 The worker does only what these routes need. To give it requests with a
 body, raise `max_body` and make the records in `src/worker.cbl` and
-`src/copy/message.cpy` large enough to match. For JSON, `src/json.cbl` also
+`src/message.cpy` large enough to match. For JSON, `src/json.cbl` also
 has to allow spaces between tokens and decode escapes. For anything else,
 the worker has to read the raw bytes after a message that has `body_len`
 and say `raw_body` in `ready`.

@@ -11,7 +11,7 @@ max_body = "0B"                      # no bodies: the worker relies on it
 # of them when requests have to wait.
 [runtimes.cobol]
 extensions = [".cbl"]
-build      = "mkdir -p .unsworn && cobc -x -free -O2 -I src/copy -o .unsworn/worker src/worker.cbl src/json.cbl src/loans.cbl"
+build      = "mkdir -p .unsworn && cobc -x -free -O2 -I src -o .unsworn/worker src/worker.cbl src/json.cbl src/loans.cbl"
 command    = ".unsworn/worker"
 
 [[route]]
