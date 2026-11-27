@@ -27,6 +27,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use unsworn_core::VERSION;
 use unsworn_core::outbound;
+use unsworn_core::pipeline::Step;
 use unsworn_core::project::{Outbound, TRACES_PATH, Telemetry};
 use unsworn_core::trace::{TRACEPARENT, TraceContext, valid_traceparent};
 
@@ -274,8 +275,75 @@ pub struct SpanRecord {
     pub start_unix_nano: u64,
     pub end_unix_nano: u64,
     pub attributes: Attributes,
+    /// What happened during it, and when.
+    pub events: Vec<Event>,
     /// Why it failed, if it did.
     pub error: Option<String>,
+}
+
+/// Something that happened during a span.
+#[derive(Debug)]
+pub struct Event {
+    pub name: &'static str,
+    pub time_unix_nano: u64,
+    pub attributes: Attributes,
+}
+
+/// What the pipeline decided about a sampled request, as it did: events on
+/// its span, and attributes that say how it ended.
+#[derive(Default)]
+pub struct Steps {
+    noted: Mutex<Vec<(Event, Option<(&'static str, Attr)>)>>,
+}
+
+impl Steps {
+    pub fn note(&self, step: Step<'_>) {
+        // The event's name, what it says, and what it sets on the span.
+        let (name, says, sets) = match step {
+            Step::Authenticated(scheme) => {
+                let scheme = ("unsworn.auth.scheme", Attr::Str(cut(scheme).to_string()));
+                ("unsworn.authenticated", Some(scheme.clone()), Some(scheme))
+            }
+            Step::Checked => ("unsworn.checked", None, None),
+            Step::Cache(what) => {
+                let what = ("unsworn.cache", Attr::Static(what.name()));
+                ("unsworn.cache", Some(what.clone()), Some(what))
+            }
+            Step::ResponseInvalid => (
+                "unsworn.response_invalid",
+                None,
+                Some(("unsworn.response_validation", Attr::Static("failed"))),
+            ),
+            Step::Rejected(rule) => (
+                "unsworn.rejected",
+                Some(("unsworn.rule", Attr::Static(rule.name()))),
+                Some(("unsworn.rejected_by", Attr::Static(rule.name()))),
+            ),
+        };
+        let event = Event {
+            name,
+            time_unix_nano: span_times(SystemTime::now(), Duration::ZERO).0,
+            attributes: says.into_iter().collect(),
+        };
+        self.noted.lock().unwrap().push((event, sets));
+    }
+
+    /// The events, and the attributes for the span: the last of each name.
+    fn take(&self) -> (Vec<Event>, Attributes) {
+        let noted = std::mem::take(&mut *self.noted.lock().unwrap());
+        let mut attributes: Attributes = Vec::new();
+        let mut events = Vec::with_capacity(noted.len());
+        for (event, attribute) in noted {
+            if let Some((key, value)) = attribute {
+                match attributes.iter_mut().find(|(k, _)| *k == key) {
+                    Some(found) => found.1 = value,
+                    None => attributes.push((key, value)),
+                }
+            }
+            events.push(event);
+        }
+        (events, attributes)
+    }
 }
 
 /// A method as spans name it. Anyone who sends a request can put any token
@@ -312,6 +380,14 @@ fn span_times(started_at: SystemTime, elapsed: Duration) -> (u64, u64) {
 }
 
 impl SpanRecord {
+    /// Adds what the pipeline decided while the span went on.
+    pub fn with_steps(mut self, steps: &Steps) -> SpanRecord {
+        let (events, attributes) = steps.take();
+        self.events = events;
+        self.attributes.extend(attributes);
+        self
+    }
+
     /// The `SERVER` span of a request.
     pub fn new(span: &Started, ended: Ended<'_>) -> SpanRecord {
         let method = known_method(ended.method);
@@ -373,6 +449,7 @@ impl SpanRecord {
             start_unix_nano,
             end_unix_nano,
             attributes,
+            events: Vec::new(),
             error: match answer {
                 Some(answer) => failed_status(answer.status),
                 None => Some(ABANDONED.to_string()),
@@ -480,6 +557,7 @@ impl ChildSpan {
             start_unix_nano,
             end_unix_nano,
             attributes: std::mem::take(&mut self.attributes),
+            events: Vec::new(),
             error: error.map(|why| cut(&why).to_string()),
         });
     }
@@ -1001,6 +1079,49 @@ mod tests {
         assert!(span.end_unix_nano >= span.start_unix_nano);
         // Once.
         assert!(queued.try_recv().is_err());
+    }
+
+    #[test]
+    fn steps_are_events_and_say_how_the_request_ended() {
+        use unsworn_core::pipeline::{CacheStep, Rule};
+        let steps = Steps::default();
+        steps.note(Step::Authenticated("key"));
+        steps.note(Step::Checked);
+        steps.note(Step::Cache(CacheStep::Miss));
+        steps.note(Step::Cache(CacheStep::Stored));
+        steps.note(Step::Rejected(Rule::ResponseValidation));
+        let (events, attributes) = steps.take();
+        let names: Vec<&str> = events.iter().map(|e| e.name).collect();
+        assert_eq!(
+            names,
+            [
+                "unsworn.authenticated",
+                "unsworn.checked",
+                "unsworn.cache",
+                "unsworn.cache",
+                "unsworn.rejected"
+            ]
+        );
+        assert_eq!(
+            events[4].attributes,
+            [("unsworn.rule", Attr::Static("response_validation"))]
+        );
+        assert!(events[1].attributes.is_empty());
+        assert!(
+            events
+                .windows(2)
+                .all(|w| w[0].time_unix_nano <= w[1].time_unix_nano)
+        );
+        // The last of each, in the order first seen.
+        assert_eq!(
+            attributes,
+            [
+                ("unsworn.auth.scheme", Attr::Str("key".into())),
+                ("unsworn.cache", Attr::Static("stored")),
+                ("unsworn.rejected_by", Attr::Static("response_validation")),
+            ]
+        );
+        assert!(steps.take().0.is_empty());
     }
 
     #[test]

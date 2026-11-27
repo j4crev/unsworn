@@ -655,6 +655,20 @@ failed, with no route or status.
 | `unsworn.request_id` | The `x-request-id`, as in the access log |
 | `unsworn.runtime` | The runtime that ran the route's handler, if one did |
 | `unsworn.in_handlers_ms` | How long the request waited for handlers |
+| `unsworn.rejected_by` | The rule that answered instead of the route's action, if one did: `origin`, `ip`, `rate_limit`, `auth`, `require`, `validation`, `max_body`, `body`, `before`, `timeout` or `response_validation` |
+| `unsworn.auth.scheme` | The scheme that let the caller in, if one did |
+| `unsworn.cache` | `hit`, `miss`, or `stored` for a miss whose response was kept |
+| `unsworn.response_validation` | `failed` when the handler's response didn't match its schema |
+
+Its events say when each of those was decided: `unsworn.authenticated`,
+`unsworn.checked` once every check before `before` handlers passed (access
+rules, rate limits, auth, `require`, validation and reading the body),
+`unsworn.cache`, `unsworn.response_invalid` and `unsworn.rejected`, whose
+`unsworn.rule` names the rule. The time between them is how long the steps
+took. An MCP tool's rules are reported the same way, though the client gets
+a tool error with status `200`. `validation` covers path parameters, the
+query, headers, the body and a tool's arguments; `body` is a body that
+couldn't be read.
 
 The resource's `service.name` is `service_name`, else `OTEL_SERVICE_NAME`,
 else the one in `OTEL_RESOURCE_ATTRIBUTES`, else `unsworn`. The other

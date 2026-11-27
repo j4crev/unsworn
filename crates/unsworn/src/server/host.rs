@@ -22,7 +22,7 @@ use unsworn_core::MaybeSend;
 use unsworn_core::pipeline::shadow::{Answer, ShadowCall, compare};
 use unsworn_core::pipeline::{
     self as core, CallError, Deadline, FetchError, Host, Problem, ProxyRequest, Reply,
-    StaticRequest,
+    StaticRequest, Step,
 };
 use unsworn_core::policy::HandlerRef;
 use unsworn_core::trace::{TRACEPARENT, TRACESTATE};
@@ -30,7 +30,7 @@ use unsworn_core::trace::{TRACEPARENT, TRACESTATE};
 use super::support::{Body, BoxError, empty, full, json_response};
 use super::{Generation, Shared, access, proxy, static_files};
 use crate::store::{Store, now_ms};
-use crate::telemetry::{self, Attr, Ended, Outcome, Parent, SpanRecord, Started, Tracer};
+use crate::telemetry::{self, Attr, Ended, Outcome, Parent, SpanRecord, Started, Steps, Tracer};
 use crate::workers::{self, CallBody, ReplyBody, Timed};
 
 static X_REQUEST_ID: http::HeaderName = http::HeaderName::from_static("x-request-id");
@@ -104,6 +104,7 @@ async fn handle_inner(
             in_handlers: AtomicU64::new(0),
             runtime: std::sync::OnceLock::new(),
             span: traced.as_ref().map(|t| Parent::of(&t.tracer, &t.span)),
+            steps: traced.as_ref().map(|t| t.steps.clone()),
         };
         let req = req.map(|b| b.map_err(BoxError::from).boxed_unsync());
         let handled = generation.router.handle(&host, req, client_ip).await;
@@ -169,6 +170,8 @@ struct Traced {
     client_ip: IpAddr,
     tls: bool,
     request_id: HeaderValue,
+    /// What the pipeline decides, which the host is told as it goes.
+    steps: Arc<Steps>,
     recorded: bool,
 }
 
@@ -202,6 +205,7 @@ impl Traced {
             client_ip: arrival.client_ip,
             tls: arrival.tls,
             request_id: arrival.request_id.clone(),
+            steps: Arc::default(),
             recorded: false,
         })
     }
@@ -221,7 +225,8 @@ impl Traced {
             request_id: self.request_id.to_str().unwrap_or_default(),
             answer: outcome,
         };
-        self.tracer.record(SpanRecord::new(&self.span, ended));
+        let span = SpanRecord::new(&self.span, ended).with_steps(&self.steps);
+        self.tracer.record(span);
     }
 }
 
@@ -307,6 +312,8 @@ struct ServerHost {
     /// The request's span, when it's sampled: what the server asks of
     /// something else for it is recorded below.
     span: Option<Parent>,
+    /// Where what the pipeline decides goes, when the request is sampled.
+    steps: Option<Arc<Steps>>,
 }
 
 impl Host for ServerHost {
@@ -462,6 +469,12 @@ impl Host for ServerHost {
                 },
             },
         })
+    }
+
+    fn step(&self, step: Step<'_>) {
+        if let Some(steps) = &self.steps {
+            steps.note(step);
+        }
     }
 
     fn shadow(&self, call: ShadowCall) {

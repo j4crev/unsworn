@@ -55,10 +55,11 @@ A request that arrives with a `traceparent` follows its sampled flag.
 `sample` says what share of the others start a trace. A request that isn't
 sampled is treated as it is without `[telemetry]`.
 
-The spans and what they say are listed in
-[`config.md`](config.md#the-spans). Unsworn doesn't yet record spans for its
-own steps, such as auth and rate limits: those are
-[planned](telemetry-design.md).
+The request's span also says what Unsworn decided, and when: the scheme
+that let the caller in, whether the cache answered, and for a request it
+turned away, the rule that did (`unsworn.rejected_by`, such as
+`rate_limit` or `auth`). The spans and what they say are listed in
+[`config.md`](config.md#the-spans).
 
 ## Without `[telemetry]`
 

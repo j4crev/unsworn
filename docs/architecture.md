@@ -64,6 +64,11 @@ header rules and the MCP endpoint. Bodies the core doesn't need to read,
 such as streamed handler replies and proxied responses, pass through it as
 the host's own body type.
 
+The core also tells the host what it decided, with `Host::step`: the rule
+that turned a request away, the scheme that let it in, what the cache did.
+The binary puts these on a sampled request's span (see
+[`tracing.md`](tracing.md)); the default does nothing.
+
 #### The plan
 
 `unsworn_core::plan` turns a compiled project into its *plan*: for each

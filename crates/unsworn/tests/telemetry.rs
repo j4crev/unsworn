@@ -177,6 +177,24 @@ fn below<'a>(spans: &'a [Span], parent: &Span, name: &str) -> &'a Span {
     found[0]
 }
 
+/// The names of a span's events, and the attributes of each.
+fn events(span: &Span) -> Vec<(String, BTreeMap<String, Value>)> {
+    let mut last = span.start_time_unix_nano;
+    span.events
+        .iter()
+        .map(|e| {
+            assert!(e.time_unix_nano >= last, "{} out of order", e.name);
+            assert!(e.time_unix_nano <= span.end_time_unix_nano, "{}", e.name);
+            last = e.time_unix_nano;
+            (e.name.clone(), values(&e.attributes))
+        })
+        .collect()
+}
+
+fn names(events: &[(String, BTreeMap<String, Value>)]) -> Vec<&str> {
+    events.iter().map(|(name, _)| name.as_str()).collect()
+}
+
 /// Why a span failed.
 fn failure(span: &Span) -> &str {
     let status = span.status.as_ref().expect("a failed span");
@@ -382,6 +400,88 @@ timeout = "200ms"
     let servers = of_kind(&spans, SpanKind::Server);
     let forwarded = below(&spans, servers[0], "GET");
     assert!(failure(forwarded).starts_with("cancelled"));
+    let attributes = values(&servers[0].attributes);
+    assert_eq!(attributes["unsworn.rejected_by"], string("timeout"));
+}
+
+#[test]
+fn the_requests_span_says_what_the_pipeline_decided() {
+    let (collector, upstream) = (Fake::start(), Fake::start());
+    let config = format!(
+        r#"
+[outbound.otel]
+url = "http://{}"
+
+[telemetry]
+outbound = "otel"
+sample = 1
+
+[[route]]
+path = "/limited"
+rate_limit = {{ requests = 1, per = "1h", key = "ip" }}
+respond = {{ status = 204 }}
+
+[[route]]
+path = "/items/{{id}}"
+params = {{ id = {{ type = "integer" }} }}
+respond = {{ status = 204 }}
+
+[[route]]
+path = "/cached"
+method = "GET"
+cache = {{ ttl = "1m" }}
+proxy = "http://{}"
+"#,
+        collector.addr, upstream.addr
+    );
+    let project = Project::new(&[("unsworn.toml", &config)]);
+    let mut server = project.serve();
+    for (path, status) in [
+        ("/limited", 204),
+        ("/limited", 429),
+        ("/items/x", 400),
+        ("/cached", 200),
+        ("/cached", 200),
+    ] {
+        assert_eq!(server.get(path).status, status, "{path}");
+    }
+    server.terminate();
+
+    let spans = collector.spans();
+    let servers = of_kind(&spans, SpanKind::Server);
+    assert_eq!(servers.len(), 5, "{}", server.logs());
+    let decided = |span: &Span, key: &str| values(&span.attributes).get(key).cloned();
+
+    let allowed = events(servers[0]);
+    assert_eq!(names(&allowed), ["unsworn.checked"]);
+    assert_eq!(decided(servers[0], "unsworn.rejected_by"), None);
+
+    let limited = events(servers[1]);
+    assert_eq!(names(&limited), ["unsworn.rejected"]);
+    assert_eq!(limited[0].1["unsworn.rule"], string("rate_limit"));
+    assert_eq!(
+        decided(servers[1], "unsworn.rejected_by"),
+        Some(string("rate_limit"))
+    );
+    // A client's error, not the server's.
+    assert!(servers[1].status.is_none());
+
+    assert_eq!(
+        decided(servers[2], "unsworn.rejected_by"),
+        Some(string("validation"))
+    );
+
+    let missed = events(servers[3]);
+    assert_eq!(
+        names(&missed),
+        ["unsworn.checked", "unsworn.cache", "unsworn.cache"]
+    );
+    assert_eq!(missed[1].1["unsworn.cache"], string("miss"));
+    assert_eq!(decided(servers[3], "unsworn.cache"), Some(string("stored")));
+    assert_eq!(decided(servers[4], "unsworn.cache"), Some(string("hit")));
+    // A hit asked nothing of the upstream.
+    assert_eq!(upstream.seen().len(), 1);
+    assert_eq!(of_kind(&spans, SpanKind::Client).len(), 1);
 }
 
 #[test]
@@ -481,6 +581,12 @@ respond = {{ status = 200 }}
     );
     let seen = verifier.request("/verify?tenant=a");
     assert_eq!(seen.headers["traceparent"], traceparent(asked));
+    let attributes = values(&servers[0].attributes);
+    assert_eq!(attributes["unsworn.auth.scheme"], string("customers"));
+    let steps = events(servers[0]);
+    assert_eq!(names(&steps), ["unsworn.authenticated", "unsworn.checked"]);
+    // The verifier was asked before auth was done.
+    assert!(asked.end_time_unix_nano <= servers[0].events[0].time_unix_nano);
 }
 
 /// A `before` handler, a handler that calls a function and fetches from a

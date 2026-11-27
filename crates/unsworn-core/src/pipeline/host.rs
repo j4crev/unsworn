@@ -170,6 +170,85 @@ impl std::fmt::Display for FetchError {
     }
 }
 
+/// Something the pipeline decided about a request, for a host that records
+/// it, such as on the request's span. See [`Host::step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step<'a> {
+    /// Auth let the caller in, with this scheme: the route's, or an MCP
+    /// tool's.
+    Authenticated(&'a str),
+    /// Every check before `before` handlers passed: access rules, rate
+    /// limits, auth, `require`, validation and reading the body.
+    Checked,
+    /// The cache was looked in, or filled.
+    Cache(CacheStep),
+    /// A handler's response didn't match its schema.
+    ResponseInvalid,
+    /// A rule answered the request instead of its action.
+    Rejected(Rule),
+}
+
+/// What the cache did for a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheStep {
+    Hit,
+    /// Nothing fresh was there.
+    Miss,
+    /// The response was stored, after a miss.
+    Stored,
+}
+
+impl CacheStep {
+    pub fn name(self) -> &'static str {
+        match self {
+            CacheStep::Hit => "hit",
+            CacheStep::Miss => "miss",
+            CacheStep::Stored => "stored",
+        }
+    }
+}
+
+/// A rule that can answer a request instead of its route's action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rule {
+    Origin,
+    Ip,
+    RateLimit,
+    Auth,
+    Require,
+    /// Path parameters, the query, headers, the body or an MCP tool's
+    /// arguments didn't pass their checks.
+    Validation,
+    /// The body is larger than `max_body`.
+    MaxBody,
+    /// The body couldn't be read.
+    Body,
+    /// A `before` handler answered.
+    Before,
+    Timeout,
+    /// The handler's response didn't match its schema, with `enforce`.
+    ResponseValidation,
+}
+
+impl Rule {
+    /// As the config names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Rule::Origin => "origin",
+            Rule::Ip => "ip",
+            Rule::RateLimit => "rate_limit",
+            Rule::Auth => "auth",
+            Rule::Require => "require",
+            Rule::Validation => "validation",
+            Rule::MaxBody => "max_body",
+            Rule::Body => "body",
+            Rule::Before => "before",
+            Rule::Timeout => "timeout",
+            Rule::ResponseValidation => "response_validation",
+        }
+    }
+}
+
 /// The I/O a host does for the pipeline. One value serves one request, so
 /// it can carry per-request facts such as the request id.
 ///
@@ -274,6 +353,14 @@ pub trait Host: MaybeSync {
     /// doesn't run shadows leaves this as it is.
     fn shadow(&self, call: super::shadow::ShadowCall) {
         let _ = call;
+    }
+
+    /// Told what the pipeline decided, as it does. A host that records
+    /// spans puts it on the request's. Called on every request, so a host
+    /// that isn't recording should return at once; the default does
+    /// nothing.
+    fn step(&self, step: Step<'_>) {
+        let _ = step;
     }
 
     /// Runs `future` without making the response wait for it, such as a

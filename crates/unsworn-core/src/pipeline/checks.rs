@@ -9,6 +9,7 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header};
 use serde_json::{Map, Value};
 
 use super::Problem;
+use super::host::Rule;
 use crate::policy::{
     CacheRule, Cors, Effective, IpRules, KeySource, Operand, RateLimit, Requirement,
 };
@@ -114,12 +115,24 @@ pub fn ip_allowed(rules: &IpRules, ip: IpAddr) -> bool {
 
 /// The `origin` and `ip` policies.
 pub fn access(eff: &Effective, origin: Option<&str>, client_ip: IpAddr) -> Result<(), Problem> {
+    access_rules(eff, origin, client_ip).map_err(|(_, problem)| problem)
+}
+
+/// [`access`], saying which of the two turned the request away.
+pub(super) fn access_rules(
+    eff: &Effective,
+    origin: Option<&str>,
+    client_ip: IpAddr,
+) -> Result<(), (Rule, Problem)> {
     if let (Some(allow), Some(origin)) = (&eff.origin, origin)
         && !allow.iter().any(|a| a == origin)
     {
-        return Err(Problem::new(
-            StatusCode::FORBIDDEN,
-            format!("requests from origin {origin} aren't allowed"),
+        return Err((
+            Rule::Origin,
+            Problem::new(
+                StatusCode::FORBIDDEN,
+                format!("requests from origin {origin} aren't allowed"),
+            ),
         ));
     }
     // A host that doesn't know the client's address passes `0.0.0.0`,
@@ -127,9 +140,12 @@ pub fn access(eff: &Effective, origin: Option<&str>, client_ip: IpAddr) -> Resul
     if let Some(rules) = &eff.ip
         && (client_ip.is_unspecified() || !ip_allowed(rules, client_ip))
     {
-        return Err(Problem::new(
-            StatusCode::FORBIDDEN,
-            "requests from this address aren't allowed",
+        return Err((
+            Rule::Ip,
+            Problem::new(
+                StatusCode::FORBIDDEN,
+                "requests from this address aren't allowed",
+            ),
         ));
     }
     Ok(())

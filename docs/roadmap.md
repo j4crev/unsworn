@@ -221,8 +221,9 @@ on the way out. In the order planned:
    - ~~**Phase 2: spans for the server's I/O.**~~ Done: handler calls and
      the wait for a worker, upstreams, verifiers, functions and services,
      each the parent of what it reaches.
-   - **Phase 3: the pipeline's steps,** such as auth, rate limits,
-     validation and the cache.
+   - ~~**Phase 3: the pipeline's steps.**~~ Done: the request's span says
+     which rule turned it away, the scheme that let it in and what the
+     cache did, with an event for each when it was decided.
    - **Phase 4: a handler's own span as the parent of `ctx.call`,** in
      every SDK.
    - **Phase 5, later:** metrics and logs over OTLP, and the edge and

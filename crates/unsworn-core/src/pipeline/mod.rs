@@ -23,8 +23,8 @@ pub mod shadow;
 pub use auth::KeyCache;
 pub use flow::{Handled, Router, json_response, problem_response};
 pub use host::{
-    BODY_IDLE, Body, BodyError, CallError, Deadline, FetchError, Host, ProxyRequest, Reply,
-    Response, StaticRequest,
+    BODY_IDLE, Body, BodyError, CacheStep, CallError, Deadline, FetchError, Host, ProxyRequest,
+    Reply, Response, Rule, StaticRequest, Step,
 };
 
 pub(crate) use checks::NOT_UNRESERVED;

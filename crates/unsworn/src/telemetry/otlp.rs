@@ -108,17 +108,29 @@ fn span(out: &mut Vec<u8>, span: &SpanRecord) {
     uint(out, 6, span.kind as u64);
     fixed64(out, 7, span.start_unix_nano);
     fixed64(out, 8, span.end_unix_nano);
-    for (key, value) in &span.attributes {
+    attributes(out, 9, &span.attributes);
+    for event in &span.events {
+        message(out, 11, |out| {
+            fixed64(out, 1, event.time_unix_nano);
+            bytes(out, 2, event.name.as_bytes());
+            attributes(out, 3, &event.attributes);
+        });
+    }
+    if let Some(why) = &span.error {
+        message(out, 15, |out| failed(out, why));
+    }
+}
+
+/// `KeyValue`s, each as the field `field`.
+fn attributes(out: &mut Vec<u8>, field: u32, attributes: &[(&'static str, Attr)]) {
+    for (key, value) in attributes {
         let value = match value {
             Attr::Str(s) => Value::String(s),
             Attr::Static(s) => Value::String(s),
             Attr::Int(n) => Value::Int(*n),
             Attr::Double(n) => Value::Double(*n),
         };
-        attribute(out, 9, key, value);
-    }
-    if let Some(why) = &span.error {
-        message(out, 15, |out| failed(out, why));
+        attribute(out, field, key, value);
     }
 }
 

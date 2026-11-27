@@ -206,6 +206,8 @@ on the same machine.
 
 ### Phase 3: the pipeline's own steps
 
+**Done.**
+
 | | |
 |---|---|
 | Scope | A `Host::step` hook that does nothing by default, called by the pipeline for auth, rate limits, validation, cache lookups and response validation. Span events and attributes first (`unsworn.cache`, `unsworn.rejected_by`), child spans where the timing turns out to matter |
@@ -239,6 +241,18 @@ that returns.
   matter.
 - **Only on the server.** The JavaScript bridge leaves `step` as it is,
   until the edge and serverless targets get spans in Phase 5.
+
+**The cost.** The WebAssembly core is the same size (1,487 KiB gzipped).
+With every request sampled, Phase 2's build and this one were run in turn
+on the same machine, three times each:
+
+| CPU µs per request (median) | `respond` | `proxy` | handler (Bun) |
+|---|--:|--:|--:|
+| Phase 2 | 23.6 | 56.4 | 80.0 |
+| Phase 3 | 25.1 | 54.0 | 82.9 |
+
+The differences, from −2.4 to +2.9 µs, are within what runs of the same
+build differed by, so what Phase 3 adds doesn't show.
 
 ### Phase 4: a handler's span as the parent of `ctx.call`
 
