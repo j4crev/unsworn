@@ -209,8 +209,36 @@ on the same machine.
 | | |
 |---|---|
 | Scope | A `Host::step` hook that does nothing by default, called by the pipeline for auth, rate limits, validation, cache lookups and response validation. Span events and attributes first (`unsworn.cache`, `unsworn.rejected_by`), child spans where the timing turns out to matter |
-| Files | `unsworn-core`: `pipeline/host.rs`, `pipeline/flow.rs`; `server/host.rs` |
+| Files | `unsworn-core`: `pipeline/host.rs`, `pipeline/flow.rs`, `pipeline/flow/mcp.rs`, `pipeline/checks.rs`; `server/host.rs`, `telemetry/` |
 | Done when | A rejected request's span says which rule rejected it, and the WebAssembly size check passes |
+
+The core reports what it decided with `Host::step(Step)`. A `Step` is a
+small value with nothing to put together: the rule that turned a request
+away, the scheme that let it in, what the cache did. The default does
+nothing, so the WebAssembly hosts and an unsampled request pay for a call
+that returns.
+
+| Step | When | Span event | Attribute on the request's span |
+|---|---|---|---|
+| `Authenticated` | Auth passed, the route's or an MCP tool's | `unsworn.authenticated` | `unsworn.auth.scheme` |
+| `Checked` | Every check before `before` handlers passed: access rules, rate limits, auth, `require`, validation, the body | `unsworn.checked` | |
+| `Cache` | The cache was looked in, and filled | `unsworn.cache` | `unsworn.cache`: `hit`, `miss` or `stored` |
+| `ResponseInvalid` | A handler's response didn't match its schema | `unsworn.response_invalid` | `unsworn.response_validation`: `failed` |
+| `Rejected` | A rule answered instead of the route's action | `unsworn.rejected` | `unsworn.rejected_by` |
+
+- **Rules a request can be rejected by:** `origin`, `ip`, `rate_limit`,
+  `auth`, `require`, `validation` (path parameters, query, headers, the
+  body or an MCP tool's arguments), `max_body`, `body` (one that couldn't
+  be read), `before` (a `before` handler answered), `timeout` and
+  `response_validation` (with `enforce`). An MCP tool's rules count too,
+  though the client gets a tool error with status `200`.
+- **Events, not child spans.** An event's time shows how long the steps
+  before it took. What in them waits on the network already has a span: a
+  JWKS or verifier request. A rate limit or a cache lookup in Redis
+  doesn't, and is the place for a child span if its time turns out to
+  matter.
+- **Only on the server.** The JavaScript bridge leaves `step` as it is,
+  until the edge and serverless targets get spans in Phase 5.
 
 ### Phase 4: a handler's span as the parent of `ctx.call`
 
