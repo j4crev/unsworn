@@ -603,8 +603,9 @@ service_name = "api"                             # optional
 sample       = 0.1                               # optional; default: 0
 ```
 
-OpenTelemetry traces: the server records a span for each request it
-samples and sends it over OTLP/HTTP. How that fits into a trace is in
+OpenTelemetry traces: for each request it samples, the server records a
+span, and one for each thing it asks of something else for that request,
+and sends them over OTLP/HTTP. How that fits into a trace is in
 [`tracing.md`](tracing.md).
 
 #### Where spans go
@@ -626,19 +627,21 @@ has its request recorded. `sample` is the share, from 0 to 1, of the
 other requests that start a trace. At 0, only requests that arrive sampled
 are recorded.
 
-A sampled request goes on to its handlers, upstream, functions and
-services with a `traceparent` that names Unsworn's span. A request that
-isn't sampled keeps the `traceparent` and `tracestate` it came with, and
-gets none if it had none.
+For a sampled request, each handler, upstream, function and service gets a
+`traceparent` naming the span Unsworn recorded for asking it. A request
+that isn't sampled keeps the `traceparent` and `tracestate` it came with,
+and gets none if it had none.
 
 `/_unsworn/health` and `/_unsworn/stats` aren't recorded.
 
-#### The span
+#### The spans
 
 One `SERVER` span per sampled request, from when Unsworn read the request
 to when it had the response's headers. It's named for the method and the
 route, such as `GET /users/{id}`, or the method alone when no route
-matched. A response of `500` or above sets its status to error.
+matched. A response of `500` or above sets its status to error. A request
+whose client goes away before there's a response is recorded too, as
+failed, with no route or status.
 
 | Attribute | Value |
 |---|---|
@@ -657,6 +660,44 @@ The resource's `service.name` is `service_name`, else `OTEL_SERVICE_NAME`,
 else the one in `OTEL_RESOURCE_ATTRIBUTES`, else `unsworn`. The other
 attributes in `OTEL_RESOURCE_ATTRIBUTES` (`key=value`, separated by commas,
 percent-encoded) are added to the resource.
+
+Below it are `CLIENT` spans, one for each thing Unsworn asks of something
+else:
+
+| Span | Recorded for | Attributes |
+|---|---|---|
+| `handler <ref>` | A route's or MCP tool's handler | `unsworn.handler`, `unsworn.runtime`, `unsworn.wait_ms`, `http.response.status_code` |
+| `before <ref>` | A `before` handler | The same, with a status only when it answers instead of letting the request through |
+| The method, such as `GET` | A `proxy` route's upstream, an HTTP runtime's server included | `http.request.method`, `unsworn.upstream`, `url.path`, `http.response.status_code` |
+| The method | A JWKS or API-key verifier request | `http.request.method`, `server.address`, `url.path`, `http.response.status_code` |
+| `call <function>` | `ctx.call`, or an HTTP runtime's call to a function | `unsworn.function`, `unsworn.caller`, `unsworn.handler`, `unsworn.runtime`, `unsworn.wait_ms`, `unsworn.status` |
+| The method | `ctx.fetch`, or an HTTP runtime's call to a service | `http.request.method`, `unsworn.service`, `server.address`, `url.path`, `http.response.status_code` |
+
+- `handler`, `before`, `proxy` and verifier spans are below the request's.
+  A `call` or `ctx.fetch` span is below the span of whatever asked: a
+  `handler`, a `before`, another `call`, or the `proxy` span for an HTTP
+  runtime.
+- `unsworn.wait_ms` is how long the call waited for a worker, starting one
+  included.
+- `unsworn.upstream` is the upstream as the config has it, without any user,
+  password or query, or `runtime:<name>`.
+- A `url.path` never has the query string. For `ctx.fetch` it's the path the
+  handler asked for, which goes after the service's URL; for the others, the
+  path that was sent.
+- `unsworn.status` is the status a function answered a successful call with.
+- A span covers what Unsworn waited for: a handler's up to its response's
+  head, and an upstream's too, a WebSocket's `101` included. A streamed
+  body isn't in it.
+- A span fails when there was no answer (a crashed worker, a timeout, a
+  failed connection), when a `ctx.call` didn't succeed, or when the answer
+  was `500` or above, and its status message says why. One that's given up
+  on, such as an upstream still silent when the route's time runs out, says
+  it was cancelled.
+- A [shadow](shadow.md) handler's call gets no span. What the shadow itself
+  calls or fetches through Unsworn is recorded, below the request's span.
+
+An attribute that isn't known isn't there: a request that never reached its
+upstream has no status, for one.
 
 A recorded request's access log line also has its `trace_id`.
 

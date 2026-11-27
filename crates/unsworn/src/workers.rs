@@ -37,6 +37,7 @@ mod endpoint;
 
 use crate::scale::{self, Decision, Sample, Scaler};
 use crate::server::support::{Body, HttpClient};
+use crate::telemetry::{self, Attr, ChildSpan, Parent, Tracer};
 pub use unsworn_core::pipeline::{BODY_IDLE, BodyError, CallError};
 
 /// Unacknowledged bytes of a streamed request body allowed per request.
@@ -322,6 +323,16 @@ pub struct PoolOptions {
     /// Environment variables workers don't inherit: the project's
     /// [`Project::secret_env`]. [`Pools::new`] fills it in.
     pub withheld_env: Vec<String>,
+    /// Records what handlers call and fetch as spans, when the project has
+    /// `[telemetry]`.
+    pub telemetry: Option<Arc<Tracer>>,
+}
+
+/// A call's reply, and how long it waited for a worker, starting one
+/// included.
+pub struct Timed {
+    pub reply: Result<Reply, CallError>,
+    pub waited: Duration,
 }
 
 pub struct Pool {
@@ -393,6 +404,8 @@ pub struct Pools {
     outbound: BTreeMap<String, Arc<Outbound>>,
     /// Makes those requests. Built for the first one.
     client: std::sync::OnceLock<HttpClient>,
+    /// Records the calls and requests, when the project has `[telemetry]`.
+    telemetry: Option<Arc<Tracer>>,
 }
 
 impl Pools {
@@ -418,6 +431,7 @@ impl Pools {
             response_validation: project.server.response_validation,
             outbound: project.outbound.clone(),
             client: std::sync::OnceLock::new(),
+            telemetry: opts.telemetry,
         });
         if !pools.functions.is_empty() || !pools.outbound.is_empty() {
             for pool in pools.pools.values() {
@@ -447,6 +461,7 @@ impl Pools {
                 .map(|o| (o.name.clone(), Arc::new(o)))
                 .collect(),
             client: std::sync::OnceLock::new(),
+            telemetry: pool.opts.telemetry.clone(),
         });
         let _ = pool.peers.set(Arc::downgrade(&pools));
         pools
@@ -551,11 +566,53 @@ impl Pools {
         }
     }
 
+    /// The span to record what a handler asks for below, when the request
+    /// it's asking for is sampled.
+    fn parent_span(&self, caller: &Caller) -> Option<Parent> {
+        Parent::from_trace(self.telemetry.as_ref()?, caller.trace.as_ref())
+    }
+
+    /// Calls a function, recording the call as a span when the caller's
+    /// request is sampled. The function and what it asks for go below it.
     async fn run_function(
         &self,
         name: &str,
         input: &Value,
+        mut caller: Caller,
+    ) -> Result<(u16, Value), calls::Failure> {
+        let mut span = self.parent_span(&caller).map(|parent| {
+            // A handler can ask for any name.
+            let name = telemetry::cut(name);
+            parent.child(
+                format!("call {name}"),
+                vec![
+                    ("unsworn.function", Attr::Str(name.to_string())),
+                    ("unsworn.caller", Attr::Str(caller.handler.clone())),
+                ],
+            )
+        });
+        if let Some(span) = &span {
+            caller.trace = Some(span.context());
+        }
+        let outcome = self.call_in_pool(name, input, caller, span.as_mut()).await;
+        if let Some(mut span) = span {
+            match &outcome {
+                Ok((status, _)) => {
+                    span.set("unsworn.status", Attr::Int(i64::from(*status)));
+                    span.finish(telemetry::failed_status(*status));
+                }
+                Err(failure) => span.finish(Some(failure.error.clone())),
+            }
+        }
+        outcome
+    }
+
+    async fn call_in_pool(
+        &self,
+        name: &str,
+        input: &Value,
         caller: Caller,
+        mut span: Option<&mut ChildSpan>,
     ) -> Result<(u16, Value), calls::Failure> {
         let (function, request) = calls::prepare(
             &self.functions,
@@ -573,12 +630,25 @@ impl Pools {
                 format!("no runtime \"{}\"", function.handler.runtime),
             ));
         };
+        if let Some(span) = span.as_deref_mut() {
+            span.set("unsworn.handler", Attr::Str(function.handler.raw.clone()));
+            span.set(
+                "unsworn.runtime",
+                Attr::Str(function.handler.runtime.clone()),
+            );
+        }
         // The function has its own time limit, and no more time than the
         // request it's called for.
         let deadline = caller.deadline.min(Instant::now() + function.timeout);
-        let reply = pool
-            .call(request, CallBody::Empty, deadline, caller.request_id)
+        let Timed { reply, waited } = pool
+            .call_timed(request, CallBody::Empty, deadline, caller.request_id)
             .await;
+        if let Some(span) = span {
+            span.set(
+                "unsworn.wait_ms",
+                Attr::Double(waited.as_secs_f64() * 1000.0),
+            );
+        }
         let (response, body) = match reply {
             Ok(Reply::Response { response, body }) => (response, body),
             Ok(Reply::Continue(_)) => return Err(calls::continued()),
@@ -636,7 +706,9 @@ impl Pools {
 
     /// Sends a request to the outbound service `name`, with the service's
     /// own headers added, and reads its answer. `Err` is the status and
-    /// the reason the caller gets when there's no answer to give.
+    /// the reason the caller gets when there's no answer to give. When the
+    /// caller's request is sampled, it's recorded as a span, which the
+    /// service is told is its parent.
     async fn send_outbound(
         &self,
         name: &str,
@@ -646,8 +718,59 @@ impl Pools {
         body: Body,
         caller: &Caller,
     ) -> Result<(http::response::Parts, Bytes), (u16, String)> {
+        let Some(parent) = self.parent_span(caller) else {
+            let trace = caller.trace.as_ref();
+            return self
+                .reach(name, method, path, headers, body, caller, trace)
+                .await;
+        };
+        let known = telemetry::known_method(&method.to_ascii_uppercase());
+        let mut attributes = vec![
+            ("http.request.method", Attr::Static(known)),
+            (
+                "unsworn.service",
+                Attr::Str(telemetry::cut(name).to_string()),
+            ),
+        ];
+        let address = self
+            .outbound
+            .get(name)
+            .and_then(|service| service.url.parse::<http::Uri>().ok())
+            .and_then(|url| url.host().map(String::from));
+        if let Some(address) = address {
+            attributes.push(("server.address", Attr::Str(address)));
+        }
+        let asked = path.split('?').next().unwrap_or_default();
+        attributes.push(("url.path", Attr::Str(telemetry::cut(asked).to_string())));
+        let mut span = parent.child(known.to_string(), attributes);
+        let trace = span.context();
+        let sent = self
+            .reach(name, method, path, headers, body, caller, Some(&trace))
+            .await;
+        match &sent {
+            Ok((parts, _)) => {
+                let status = parts.status.as_u16();
+                span.set("http.response.status_code", Attr::Int(i64::from(status)));
+                span.finish(telemetry::failed_status(status));
+            }
+            Err((_, why)) => span.finish(Some(why.clone())),
+        }
+        sent
+    }
+
+    /// [`Pools::send_outbound`], sending `trace` along.
+    async fn reach(
+        &self,
+        name: &str,
+        method: &str,
+        path: &str,
+        headers: &BTreeMap<String, String>,
+        body: Body,
+        caller: &Caller,
+        trace: Option<&TraceContext>,
+    ) -> Result<(http::response::Parts, Bytes), (u16, String)> {
         let service = outbound::service(&self.outbound, name)?;
-        let planned = outbound::plan(service, method, path, headers, caller.trace.as_ref())?;
+        let planned = outbound::plan(service, method, path, headers, trace)?;
         let method = planned.method;
         let mut request = http::Request::builder()
             .method(method.as_str())
@@ -1779,7 +1902,31 @@ impl Pool {
         request_id: String,
     ) -> futures_util::future::BoxFuture<'static, Result<Reply, CallError>> {
         let pool = self.clone();
-        Box::pin(async move { pool.call_inner(request, body, deadline, request_id).await })
+        Box::pin(async move {
+            pool.call_inner(request, body, deadline, request_id, &mut None)
+                .await
+        })
+    }
+
+    /// [`Pool::call`], saying how long the request waited for a worker.
+    pub fn call_timed(
+        self: &Arc<Self>,
+        request: Request,
+        body: CallBody,
+        deadline: Instant,
+        request_id: String,
+    ) -> futures_util::future::BoxFuture<'static, Timed> {
+        let pool = self.clone();
+        Box::pin(async move {
+            let began = Instant::now();
+            let mut picked = None;
+            let reply = pool
+                .call_inner(request, body, deadline, request_id, &mut picked)
+                .await;
+            // Without a worker, all of it was waiting.
+            let waited = picked.map_or_else(|| began.elapsed(), |at| at - began);
+            Timed { reply, waited }
+        })
     }
 
     async fn call_inner(
@@ -1788,6 +1935,8 @@ impl Pool {
         body: CallBody,
         deadline: Instant,
         request_id: String,
+        // When a worker was picked.
+        picked: &mut Option<Instant>,
     ) -> Result<Reply, CallError> {
         if let Some(reason) = self.missing.lock().unwrap().get(&request.handler) {
             return Err(CallError::MissingHandler(format!(
@@ -1827,6 +1976,7 @@ impl Pool {
                 });
             }
         };
+        *picked = Some(Instant::now());
 
         let id = self.message_id("r");
         if matches!(body, CallBody::Stream(_)) && !worker.stream_body {

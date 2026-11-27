@@ -4,15 +4,13 @@
 
 use unsworn_core::VERSION;
 
-use super::SpanRecord;
+use super::{Attr, SpanRecord};
 
 // How a field's value is laid out.
 const VARINT: u32 = 0;
 const FIXED64: u32 = 1;
 const LEN: u32 = 2;
 
-/// `Span.SpanKind.SPAN_KIND_SERVER`.
-const SERVER: u64 = 2;
 /// `Status.StatusCode.STATUS_CODE_ERROR`.
 const ERROR: u64 = 2;
 
@@ -107,33 +105,27 @@ fn span(out: &mut Vec<u8>, span: &SpanRecord) {
         bytes(out, 4, &parent.0);
     }
     bytes(out, 5, span.name.as_bytes());
-    uint(out, 6, SERVER);
+    uint(out, 6, span.kind as u64);
     fixed64(out, 7, span.start_unix_nano);
     fixed64(out, 8, span.end_unix_nano);
-    let client = span.client.to_string();
-    let mut put = |key: &str, value: Value<'_>| attribute(out, 9, key, value);
-    put("http.request.method", Value::String(span.method));
-    put("url.path", Value::String(&span.path));
-    put("url.scheme", Value::String(span.scheme));
-    if let Some(route) = &span.route {
-        put("http.route", Value::String(route));
+    for (key, value) in &span.attributes {
+        let value = match value {
+            Attr::Str(s) => Value::String(s),
+            Attr::Static(s) => Value::String(s),
+            Attr::Int(n) => Value::Int(*n),
+            Attr::Double(n) => Value::Double(*n),
+        };
+        attribute(out, 9, key, value);
     }
-    put(
-        "http.response.status_code",
-        Value::Int(i64::from(span.status)),
-    );
-    put("client.address", Value::String(&client));
-    put("network.protocol.version", Value::String(span.protocol));
-    put("unsworn.request_id", Value::String(&span.request_id));
-    if let Some(runtime) = &span.runtime {
-        put("unsworn.runtime", Value::String(runtime));
+    if let Some(why) = &span.error {
+        message(out, 15, |out| failed(out, why));
     }
-    put("unsworn.in_handlers_ms", Value::Double(span.in_handlers_ms));
-    // A client's error isn't the server's: only `500` and above fail a
-    // server span.
-    if span.status >= 500 {
-        message(out, 15, |status| uint(status, 3, ERROR));
-    }
+}
+
+/// A `Status` saying a span failed, and why.
+fn failed(out: &mut Vec<u8>, why: &str) {
+    bytes(out, 2, why.as_bytes());
+    uint(out, 3, ERROR);
 }
 
 #[cfg(test)]
@@ -162,9 +154,10 @@ mod tests {
         let mut out = Vec::new();
         fixed64(&mut out, 7, 0x0102_0304_0506_0708);
         assert_eq!(out, [0x39, 8, 7, 6, 5, 4, 3, 2, 1]);
+        // A status: the message, then the code.
         let mut out = Vec::new();
-        message(&mut out, 15, |status| uint(status, 3, ERROR));
-        assert_eq!(out, [0x7a, 0x02, 0x18, 0x02]);
+        message(&mut out, 15, |status| failed(status, "no"));
+        assert_eq!(out, [0x7a, 0x06, 0x12, 0x02, b'n', b'o', 0x18, 0x02]);
         // An attribute: the key, then an `AnyValue` holding a string.
         assert_eq!(
             resource(&[("k".into(), "v".into())]),

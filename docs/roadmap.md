@@ -218,8 +218,9 @@ on the way out. In the order planned:
    - ~~**Phase 1: a span for every sampled request, exported.**~~ Done: the
      server sends them over OTLP/HTTP, with an exporter of its own. See
      [`config.md`](config.md#telemetry).
-   - **Phase 2: spans for the server's I/O:** handler calls and the wait
-     for a worker, upstreams, verifiers, functions and services.
+   - ~~**Phase 2: spans for the server's I/O.**~~ Done: handler calls and
+     the wait for a worker, upstreams, verifiers, functions and services,
+     each the parent of what it reaches.
    - **Phase 3: the pipeline's steps,** such as auth, rate limits,
      validation and the cache.
    - **Phase 4: a handler's own span as the parent of `ctx.call`,** in

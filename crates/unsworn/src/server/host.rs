@@ -5,7 +5,7 @@
 //! static files, the store, the clock) and adds what only a server has:
 //! request ids, `/_unsworn/health`, metrics and the access log.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use futures_util::{FutureExt, StreamExt};
-use http::{HeaderValue, Request, Response, StatusCode};
+use http::{HeaderValue, Method, Request, Response, StatusCode, Uri};
 use http_body_util::{BodyExt, Limited, StreamBody};
 use hyper::body::{Frame, Incoming};
 use serde_json::json;
@@ -30,8 +30,8 @@ use unsworn_core::trace::{TRACEPARENT, TRACESTATE};
 use super::support::{Body, BoxError, empty, full, json_response};
 use super::{Generation, Shared, access, proxy, static_files};
 use crate::store::{Store, now_ms};
-use crate::telemetry::{Answered, SpanRecord, Started, Tracer};
-use crate::workers::{self, CallBody, ReplyBody};
+use crate::telemetry::{self, Attr, Ended, Outcome, Parent, SpanRecord, Started, Tracer};
+use crate::workers::{self, CallBody, ReplyBody, Timed};
 
 static X_REQUEST_ID: http::HeaderName = http::HeaderName::from_static("x-request-id");
 
@@ -85,6 +85,15 @@ async fn handle_inner(
         // listener only.
         (stats(&shared).await, path.to_string())
     } else {
+        let mut req = req;
+        if let Some(tracer) = &generation.telemetry {
+            let arrival = Arrival {
+                client_ip,
+                tls,
+                request_id: &request_id,
+            };
+            traced = Traced::begin(tracer, &mut req, start, arrival);
+        }
         let host = ServerHost {
             shared: shared.clone(),
             generation: generation.clone(),
@@ -94,11 +103,8 @@ async fn handle_inner(
             trusted_peer,
             in_handlers: AtomicU64::new(0),
             runtime: std::sync::OnceLock::new(),
+            span: traced.as_ref().map(|t| Parent::of(&t.tracer, &t.span)),
         };
-        let mut req = req;
-        if let Some(tracer) = &generation.telemetry {
-            traced = Traced::begin(tracer, &mut req, start);
-        }
         let req = req.map(|b| b.map_err(BoxError::from).boxed_unsync());
         let handled = generation.router.handle(&host, req, client_ip).await;
         in_handlers = Duration::from_nanos(host.in_handlers.load(Ordering::Relaxed));
@@ -127,43 +133,56 @@ async fn handle_inner(
         id: request_id.to_str().unwrap_or_default(),
         trace_id: trace_id.as_deref(),
     });
-    if let Some(traced) = traced {
-        let answered = Answered {
-            started_at: traced.started_at,
-            elapsed,
-            method: method.as_str(),
-            path,
-            tls,
+    if let Some(mut traced) = traced {
+        let outcome = Outcome {
             route: &route_label,
             status,
-            client: client_ip,
-            version: traced.version,
-            request_id: request_id.to_str().unwrap_or_default(),
             runtime: runtime.as_ref(),
             in_handlers,
         };
-        traced
-            .tracer
-            .record(SpanRecord::new(&traced.span, answered));
+        traced.record(elapsed, Some(outcome));
     }
     resp
 }
 
-/// A sampled request: what's noted before the pipeline takes it.
-struct Traced<'a> {
-    tracer: &'a Tracer,
-    span: Started,
-    /// The wall clock's time when the request's own timing started.
-    started_at: SystemTime,
-    version: http::Version,
+/// What the server knows of a request before the pipeline takes it, which
+/// its span says.
+struct Arrival<'a> {
+    client_ip: IpAddr,
+    tls: bool,
+    request_id: &'a HeaderValue,
 }
 
-impl<'a> Traced<'a> {
+/// A sampled request: what's noted before the pipeline takes it. Its span
+/// is recorded once it's answered, or when it's dropped without an answer,
+/// as when the client goes away, so the spans below it keep their parent.
+struct Traced {
+    tracer: Arc<Tracer>,
+    span: Started,
+    /// When the request's own timing started, and the wall clock's time
+    /// then.
+    start: Instant,
+    started_at: SystemTime,
+    method: Method,
+    uri: Uri,
+    version: http::Version,
+    client_ip: IpAddr,
+    tls: bool,
+    request_id: HeaderValue,
+    recorded: bool,
+}
+
+impl Traced {
     /// Samples a request. A sampled one goes on with this span as its
     /// parent, so its handlers, upstream, functions and services nest under
     /// it. Any other keeps the headers it came with: a span id that's never
     /// sent would leave their spans without a parent.
-    fn begin(tracer: &'a Tracer, req: &mut Request<Incoming>, start: Instant) -> Option<Self> {
+    fn begin(
+        tracer: &Arc<Tracer>,
+        req: &mut Request<Incoming>,
+        start: Instant,
+        arrival: Arrival<'_>,
+    ) -> Option<Self> {
         let span = tracer.start(req.headers())?;
         let traceparent = HeaderValue::try_from(span.traceparent()).ok()?;
         req.headers_mut().insert(TRACEPARENT, traceparent);
@@ -173,11 +192,44 @@ impl<'a> Traced<'a> {
         }
         let now = SystemTime::now();
         Some(Traced {
-            tracer,
+            tracer: tracer.clone(),
             span,
+            start,
             started_at: now.checked_sub(start.elapsed()).unwrap_or(now),
+            method: req.method().clone(),
+            uri: req.uri().clone(),
             version: req.version(),
+            client_ip: arrival.client_ip,
+            tls: arrival.tls,
+            request_id: arrival.request_id.clone(),
+            recorded: false,
         })
+    }
+
+    /// Records the span. `outcome` is `None` for a request that's given up
+    /// on before it's answered.
+    fn record(&mut self, elapsed: Duration, outcome: Option<Outcome<'_>>) {
+        self.recorded = true;
+        let ended = Ended {
+            started_at: self.started_at,
+            elapsed,
+            method: self.method.as_str(),
+            path: self.uri.path(),
+            tls: self.tls,
+            client: self.client_ip,
+            version: self.version,
+            request_id: self.request_id.to_str().unwrap_or_default(),
+            answer: outcome,
+        };
+        self.tracer.record(SpanRecord::new(&self.span, ended));
+    }
+}
+
+impl Drop for Traced {
+    fn drop(&mut self) {
+        if !self.recorded {
+            self.record(self.start.elapsed(), None);
+        }
     }
 }
 
@@ -252,6 +304,9 @@ struct ServerHost {
     /// the runtime that ran the route's own. For `unsworn top`.
     in_handlers: AtomicU64,
     runtime: std::sync::OnceLock<Arc<str>>,
+    /// The request's span, when it's sampled: what the server asks of
+    /// something else for it is recorded below.
+    span: Option<Parent>,
 }
 
 impl Host for ServerHost {
@@ -331,7 +386,7 @@ impl Host for ServerHost {
     async fn call(
         &self,
         handler: &HandlerRef,
-        request: unsworn_proto::Request,
+        mut request: unsworn_proto::Request,
         body: core::Body<Body>,
         deadline: Deadline,
     ) -> Result<Reply<Body>, CallError> {
@@ -346,10 +401,25 @@ impl Host for ServerHost {
             core::Body::Bytes(b) => CallBody::Bytes(b),
             core::Body::Host(b) => CallBody::Stream(b),
         };
-        let began = Instant::now();
         let handles = request.phase == unsworn_proto::Phase::Handle;
-        let reply = pool
-            .call(
+        let span = self.span.as_ref().map(|parent| {
+            let what = if handles { "handler" } else { "before" };
+            let span = parent.child(
+                format!("{what} {}", handler.raw),
+                vec![
+                    ("unsworn.handler", Attr::Str(handler.raw.clone())),
+                    ("unsworn.runtime", Attr::Str(handler.runtime.clone())),
+                ],
+            );
+            // The handler, and what it asks for, go below this span.
+            request
+                .headers
+                .insert(TRACEPARENT.to_string(), span.traceparent());
+            span
+        });
+        let began = Instant::now();
+        let Timed { reply, waited } = pool
+            .call_timed(
                 request,
                 body,
                 instant(deadline),
@@ -362,6 +432,21 @@ impl Host for ServerHost {
             .fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
         if handles {
             let _ = self.runtime.set(pool.name());
+        }
+        if let Some(mut span) = span {
+            span.set(
+                "unsworn.wait_ms",
+                Attr::Double(waited.as_secs_f64() * 1000.0),
+            );
+            match &reply {
+                Ok(workers::Reply::Response { response, .. }) => {
+                    let status = response.status;
+                    span.set("http.response.status_code", Attr::Int(i64::from(status)));
+                    span.finish(telemetry::failed_status(status));
+                }
+                Ok(workers::Reply::Continue(_)) => span.finish(None),
+                Err(e) => span.finish(Some(e.to_string())),
+            }
         }
         let reply = reply?;
         Ok(match reply {
@@ -454,6 +539,7 @@ impl Host for ServerHost {
             proxy::ForCalls {
                 context: request.context,
                 deadline: instant(request.deadline),
+                span: self.span.clone(),
             },
         )
         .await;
@@ -476,10 +562,25 @@ impl Host for ServerHost {
 
     async fn fetch(
         &self,
-        request: Request<Bytes>,
+        mut request: Request<Bytes>,
         timeout: Duration,
         limit: usize,
     ) -> Result<http::Response<Bytes>, FetchError> {
+        let span = self.span.as_ref().map(|parent| {
+            let method = telemetry::known_method(request.method().as_str());
+            let mut attributes = vec![("http.request.method", Attr::Static(method))];
+            if let Some(host) = request.uri().host() {
+                attributes.push(("server.address", Attr::Str(host.to_string())));
+            }
+            // Without the query string, which may hold a credential.
+            let path = telemetry::cut(request.uri().path()).to_string();
+            attributes.push(("url.path", Attr::Str(path)));
+            let span = parent.child(method.to_string(), attributes);
+            if let Ok(value) = HeaderValue::try_from(span.traceparent()) {
+                request.headers_mut().insert(TRACEPARENT, value);
+            }
+            span
+        });
         let client = self.shared.client.clone();
         let call = async move {
             let resp = client
@@ -494,9 +595,20 @@ impl Host for ServerHost {
                 .to_bytes();
             Ok(http::Response::from_parts(parts, body))
         };
-        tokio::time::timeout(timeout, call)
+        let answer = tokio::time::timeout(timeout, call)
             .await
-            .unwrap_or(Err(FetchError::Timeout))
+            .unwrap_or(Err(FetchError::Timeout));
+        if let Some(mut span) = span {
+            match &answer {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    span.set("http.response.status_code", Attr::Int(i64::from(status)));
+                    span.finish(telemetry::failed_status(status));
+                }
+                Err(e) => span.finish(Some(e.to_string())),
+            }
+        }
+        answer
     }
 
     /// Not an `async fn`: one would hold `future` twice over, once as its

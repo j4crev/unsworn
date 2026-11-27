@@ -1,11 +1,12 @@
-//! OpenTelemetry traces: a span for each sampled request, sent over
-//! OTLP/HTTP to the `[outbound]` service `[telemetry]` names. See
+//! OpenTelemetry traces: a span for each sampled request, and one for each
+//! thing the server asks of something else for it, sent over OTLP/HTTP to
+//! the `[outbound]` service `[telemetry]` names. See
 //! `docs/telemetry-design.md`.
 //!
 //! A request costs little here. Whether it's sampled is decided from its
-//! headers, its span is put together once it's answered, and the span then
-//! waits in a queue that one task sends from in batches. Nothing a request
-//! does waits for the collector.
+//! headers, a span is put together once what it covers is over, and the span
+//! then waits in a queue that one task sends from in batches. Nothing a
+//! request does waits for the collector.
 
 mod otlp;
 
@@ -27,7 +28,7 @@ use tokio::time::Instant;
 use unsworn_core::VERSION;
 use unsworn_core::outbound;
 use unsworn_core::project::{Outbound, TRACES_PATH, Telemetry};
-use unsworn_core::trace::{TRACEPARENT, valid_traceparent};
+use unsworn_core::trace::{TRACEPARENT, TraceContext, valid_traceparent};
 
 use crate::server::support::{HttpClient, KNOWN_METHODS, full};
 
@@ -46,9 +47,15 @@ const WARN_EVERY: Duration = Duration::from_secs(60);
 /// How much of a collector's answer is read.
 const MAX_ANSWER: usize = 64 * 1024;
 
-/// How much of a request's path a span keeps. A client picks its length,
-/// and spans wait in memory.
+/// How much a span keeps of a path, a name or an error. Someone else picks
+/// their length, and spans wait in memory.
 const MAX_PATH: usize = 2048;
+
+/// What a span says when what it covers was given up on before it ended.
+const CANCELLED: &str = "cancelled before an answer: the request timed out or ended";
+
+/// What a request's own span says when it was never answered.
+const ABANDONED: &str = "cancelled before an answer: the client went away";
 
 /// Settings that would send spans somewhere the config doesn't name.
 const IGNORED_ENV: &[&str] = &[
@@ -156,8 +163,29 @@ impl Started {
     /// The header for whatever the request reaches from here, which makes
     /// this span its parent.
     pub fn traceparent(&self) -> String {
-        format!("00-{}-{}-01", self.trace_id.hex(), hex(&self.span_id.0))
+        sampled_traceparent(self.trace_id, self.span_id)
     }
+}
+
+/// The header that makes the span `span_id` the parent of what gets it.
+fn sampled_traceparent(trace_id: TraceId, span_id: SpanId) -> String {
+    format!("00-{}-{}-01", trace_id.hex(), hex(&span_id.0))
+}
+
+/// A `traceparent` a receiver would accept: its trace id, its parent id and
+/// whether it's marked sampled.
+fn parse(value: &str) -> Option<(TraceId, SpanId, bool)> {
+    let value = value.trim();
+    if !valid_traceparent(value) {
+        return None;
+    }
+    // `<version>-<trace id>-<parent id>-<flags>`, as just checked.
+    let flags = u8::from_str_radix(&value[53..55], 16).ok()?;
+    Some((
+        TraceId(unhex(&value[3..35])?),
+        SpanId(unhex(&value[36..52])?),
+        flags & 1 == 1,
+    ))
 }
 
 /// Whether a request is sampled. One that came with a `traceparent` follows
@@ -166,17 +194,11 @@ fn decide(sample: f64, headers: &HeaderMap) -> Option<Started> {
     let incoming = headers
         .get(TRACEPARENT)
         .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|v| valid_traceparent(v));
-    if let Some(incoming) = incoming {
-        // `<version>-<trace id>-<parent id>-<flags>`, as just checked.
-        let flags = u8::from_str_radix(&incoming[53..55], 16).ok()?;
-        if flags & 1 == 0 {
-            return None;
-        }
-        return Some(Started {
-            trace_id: TraceId(unhex(&incoming[3..35])?),
-            parent: Some(SpanId(unhex(&incoming[36..52])?)),
+        .and_then(parse);
+    if let Some((trace_id, parent, sampled)) = incoming {
+        return sampled.then(|| Started {
+            trace_id,
+            parent: Some(parent),
             span_id: SpanId::random(),
             new_root: false,
         });
@@ -197,92 +219,276 @@ fn decide(sample: f64, headers: &HeaderMap) -> Option<Started> {
     })
 }
 
-/// What the server knows about a request once it has answered it.
-pub struct Answered<'a> {
+/// What the server knows about a request once it's over.
+pub struct Ended<'a> {
     pub started_at: SystemTime,
     pub elapsed: Duration,
     pub method: &'a str,
     /// Without the query string.
     pub path: &'a str,
     pub tls: bool,
-    /// The matched route, or `(none)`.
-    pub route: &'a str,
-    pub status: u16,
     pub client: IpAddr,
     pub version: http::Version,
     pub request_id: &'a str,
+    /// `None` when the client went away before there was one.
+    pub answer: Option<Outcome<'a>>,
+}
+
+/// How a request was answered.
+pub struct Outcome<'a> {
+    /// The matched route, or `(none)`.
+    pub route: &'a str,
+    pub status: u16,
     pub runtime: Option<&'a Arc<str>>,
     pub in_handlers: Duration,
 }
 
-/// A request's span, ready to send.
+/// What a span is to the server. The numbers are OTLP's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// A request the server answered.
+    Server = 2,
+    /// Something the server asked of something else.
+    Client = 3,
+}
+
+/// An attribute's value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Attr {
+    Str(String),
+    Static(&'static str),
+    Int(i64),
+    Double(f64),
+}
+
+pub type Attributes = Vec<(&'static str, Attr)>;
+
+/// A span, ready to send.
 #[derive(Debug)]
 pub struct SpanRecord {
     pub trace_id: TraceId,
     pub span_id: SpanId,
     pub parent: Option<SpanId>,
     pub name: String,
+    pub kind: Kind,
     pub start_unix_nano: u64,
     pub end_unix_nano: u64,
-    pub method: &'static str,
-    pub path: String,
-    pub scheme: &'static str,
-    pub route: Option<String>,
-    pub status: u16,
-    pub client: IpAddr,
-    /// The HTTP version, such as `1.1`.
-    pub protocol: &'static str,
-    pub request_id: String,
-    pub runtime: Option<Arc<str>>,
-    pub in_handlers_ms: f64,
+    pub attributes: Attributes,
+    /// Why it failed, if it did.
+    pub error: Option<String>,
+}
+
+/// A method as spans name it. Anyone who sends a request can put any token
+/// there, so one that isn't standard is `_OTHER`.
+pub fn known_method(method: &str) -> &'static str {
+    KNOWN_METHODS
+        .iter()
+        .find(|known| **known == method)
+        .copied()
+        .unwrap_or("_OTHER")
+}
+
+/// At most [`MAX_PATH`] bytes of `text`, cut between characters.
+pub fn cut(text: &str) -> &str {
+    let mut end = text.len().min(MAX_PATH);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// Why an answer with `status` fails its span, if it does. A client's error
+/// isn't a failure of what answered: only `500` and above are.
+pub fn failed_status(status: u16) -> Option<String> {
+    (status >= 500).then(|| format!("answered {status}"))
+}
+
+/// A span's start and end, as OTLP counts time.
+fn span_times(started_at: SystemTime, elapsed: Duration) -> (u64, u64) {
+    let since = started_at.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let start = u64::try_from(since.as_nanos()).unwrap_or(u64::MAX);
+    let elapsed = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+    (start, start.saturating_add(elapsed))
 }
 
 impl SpanRecord {
-    pub fn new(span: &Started, answered: Answered<'_>) -> SpanRecord {
-        // A client can send any token as a method.
-        let method = KNOWN_METHODS
-            .iter()
-            .find(|known| **known == answered.method)
-            .copied()
-            .unwrap_or("_OTHER");
-        let route = (answered.route != "(none)").then(|| answered.route.to_string());
-        let name = match &route {
+    /// The `SERVER` span of a request.
+    pub fn new(span: &Started, ended: Ended<'_>) -> SpanRecord {
+        let method = known_method(ended.method);
+        let answer = ended.answer.as_ref();
+        let route = answer
+            .map(|answer| answer.route)
+            .filter(|route| *route != "(none)");
+        let name = match route {
             Some(route) => format!("{method} {route}"),
             None => method.to_string(),
         };
-        let mut end = answered.path.len().min(MAX_PATH);
-        while !answered.path.is_char_boundary(end) {
-            end -= 1;
+        let (start_unix_nano, end_unix_nano) = span_times(ended.started_at, ended.elapsed);
+        let mut attributes = Vec::with_capacity(10);
+        attributes.extend([
+            ("http.request.method", Attr::Static(method)),
+            ("url.path", Attr::Str(cut(ended.path).to_string())),
+            (
+                "url.scheme",
+                Attr::Static(if ended.tls { "https" } else { "http" }),
+            ),
+        ]);
+        if let Some(route) = route {
+            attributes.push(("http.route", Attr::Str(route.to_string())));
         }
-        let nanos = |time: SystemTime| {
-            let since = time.duration_since(UNIX_EPOCH).unwrap_or_default();
-            u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
+        let protocol = match ended.version {
+            http::Version::HTTP_09 => "0.9",
+            http::Version::HTTP_10 => "1.0",
+            http::Version::HTTP_2 => "2",
+            http::Version::HTTP_3 => "3",
+            _ => "1.1",
         };
-        let start = nanos(answered.started_at);
-        let elapsed = u64::try_from(answered.elapsed.as_nanos()).unwrap_or(u64::MAX);
+        if let Some(answer) = answer {
+            let status = Attr::Int(i64::from(answer.status));
+            attributes.push(("http.response.status_code", status));
+        }
+        attributes.extend([
+            ("client.address", Attr::Str(ended.client.to_string())),
+            ("network.protocol.version", Attr::Static(protocol)),
+            (
+                "unsworn.request_id",
+                Attr::Str(ended.request_id.to_string()),
+            ),
+        ]);
+        if let Some(answer) = answer {
+            if let Some(runtime) = answer.runtime {
+                attributes.push(("unsworn.runtime", Attr::Str(runtime.to_string())));
+            }
+            attributes.push((
+                "unsworn.in_handlers_ms",
+                Attr::Double(answer.in_handlers.as_secs_f64() * 1000.0),
+            ));
+        }
         SpanRecord {
             trace_id: span.trace_id,
             span_id: span.span_id,
             parent: span.parent,
             name,
-            start_unix_nano: start,
-            end_unix_nano: start.saturating_add(elapsed),
-            method,
-            path: answered.path[..end].to_string(),
-            scheme: if answered.tls { "https" } else { "http" },
-            route,
-            status: answered.status,
-            client: answered.client,
-            protocol: match answered.version {
-                http::Version::HTTP_09 => "0.9",
-                http::Version::HTTP_10 => "1.0",
-                http::Version::HTTP_2 => "2",
-                http::Version::HTTP_3 => "3",
-                _ => "1.1",
+            kind: Kind::Server,
+            start_unix_nano,
+            end_unix_nano,
+            attributes,
+            error: match answer {
+                Some(answer) => failed_status(answer.status),
+                None => Some(ABANDONED.to_string()),
             },
-            request_id: answered.request_id.to_string(),
-            runtime: answered.runtime.cloned(),
-            in_handlers_ms: answered.in_handlers.as_secs_f64() * 1000.0,
+        }
+    }
+}
+
+/// A recorded span that others can go below.
+#[derive(Clone)]
+pub struct Parent {
+    tracer: Arc<Tracer>,
+    trace_id: TraceId,
+    span_id: SpanId,
+    tracestate: Option<String>,
+}
+
+impl Parent {
+    /// A request's own span. What goes below it is sent with the request's
+    /// headers, which have its `tracestate` already.
+    pub fn of(tracer: &Arc<Tracer>, span: &Started) -> Parent {
+        Parent {
+            tracer: tracer.clone(),
+            trace_id: span.trace_id,
+            span_id: span.span_id,
+            tracestate: None,
+        }
+    }
+
+    /// The span a handler was told is its parent, when it's a sampled one.
+    /// With `[telemetry]` that's always one of the server's own: a sampled
+    /// request goes on with the server's span, and any other keeps a header
+    /// that isn't marked sampled, or none.
+    pub fn from_trace(tracer: &Arc<Tracer>, trace: Option<&TraceContext>) -> Option<Parent> {
+        let trace = trace?;
+        let (trace_id, span_id, sampled) = parse(&trace.traceparent)?;
+        sampled.then(|| Parent {
+            tracer: tracer.clone(),
+            trace_id,
+            span_id,
+            tracestate: trace.tracestate.clone(),
+        })
+    }
+
+    /// Starts a span below this one. End it with [`ChildSpan::finish`].
+    pub fn child(&self, name: String, attributes: Attributes) -> ChildSpan {
+        ChildSpan {
+            parent: self.clone(),
+            span_id: SpanId::random(),
+            name,
+            attributes,
+            started_at: SystemTime::now(),
+            start: Instant::now(),
+            finished: false,
+        }
+    }
+}
+
+/// A `CLIENT` span that's under way: something the server is asking of
+/// something else. Dropped before it's finished, as when the request's time
+/// runs out, it's recorded as cancelled.
+pub struct ChildSpan {
+    parent: Parent,
+    span_id: SpanId,
+    name: String,
+    attributes: Attributes,
+    started_at: SystemTime,
+    start: Instant,
+    finished: bool,
+}
+
+impl ChildSpan {
+    /// The header for what's asked, which makes this span its parent.
+    pub fn traceparent(&self) -> String {
+        sampled_traceparent(self.parent.trace_id, self.span_id)
+    }
+
+    /// [`ChildSpan::traceparent`], with the `tracestate` that goes with it.
+    pub fn context(&self) -> TraceContext {
+        TraceContext {
+            traceparent: self.traceparent(),
+            tracestate: self.parent.tracestate.clone(),
+        }
+    }
+
+    /// Adds an attribute.
+    pub fn set(&mut self, key: &'static str, value: Attr) {
+        self.attributes.push((key, value));
+    }
+
+    /// Records the span. `error` is why it failed, if it did.
+    pub fn finish(mut self, error: Option<String>) {
+        self.record(error);
+    }
+
+    fn record(&mut self, error: Option<String>) {
+        self.finished = true;
+        let (start_unix_nano, end_unix_nano) = span_times(self.started_at, self.start.elapsed());
+        self.parent.tracer.record(SpanRecord {
+            trace_id: self.parent.trace_id,
+            span_id: self.span_id,
+            parent: Some(self.parent.span_id),
+            name: std::mem::take(&mut self.name),
+            kind: Kind::Client,
+            start_unix_nano,
+            end_unix_nano,
+            attributes: std::mem::take(&mut self.attributes),
+            error: error.map(|why| cut(&why).to_string()),
+        });
+    }
+}
+
+impl Drop for ChildSpan {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.record(Some(CANCELLED.to_string()));
         }
     }
 }
@@ -668,36 +874,142 @@ mod tests {
 
     #[test]
     fn a_spans_name_and_path() {
-        let answered = |method, route, path| {
+        let ended = |method, path, answer| {
             let started = decide(1.0, &HeaderMap::new()).unwrap();
             SpanRecord::new(
                 &started,
-                Answered {
+                Ended {
                     started_at: UNIX_EPOCH + Duration::from_secs(1),
                     elapsed: Duration::from_millis(2),
                     method,
                     path,
                     tls: false,
-                    route,
-                    status: 200,
                     client: "127.0.0.1".parse().unwrap(),
                     version: http::Version::HTTP_11,
                     request_id: "r",
-                    runtime: None,
-                    in_handlers: Duration::ZERO,
+                    answer,
                 },
             )
         };
+        let answered = |method, route, path| {
+            let answer = Outcome {
+                route,
+                status: 200,
+                runtime: None,
+                in_handlers: Duration::ZERO,
+            };
+            ended(method, path, Some(answer))
+        };
         let span = answered("GET", "/users/{id}", "/users/7");
         assert_eq!(span.name, "GET /users/{id}");
+        assert_eq!(span.kind, Kind::Server);
         assert_eq!(span.start_unix_nano, 1_000_000_000);
         assert_eq!(span.end_unix_nano, 1_002_000_000);
         let span = answered("BREW", "(none)", "/pot");
-        assert_eq!((span.name.as_str(), span.route), ("_OTHER", None));
+        assert_eq!(span.name, "_OTHER");
+        assert_eq!(attr(&span, "http.route"), None);
         // Cut between characters.
         let long = format!("/{}", "\u{e9}".repeat(MAX_PATH));
         let span = answered("GET", "(none)", &long);
-        assert_eq!(span.path.len(), MAX_PATH - 1);
+        let Some(Attr::Str(path)) = attr(&span, "url.path") else {
+            panic!("{span:?}");
+        };
+        assert_eq!(path.len(), MAX_PATH - 1);
+        // Never answered: no route or status to name.
+        let span = ended("GET", "/users/7", None);
+        assert_eq!(span.name, "GET");
+        assert_eq!(attr(&span, "http.response.status_code"), None);
+        assert_eq!(attr(&span, "unsworn.in_handlers_ms"), None);
+        assert_eq!(span.error.as_deref(), Some(ABANDONED));
+    }
+
+    fn attr<'a>(span: &'a SpanRecord, key: &str) -> Option<&'a Attr> {
+        span.attributes
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, value)| value)
+    }
+
+    /// A tracer whose spans stay in a queue the test reads.
+    fn tracer() -> (Arc<Tracer>, mpsc::Receiver<Queued>) {
+        let (spans, queued) = mpsc::channel(8);
+        let tracer = Tracer {
+            sample: 1.0,
+            sink: Arc::new(Sink {
+                outbound: Arc::new(Outbound::open("otel", "http://collector", Vec::new())),
+                resource: Bytes::new(),
+            }),
+            queue: Queue {
+                spans,
+                dropped: Arc::default(),
+            },
+        };
+        (Arc::new(tracer), queued)
+    }
+
+    fn trace(traceparent: &str) -> TraceContext {
+        TraceContext {
+            traceparent: traceparent.to_string(),
+            tracestate: Some("vendor=1".to_string()),
+        }
+    }
+
+    #[test]
+    fn only_a_sampled_trace_is_a_parent() {
+        let (tracer, _queued) = tracer();
+        for not in [None, Some(trace(UNSAMPLED)), Some(trace("nonsense"))] {
+            assert!(
+                Parent::from_trace(&tracer, not.as_ref()).is_none(),
+                "{not:?}"
+            );
+        }
+        let parent = Parent::from_trace(&tracer, Some(&trace(SAMPLED))).unwrap();
+        assert_eq!(parent.trace_id.hex(), "4bf92f3577b34da6a3ce929d0e0e4736");
+        assert_eq!(hex(&parent.span_id.0), "00f067aa0ba902b7");
+    }
+
+    #[test]
+    fn a_child_is_passed_on_and_recorded_below_its_parent() {
+        let (tracer, mut queued) = tracer();
+        let parent = Parent::from_trace(&tracer, Some(&trace(SAMPLED))).unwrap();
+        let mut child = parent.child("GET".to_string(), Vec::new());
+        let sent = child.traceparent();
+        assert_eq!(
+            sent,
+            format!(
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-{}-01",
+                hex(&child.span_id.0)
+            )
+        );
+        assert_ne!(child.span_id, parent.span_id);
+        assert_eq!(child.context(), trace(&sent));
+        child.set("http.response.status_code", Attr::Int(200));
+        let id = child.span_id;
+        assert!(queued.try_recv().is_err());
+        child.finish(None);
+
+        let (_, span) = queued.try_recv().unwrap();
+        assert_eq!(span.kind, Kind::Client);
+        assert_eq!(span.trace_id, parent.trace_id);
+        assert_eq!((span.span_id, span.parent), (id, Some(parent.span_id)));
+        assert_eq!(span.name, "GET");
+        assert_eq!(
+            attr(&span, "http.response.status_code"),
+            Some(&Attr::Int(200))
+        );
+        assert_eq!(span.error, None);
+        assert!(span.end_unix_nano >= span.start_unix_nano);
+        // Once.
+        assert!(queued.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_child_that_is_given_up_on_is_recorded_as_cancelled() {
+        let (tracer, mut queued) = tracer();
+        let parent = Parent::from_trace(&tracer, Some(&trace(SAMPLED))).unwrap();
+        drop(parent.child("GET".to_string(), Vec::new()));
+        let (_, span) = queued.try_recv().unwrap();
+        assert_eq!(span.error.as_deref(), Some(CANCELLED));
     }
 
     #[test]

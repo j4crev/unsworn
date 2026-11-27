@@ -156,6 +156,8 @@ machine that discards them.
 
 ### Phase 2: spans for the I/O the server does
 
+**Done.**
+
 | | |
 |---|---|
 | Scope | A span for each handler call (the wait for a worker recorded apart from the time in it), `before` handler, `proxy` upstream, JWKS or API-key verifier request, `ctx.call` and `ctx.fetch`, with the `traceparent` sent along set to that span, and failures (timeouts, crashed workers, unreachable services) as the span's status |
@@ -182,6 +184,25 @@ machine that discards them.
   one included. A span of its own would cost more.
 - **A shadow handler's call gets no span.** Its answer never reaches the
   client.
+- **What's given up on is still recorded,** as failed: a call or request
+  that outlives its time, and the request of a client that goes away. A
+  span below one that's never recorded would have no parent.
+
+**The cost.** The same server and `telemetry` group as in Phase 1, three
+runs of each. A proxied request and a handler call now make two spans.
+
+| CPU µs per request (median) | `respond` | `proxy` | handler (Bun) |
+|---|--:|--:|--:|
+| No `[telemetry]` | 23.0 | 49.6 | 63.3 |
+| 1% sampled | 21.2 | 50.5 | 68.4 |
+| Every request sampled | 22.8 | 58.2 | 70.2 |
+
+Sampling everything added about 7 to 9 µs to a `proxy` or handler request,
+which misses the goal of a few, and its highest request rate was 10 to 14%
+lower. Runs of the same row differed by up to 15 µs, so these are rough
+too. Each run now loads a Bun runtime, so don't compare them with Phase
+1's. No span was dropped at up to 64,000 spans a second, with a collector
+on the same machine.
 
 ### Phase 3: the pipeline's own steps
 

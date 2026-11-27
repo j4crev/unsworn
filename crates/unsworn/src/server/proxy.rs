@@ -1,16 +1,18 @@
 //! Reverse proxying, including WebSocket upgrades and SSE pass-through.
 
-use http::{Request, Response, StatusCode};
+use http::{HeaderValue, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
 use unsworn_core::pipeline::proxy::{
     CALL_TOKEN, ForwardInfo, is_upgrade, response_headers, rewrite, rewrite_to,
 };
 use unsworn_core::project::{Proxy, Target};
+use unsworn_core::trace::TRACEPARENT;
 
 use super::Shared;
 use super::support::{Body, BoxError, Tunnel, problem, problem_response};
 use super::upstream::Peer;
+use crate::telemetry::{self, Attr, ChildSpan, Parent};
 
 /// How long a request waits for an `http` runtime's server, which may be
 /// starting for the first time or again after it stopped.
@@ -21,6 +23,8 @@ const RUNTIME_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 pub struct ForCalls {
     pub context: serde_json::Map<String, serde_json::Value>,
     pub deadline: std::time::Instant,
+    /// The request's span, when it's sampled.
+    pub span: Option<Parent>,
 }
 
 /// Forwards a request to one of the proxy's upstreams.
@@ -45,6 +49,20 @@ async fn forward_inner(
     let tunnel = req.extensions().get::<Tunnel>().cloned();
     let client_upgrade = upgrade.then(|| hyper::upgrade::on(&mut req));
     let (mut parts, body) = req.into_parts();
+    // Before the call token is made, which keeps the trace an `http`
+    // runtime's server was sent: what it calls goes below this span.
+    let mut span = for_calls.span.as_ref().map(|parent| {
+        let method = telemetry::known_method(parts.method.as_str());
+        let mut attributes = vec![("http.request.method", Attr::Static(method))];
+        if let Some(name) = &proxy.runtime {
+            attributes.push(("unsworn.upstream", Attr::Str(format!("runtime:{name}"))));
+        }
+        let span = parent.child(method.to_string(), attributes);
+        if let Ok(value) = HeaderValue::try_from(span.traceparent()) {
+            parts.headers.insert(TRACEPARENT, value);
+        }
+        span
+    });
     // An `http` runtime's server is wherever its pool started it, and
     // counts as busy with this request until it has answered.
     let mut token = None;
@@ -53,6 +71,7 @@ async fn forward_inner(
         Some(name) => {
             let pools = shared.generation.load().pools.clone();
             let Some(pool) = pools.get(name) else {
+                unanswered(span, "the route's runtime is unavailable");
                 return problem(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "the route's runtime is unavailable",
@@ -77,6 +96,7 @@ async fn forward_inner(
                 }
                 Err(e) => {
                     tracing::error!(runtime = %name, "{e}");
+                    unanswered(span, &e.to_string());
                     return problem(
                         StatusCode::SERVICE_UNAVAILABLE,
                         match shared.dev {
@@ -96,9 +116,20 @@ async fn forward_inner(
     };
     let (to, upstream) = match rewritten {
         Ok(found) => found,
-        Err(p) => return problem_response(p),
+        Err(p) => {
+            // Not the problem's detail, which may name an upstream's password.
+            unanswered(span, "the request couldn't be forwarded");
+            return problem_response(p);
+        }
     };
     let req = Request::from_parts(parts, body);
+    if let Some(span) = &mut span {
+        if proxy.runtime.is_none() {
+            span.set("unsworn.upstream", Attr::Str(without_credentials(upstream)));
+        }
+        let path = telemetry::cut(req.uri().path()).to_string();
+        span.set("url.path", Attr::Str(path));
+    }
 
     // Plain HTTP/1.1 goes over a connection this thread keeps. The general
     // client has TLS and HTTP/2.
@@ -120,12 +151,19 @@ async fn forward_inner(
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(upstream = %upstream, "proxy error: {e}");
+            unanswered(span, &e.to_string());
             return problem(
                 StatusCode::BAD_GATEWAY,
                 format!("the upstream at {upstream} couldn't be reached"),
             );
         }
     };
+    // The span ends with the response's head. A WebSocket's ends here too.
+    if let Some(mut span) = span {
+        let status = resp.status().as_u16();
+        span.set("http.response.status_code", Attr::Int(i64::from(status)));
+        span.finish(telemetry::failed_status(status));
+    }
 
     if resp.status() == StatusCode::SWITCHING_PROTOCOLS
         && let Some(client_upgrade) = client_upgrade
@@ -166,4 +204,41 @@ async fn forward_inner(
         None => body,
     };
     Response::from_parts(parts, body)
+}
+
+/// Records that a request got no answer from an upstream.
+fn unanswered(span: Option<ChildSpan>, why: &str) {
+    if let Some(span) = span {
+        span.finish(Some(why.to_string()));
+    }
+}
+
+/// An upstream as a span names it: without a user and password or a query,
+/// which are credentials the collector has no use for.
+fn without_credentials(upstream: &str) -> String {
+    let upstream = upstream.split(['?', '#']).next().unwrap_or_default();
+    let Some((scheme, rest)) = upstream.split_once("://") else {
+        return upstream.to_string();
+    };
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    format!("{scheme}://{host}{path}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_span_names_an_upstream_without_its_credentials() {
+        for (upstream, named) in [
+            ("http://app:8080", "http://app:8080"),
+            ("https://user:p%40ss@app/base", "https://app/base"),
+            ("https://u:a@b@app", "https://app"),
+            ("http://app/a@b?key=secret", "http://app/a@b"),
+            ("unix:/run/app.sock", "unix:/run/app.sock"),
+        ] {
+            assert_eq!(without_credentials(upstream), named);
+        }
+    }
 }

@@ -104,6 +104,7 @@ fn make_generation(
     let client_ip = ClientIp::new(&project.server.trusted_proxies)?;
     let dir = socket_dir.join(format!("g{generation}"));
     std::fs::create_dir_all(&dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
+    let telemetry = project.telemetry.as_ref().map(|t| exporter.tracer(t));
     let pools = Pools::new(
         &project,
         PoolOptions {
@@ -113,9 +114,9 @@ fn make_generation(
             socket_dir: dir,
             log_tap: None,
             withheld_env: Vec::new(),
+            telemetry: telemetry.clone(),
         },
     );
-    let telemetry = project.telemetry.as_ref().map(|t| exporter.tracer(t));
     let project = Arc::new(project);
     Ok(Generation {
         router: Router::new(project.clone(), keys.clone()),
@@ -354,16 +355,18 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
             grace.as_secs()
         );
     }
-    // The spans of the requests just finished.
-    shared
-        .exporter
-        .flush(TELEMETRY_FLUSH_TIMEOUT.min(grace))
-        .await;
     shared
         .generation
         .load()
         .pools
         .shutdown(Duration::from_secs(2))
+        .await;
+    // Last, so the spans of calls the shutdown cut off are sent too, and so
+    // the workers, which a terminal's Ctrl-C signals as well, aren't taken
+    // to have crashed while spans are on their way.
+    shared
+        .exporter
+        .flush(TELEMETRY_FLUSH_TIMEOUT.min(grace))
         .await;
     Ok(())
 }

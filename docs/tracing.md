@@ -27,23 +27,38 @@ export async function search(req, ctx) {
 
 ## Unsworn's own spans
 
-With [`[telemetry]`](config.md#telemetry), the server records a span for
-each request it samples and sends it to your collector. Its time then shows
-in the trace, rejected requests included. For a sampled request:
+With [`[telemetry]`](config.md#telemetry), the server records spans for
+each request it samples and sends them to your collector. Its time then
+shows in the trace, rejected requests included. For a sampled request:
 
-- The span is a child of the incoming `traceparent`, or starts the trace
-  when there wasn't one.
-- Everything in the table above gets a `traceparent` naming that span, so
-  the spans behind Unsworn nest under it. A `tracestate` goes along with
-  the trace it came with, and is removed when Unsworn starts a new one.
+- The request's span is a child of the incoming `traceparent`, or starts the
+  trace when there wasn't one.
+- Below it is a span for each thing Unsworn asks of something else: a
+  handler or `before` handler, a `proxy` upstream, a key verifier, a
+  function, an outbound service.
+- Each gets a `traceparent` naming the span for asking it, so the spans it
+  records nest under that one, and what a handler calls or fetches nests
+  under the handler's. A `tracestate` goes along with the trace it came
+  with, and is removed when Unsworn starts a new one.
+
+For a handler that calls a function and a service:
+
+```
+GET /search                        the request
+├─ before src/auth.ts#tenant
+└─ handler src/search.ts#search
+   ├─ call embed                   embed's own spans go below this
+   └─ POST                         the index service's too
+```
 
 A request that arrives with a `traceparent` follows its sampled flag.
 `sample` says what share of the others start a trace. A request that isn't
 sampled is treated as it is without `[telemetry]`.
 
-Unsworn's span covers the whole request. It doesn't yet record spans for
-the handler call, the upstream or its own steps, such as auth and rate
-limits: those are [planned](telemetry-design.md).
+The spans and what they say are listed in
+[`config.md`](config.md#the-spans). Unsworn doesn't yet record spans for its
+own steps, such as auth and rate limits: those are
+[planned](telemetry-design.md).
 
 ## Without `[telemetry]`
 
@@ -68,8 +83,8 @@ replaced, as a missing one is.
 
 Without help, a function or service called for a request becomes a child
 of whatever sent the request, next to the handler's own span, not below
-it. For a request Unsworn samples, they're children of Unsworn's span, as
-the handler's own span is. The trace is still one trace.
+it. For a request Unsworn samples, they're below Unsworn's span for the
+handler call, next to the handler's own span. The trace is still one trace.
 
 For an outbound request, a handler that has a span of its own sends that
 instead, and Unsworn leaves it alone:
@@ -79,10 +94,13 @@ await ctx.fetch("index", "/query", { json: { vector }, headers: { traceparent: m
 ```
 
 A service whose `headers` in the config set `traceparent` keeps that one.
+Either way, Unsworn still records its span for a sampled request's fetch,
+but the service isn't below it.
 
-`ctx.call` takes no headers yet, so a function is always a child of the
-`traceparent` the handler got: the sender's, or Unsworn's for a request it
-sampled. It also means that when the handler got none and started the
+`ctx.call` takes no headers yet, so a function can't be a child of a span
+the handler made. It's a child of the sender's span or, for a request
+Unsworn sampled, of the `call` span below Unsworn's span for the handler.
+It also means that when the handler got no `traceparent` and started the
 trace itself, the function doesn't join it.
 
 ## Where it works
