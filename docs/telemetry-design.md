@@ -159,8 +159,29 @@ machine that discards them.
 | | |
 |---|---|
 | Scope | A span for each handler call (the wait for a worker recorded apart from the time in it), `before` handler, `proxy` upstream, JWKS or API-key verifier request, `ctx.call` and `ctx.fetch`, with the `traceparent` sent along set to that span, and failures (timeouts, crashed workers, unreachable services) as the span's status |
-| Files | `server/host.rs`, `workers.rs` |
+| Files | `server/host.rs`, `server/proxy.rs`, `workers.rs` |
 | Done when | A trace through a handler, a function and a service nests as the calls did |
+
+| Span | Name | Child of |
+|---|---|---|
+| A handler call | `handler <ref>` | The server span |
+| A `before` handler call | `before <ref>` | The server span |
+| A `proxy` upstream, an HTTP runtime's server included | The method | The server span |
+| A JWKS or API-key verifier request | The method | The server span |
+| `ctx.call`, or an HTTP runtime's call to a function | `call <function>` | The span the calling handler got |
+| `ctx.fetch`, or an HTTP runtime's call to a service | The method | The span the calling handler got |
+
+- **Every one is a `CLIENT` span:** Unsworn asking something else to do
+  work.
+- **A span fails** when Unsworn got no answer (a crashed worker, a timeout,
+  a failed connection, a `ctx.call` that didn't succeed), or when the
+  answer's status is `500` or above. The status message says why.
+- **Each span's `traceparent` replaces the one sent along,** so what's
+  reached nests under it. The `tracestate` is kept.
+- **The wait for a worker** is the attribute `unsworn.wait_ms`, starting
+  one included. A span of its own would cost more.
+- **A shadow handler's call gets no span.** Its answer never reaches the
+  client.
 
 ### Phase 3: the pipeline's own steps
 
