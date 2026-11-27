@@ -155,6 +155,17 @@ type CallError struct {
 
 func (e *CallError) Error() string { return "unsworn: " + e.Message }
 
+// CallOptions is what [Request.CallWith] can say besides the function and
+// its input.
+type CallOptions struct {
+	// Traceparent is a W3C traceparent for the function to be called under,
+	// such as that of the handler's own span. Without one, or with one that
+	// isn't valid, the function gets the request's.
+	Traceparent string
+	// Tracestate goes with Traceparent, and is ignored without it.
+	Tracestate string
+}
+
 // Call calls a function: a handler in any language, declared in the config
 // as [[function]]. Unsworn checks input against the function's schema, runs
 // it with this request's context and what is left of its time, and decodes
@@ -163,10 +174,16 @@ func (e *CallError) Error() string { return "unsworn: " + e.Message }
 // It returns a [*CallError] when the function answers 400 or above or
 // can't be called, and the context's error when the request ends first.
 func (r *Request) Call(name string, input any, out any) error {
+	return r.CallWith(name, input, out, nil)
+}
+
+// CallWith is [Request.Call] with options, such as the span the function is
+// called under. o may be nil.
+func (r *Request) CallWith(name string, input any, out any, o *CallOptions) error {
 	if r.w == nil {
 		return &CallError{Status: 501, Message: "Call works in a handler that Unsworn is running"}
 	}
-	data, err := r.w.callFunction(r, name, input)
+	data, err := r.w.callFunction(r, name, input, o)
 	if err != nil || out == nil || len(data) == 0 {
 		return err
 	}

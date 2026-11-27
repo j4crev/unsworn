@@ -22,6 +22,10 @@ func echo(req *unsworn.Request) (unsworn.Reply, error) {
 	if v, ok := req.Headers["x-test"]; ok {
 		header = v
 	}
+	var traceparent any
+	if v, ok := req.Headers["traceparent"]; ok {
+		traceparent = v
+	}
 	// Bind, not req.JSON as it is: nothing has read the body before the
 	// handler, so this is where one that isn't JSON is found out.
 	var body json.RawMessage
@@ -31,12 +35,13 @@ func echo(req *unsworn.Request) (unsworn.Reply, error) {
 		}
 	}
 	return unsworn.JSON(map[string]any{
-		"method":  req.Method,
-		"params":  req.Params,
-		"query":   req.Query,
-		"context": req.Ctx,
-		"json":    body,
-		"header":  header,
+		"method":      req.Method,
+		"params":      req.Params,
+		"query":       req.Query,
+		"context":     req.Ctx,
+		"json":        body,
+		"header":      header,
+		"traceparent": traceparent,
 	}), nil
 }
 
@@ -123,7 +128,10 @@ func relay(req *unsworn.Request) (unsworn.Reply, error) {
 			return unsworn.Reply{}, err
 		}
 	}
-	err := req.Call(req.QueryValue("fn"), input, &answer)
+	err := req.CallWith(req.QueryValue("fn"), input, &answer, &unsworn.CallOptions{
+		Traceparent: req.QueryValue("traceparent"),
+		Tracestate:  req.QueryValue("tracestate"),
+	})
 	var failed *unsworn.CallError
 	if errors.As(err, &failed) {
 		return unsworn.JSON(map[string]any{"failed": failed.Status}), nil

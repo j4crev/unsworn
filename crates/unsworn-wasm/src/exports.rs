@@ -170,12 +170,26 @@ impl Unsworn {
 impl Unsworn {
     /// Runs a function for a handler: its `ctx.call`. `caller` is what the
     /// bridge's `call` was given for the handler, and `input` is JSON
-    /// text. Resolves a `FunctionResult`, and never rejects.
+    /// text. `traceparent` and `tracestate` are the handler's own, when it
+    /// names a span for the function to be called under. Resolves a
+    /// `FunctionResult`, and never rejects.
     #[wasm_bindgen(js_name = callFunction, unchecked_return_type = "Promise<FunctionResult>")]
-    pub fn call_function(&self, caller: &str, name: &str, input: &str, bridge: Bridge) -> Promise {
+    pub fn call_function(
+        &self,
+        caller: &str,
+        name: &str,
+        input: &str,
+        bridge: Bridge,
+        traceparent: Option<String>,
+        tracestate: Option<String>,
+    ) -> Promise {
         let project = self.router.project().clone();
         let dev = self.dev;
-        let caller = Caller::decode(caller);
+        let own = calls::given_trace(traceparent.as_deref(), tracestate.as_deref());
+        let caller = Caller::decode(caller).map(|mut caller| {
+            caller.call = caller.call.with_trace(own);
+            caller
+        });
         let (name, input) = (name.to_string(), serde_json::from_str::<Value>(input));
         future_to_promise(async move {
             let outcome = match (caller, input) {

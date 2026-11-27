@@ -146,6 +146,33 @@ impl fmt::Display for CallError {
 
 impl StdError for CallError {}
 
+/// What [`Request::call_with`] can say besides the function and its input:
+/// `CallOptions::trace(traceparent).tracestate("vendor=1")`.
+#[derive(Debug, Clone, Default)]
+pub struct CallOptions {
+    /// A W3C `traceparent` for the function to be called under, such as
+    /// that of the handler's own span. Without one, or with one that isn't
+    /// valid, the function gets the request's.
+    pub traceparent: Option<String>,
+    /// The `tracestate` that goes with `traceparent`. Ignored without it.
+    pub tracestate: Option<String>,
+}
+
+impl CallOptions {
+    /// A call under the span this `traceparent` names.
+    pub fn trace(traceparent: impl Into<String>) -> CallOptions {
+        CallOptions {
+            traceparent: Some(traceparent.into()),
+            ..CallOptions::default()
+        }
+    }
+
+    pub fn tracestate(mut self, tracestate: impl Into<String>) -> CallOptions {
+        self.tracestate = Some(tracestate.into());
+        self
+    }
+}
+
 /// A request for [`Request::fetch`]: `Outbound::get("/v1/charges")`, or
 /// `Outbound::post("/v1/charges").json(&charge)?`.
 #[derive(Debug, Clone, Default)]
@@ -285,6 +312,22 @@ impl Request {
         name: &str,
         input: impl serde::Serialize,
     ) -> std::result::Result<T, CallError> {
+        self.call_with(name, input, CallOptions::default()).await
+    }
+
+    /// [`Request::call`] with options, such as the span the function is
+    /// called under:
+    ///
+    /// ```ignore
+    /// let options = CallOptions::trace(my_span);
+    /// let vector: Vec<f32> = req.call_with("embed", input, options).await?;
+    /// ```
+    pub async fn call_with<T: DeserializeOwned>(
+        &self,
+        name: &str,
+        input: impl serde::Serialize,
+        options: CallOptions,
+    ) -> std::result::Result<T, CallError> {
         let fail = |status, message: String| CallError {
             status,
             message,
@@ -298,7 +341,7 @@ impl Request {
         };
         let input = serde_json::to_value(input)
             .map_err(|e| fail(400, format!("can't encode the input for \"{name}\": {e}")))?;
-        let json = calls.call(&self.id, name, input).await?;
+        let json = calls.call(&self.id, name, input, options).await?;
         serde_json::from_value(json)
             .map_err(|e| fail(502, format!("the answer from \"{name}\" doesn't fit: {e}")))
     }

@@ -567,6 +567,14 @@ pub struct Call {
     /// The function's input.
     #[serde(default)]
     pub json: Value,
+    /// A W3C `traceparent` for the function to be called under, such as
+    /// that of the handler's own span. Without one that's valid, the
+    /// function gets the calling request's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traceparent: Option<String>,
+    /// The `tracestate` that goes with `traceparent`. Ignored without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracestate: Option<String>,
 }
 
 /// How a [`Call`] ended. Sent by Unsworn.
@@ -1060,6 +1068,29 @@ mod tests {
             Bytes::from_static(b"\x00binary\nbody"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_calls_trace_is_optional() {
+        let plain = r#"{"type":"call","id":"c-1","request":"r-1","function":"f"}"#;
+        let Ok(Message::Call(call)) = Message::from_json(plain.as_bytes()) else {
+            panic!("not a call");
+        };
+        assert_eq!((&call.traceparent, &call.tracestate), (&None, &None));
+        // What isn't given isn't written.
+        let written = serde_json::to_string(&Message::Call(call.clone())).unwrap();
+        assert!(!written.contains("trace"), "{written}");
+
+        let call = Call {
+            traceparent: Some("00-a-b-01".into()),
+            tracestate: Some("vendor=1".into()),
+            ..call
+        };
+        let written = serde_json::to_vec(&Message::Call(call.clone())).unwrap();
+        let Ok(Message::Call(read)) = Message::from_json(&written) else {
+            panic!("not a call");
+        };
+        assert_eq!(read, call);
     }
 
     #[test]

@@ -26,7 +26,7 @@ use unsworn_core::Project;
 use unsworn_core::config::ResponseValidation;
 use unsworn_core::config::{Listen, Protocol};
 use unsworn_core::project::{Function, Outbound, Runtime, Target};
-use unsworn_core::trace::TraceContext;
+use unsworn_core::trace::{TRACEPARENT, TRACESTATE, TraceContext};
 use unsworn_core::{calls, outbound};
 use unsworn_proto::{
     self as proto, Cancel, Chunk, DecodeError, End, Frame, Json, LogLevel, Message,
@@ -706,9 +706,12 @@ impl Pools {
 
     /// Sends a request to the outbound service `name`, with the service's
     /// own headers added, and reads its answer. `Err` is the status and
-    /// the reason the caller gets when there's no answer to give. When the
-    /// caller's request is sampled, it's recorded as a span, which the
-    /// service is told is its parent.
+    /// the reason the caller gets when there's no answer to give.
+    ///
+    /// With telemetry, it's recorded as a span, which the service is told
+    /// is its parent: below the span the `headers` name, if they name one,
+    /// and the caller's otherwise. Either way only when that one is
+    /// sampled.
     async fn send_outbound(
         &self,
         name: &str,
@@ -718,11 +721,36 @@ impl Pools {
         body: Body,
         caller: &Caller,
     ) -> Result<(http::response::Parts, Bytes), (u16, String)> {
-        let Some(parent) = self.parent_span(caller) else {
+        // A `traceparent` the handler sent: `Some(None)` is one that
+        // isn't sampled.
+        let own = self.telemetry.as_ref().and_then(|tracer| {
+            let own = TraceContext::from_headers(|name| {
+                let found = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name));
+                found.map(|(_, value)| value.as_str())
+            })?;
+            Some(Parent::from_trace(tracer, Some(&own)))
+        });
+        let named = own.is_some();
+        let Some(parent) = own.unwrap_or_else(|| self.parent_span(caller)) else {
             let trace = caller.trace.as_ref();
             return self
                 .reach(name, method, path, headers, body, caller, trace)
                 .await;
+        };
+        // The new span's headers go in place of the handler's.
+        let rest: BTreeMap<String, String>;
+        let headers = if named {
+            let of_trace = |name: &str| {
+                name.eq_ignore_ascii_case(TRACEPARENT) || name.eq_ignore_ascii_case(TRACESTATE)
+            };
+            rest = headers
+                .iter()
+                .filter(|(name, _)| !of_trace(name))
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+            &rest
+        } else {
+            headers
         };
         let known = telemetry::known_method(&method.to_ascii_uppercase());
         let mut attributes = vec![
@@ -1798,7 +1826,7 @@ impl Pool {
     /// sends the worker the result, unless the request the call was made
     /// for ends first.
     fn function_call(self: &Arc<Self>, w: &Arc<Worker>, call: proto::Call) {
-        let (pools, caller) = match self.caller_of(w, &call.request) {
+        let (pools, mut caller) = match self.caller_of(w, &call.request) {
             Ok(found) => found,
             Err((status, error)) => {
                 let _ =
@@ -1811,6 +1839,10 @@ impl Pool {
                 return;
             }
         };
+        // The handler's own span, if it named one for the function to be
+        // called under.
+        let own = calls::given_trace(call.traceparent.as_deref(), call.tracestate.as_deref());
+        caller.trace = own.or(caller.trace);
         let worker = w.clone();
         Self::spawn_for(w, call.request.clone(), async move {
             let result = pools.call_function(call, caller).await;

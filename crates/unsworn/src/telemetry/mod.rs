@@ -479,10 +479,10 @@ impl Parent {
         }
     }
 
-    /// The span a handler was told is its parent, when it's a sampled one.
-    /// With `[telemetry]` that's always one of the server's own: a sampled
-    /// request goes on with the server's span, and any other keeps a header
-    /// that isn't marked sampled, or none.
+    /// The span a trace names, when it's a sampled one. It's one of the
+    /// server's own, which a handler was told is its parent, or one the
+    /// handler named for a call or a fetch. Either way the parent decides:
+    /// nothing is recorded below one that isn't marked sampled.
     pub fn from_trace(tracer: &Arc<Tracer>, trace: Option<&TraceContext>) -> Option<Parent> {
         let trace = trace?;
         let (trace_id, span_id, sampled) = parse(&trace.traceparent)?;

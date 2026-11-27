@@ -242,6 +242,7 @@ impl Calls {
         request: &str,
         function: &str,
         json: serde_json::Value,
+        options: crate::CallOptions,
     ) -> Result<serde_json::Value, crate::CallError> {
         let fail = |status, message: &str| crate::CallError {
             status,
@@ -272,6 +273,8 @@ impl Calls {
             request: request.to_string(),
             function: function.to_string(),
             json,
+            traceparent: options.traceparent,
+            tracestate: options.tracestate,
         })));
         let result = rx
             .await

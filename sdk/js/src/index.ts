@@ -173,6 +173,18 @@ export interface Caller {
   depth: number;
 }
 
+/** What a `ctx.call` can say besides the function and its input. */
+export interface CallOptions {
+  /**
+   * A W3C `traceparent` for the function to be called under, such as that
+   * of the handler's own span. Without one, or with one that isn't valid,
+   * the function gets the request's.
+   */
+  traceparent?: string;
+  /** The `tracestate` that goes with `traceparent`. Ignored without it. */
+  tracestate?: string;
+}
+
 /** Verified credentials plus anything added by `before` handlers. */
 export interface Context {
   /** Claims from the verified token or API key, plus `scheme`. */
@@ -188,7 +200,7 @@ export interface Context {
    * gives back the JSON it answered with. Throws a `CallError` when the
    * function answers `400` or above, or can't be called.
    */
-  call<K extends FunctionName>(name: K, input?: Input<K>): Promise<Output<K>>;
+  call<K extends FunctionName>(name: K, input?: Input<K>, options?: CallOptions): Promise<Output<K>>;
   /**
    * Sends a request to an outbound service: one the config declares under
    * `[outbound.<name>]`. Unsworn makes the request and adds the service's

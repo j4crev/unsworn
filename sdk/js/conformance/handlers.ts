@@ -18,6 +18,7 @@ export const echo: Handler = (req, ctx) => ({
     context: ctx,
     json: req.json,
     header: req.headers["x-test"],
+    traceparent: req.headers.traceparent ?? null,
   },
 });
 
@@ -71,8 +72,9 @@ export const upload: Handler = async (req) => ({
 export const content: Handler = () => contentReply([{ type: "text", text: "hi" }], { ok: true });
 
 export const relay: Handler = async (req, ctx) => {
+  const { fn, traceparent, tracestate } = req.query as Record<string, string | undefined>;
   try {
-    return { json: { answer: await ctx.call(String(req.query.fn), req.json) } };
+    return { json: { answer: await ctx.call(String(fn), req.json, { traceparent, tracestate }) } };
   } catch (err) {
     if (err instanceof CallError) return { json: { failed: err.status } };
     throw err;

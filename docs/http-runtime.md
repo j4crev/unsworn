@@ -194,9 +194,11 @@ the token and the address are written once.
 Calls and fetches work as they do from a handler. A function gets the
 request's verified context, and its `ctx.caller.from` is
 `runtime:<name>`. It has no more time than the route's `timeout` leaves.
-The request's `traceparent` goes along. The function's `input` schema and
-the service's allowed `methods` and `paths` are checked. The statuses are
-the ones in [`functions.md`](functions.md#calling) and
+The request's `traceparent` goes along, unless the app's call or fetch has
+one of its own, as OpenTelemetry instrumentation gives it: then what's
+called is [below that span](tracing.md#a-handlers-own-span). The function's
+`input` schema and the service's allowed `methods` and `paths` are checked.
+The statuses are the ones in [`functions.md`](functions.md#calling) and
 [`outbound.md`](outbound.md#fetching), with these differences:
 
 - **Unsworn's own refusals carry an `Unsworn-Error` header** with the

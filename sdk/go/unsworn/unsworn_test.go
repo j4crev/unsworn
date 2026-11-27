@@ -3,6 +3,7 @@ package unsworn
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -101,6 +102,35 @@ func TestCodecsRoundTrip(t *testing.T) {
 		}
 		if _, _, err = dec.read(); err == nil {
 			t.Fatalf("%s: expected EOF", name)
+		}
+	}
+}
+
+func TestCallSendsTheHandlersTrace(t *testing.T) {
+	var out bytes.Buffer
+	w := &worker{codec: &jsonlCodec{}, out: &out, canCall: true, calls: map[string]chan *inMessage{}}
+	// A request that has ended: the call is sent, and nothing waits for it.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := &Request{ID: "r-1", ctx: ctx, w: w}
+	sent := func(err error) string {
+		t.Helper()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v", err)
+		}
+		line := out.String()
+		out.Reset()
+		return line
+	}
+
+	line := sent(req.Call("embed", nil, nil))
+	if strings.Contains(line, "trace") {
+		t.Fatalf("a plain call names no trace: %s", line)
+	}
+	line = sent(req.CallWith("embed", nil, nil, &CallOptions{Traceparent: "00-a-b-01", Tracestate: "vendor=1"}))
+	for _, want := range []string{`"traceparent":"00-a-b-01"`, `"tracestate":"vendor=1"`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("no %s in %s", want, line)
 		}
 	}
 }

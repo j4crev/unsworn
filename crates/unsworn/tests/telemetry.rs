@@ -807,3 +807,115 @@ fn a_redirect_isnt_followed() {
     server.terminate();
     assert!(elsewhere.seen().is_empty(), "{:?}", elsewhere.seen());
 }
+
+/// A handler that names a span of its own for what it calls and fetches.
+const OWN_SPAN: &str = r#"
+from unsworn import json
+
+def search(req, ctx):
+    trace = req.headers["traceparent"].split("-")[1]
+    own = f"00-{trace}-1111111111111111-01"
+    mine = ctx.call("inner", {}, traceparent=own, tracestate="mine=1")
+    ctx.fetch("echo", "/own", headers={"traceparent": own, "tracestate": "mine=1"})
+    # Not marked sampled.
+    unsampled = f"00-{trace}-2222222222222222-00"
+    quiet = ctx.call("inner", {}, traceparent=unsampled, tracestate="mine=2")
+    ctx.fetch("echo", "/quiet", headers={"Traceparent": unsampled})
+    # Not one a receiver would accept.
+    ignored = ctx.call("inner", {}, traceparent="nonsense", tracestate="mine=3")
+    return json({"own": own, "unsampled": unsampled, "mine": mine, "quiet": quiet, "ignored": ignored})
+
+def inner(req, ctx):
+    return json([req.headers.get("traceparent"), req.headers.get("tracestate")])
+"#;
+
+#[test]
+fn a_handlers_own_span_can_parent_its_calls() {
+    if !common::has("python3") {
+        eprintln!("skipping: python3 not found");
+        return;
+    }
+    let (collector, echo) = (Fake::start(), Fake::start());
+    let config = format!(
+        r#"
+[runtimes.py]
+extensions = [".py"]
+command = "python3 -u -m unsworn.worker"
+protocol = "framed"
+
+[outbound.otel]
+url = "http://{}"
+
+[outbound.echo]
+url = "http://{}"
+
+[telemetry]
+outbound = "otel"
+sample = 1
+
+[[route]]
+path = "/search"
+handler = "h.py#search"
+
+[[function]]
+name = "inner"
+handler = "h.py#inner"
+"#,
+        collector.addr, echo.addr
+    );
+    let project = Project::new(&[("unsworn.toml", &config), ("h.py", OWN_SPAN)]);
+    let mut server = project.serve();
+    let incoming = format!("00-{TRACE}-{PARENT}-01");
+    let response = server.request(
+        "GET",
+        "/search",
+        &[("traceparent", &incoming), ("tracestate", "vendor=1")],
+        b"",
+    );
+    assert_eq!(response.status, 200, "{}", server.logs());
+    server.terminate();
+    let said = response.json();
+
+    // The request, its handler, two calls and one fetch: nothing for what
+    // was asked under a span that isn't sampled.
+    let spans = collector.spans();
+    assert_eq!(spans.len(), 5, "{}", server.logs());
+    let servers = of_kind(&spans, SpanKind::Server);
+    let search = below(&spans, servers[0], "handler h.py#search");
+    // The handler's own span, which it records itself.
+    let own = |name: &str| {
+        let found: Vec<&Span> = spans
+            .iter()
+            .filter(|s| s.name == name && hex(&s.parent_span_id) == "1111111111111111")
+            .collect();
+        assert_eq!(found.len(), 1, "{name}");
+        assert_eq!(hex(&found[0].trace_id), TRACE);
+        found[0]
+    };
+
+    let call = own("call inner");
+    assert_eq!(
+        said["mine"],
+        serde_json::json!([traceparent(call), "mine=1"])
+    );
+    let fetch = own("GET");
+    let seen = echo.request("/own");
+    assert_eq!(seen.headers["traceparent"], traceparent(fetch));
+    assert_eq!(seen.headers["tracestate"], "mine=1");
+
+    // Passed on as they came.
+    assert_eq!(
+        said["quiet"],
+        serde_json::json!([said["unsampled"], "mine=2"])
+    );
+    let seen = echo.request("/quiet");
+    assert_eq!(seen.headers["traceparent"], said["unsampled"]);
+    assert!(!seen.headers.contains_key("tracestate"));
+
+    // Ignored: the call is under the handler's call, as any other.
+    let call = below(&spans, search, "call inner");
+    assert_eq!(
+        said["ignored"],
+        serde_json::json!([traceparent(call), "vendor=1"])
+    );
+}

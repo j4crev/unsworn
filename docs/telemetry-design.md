@@ -256,10 +256,12 @@ build differed by, so what Phase 3 adds doesn't show.
 
 ### Phase 4: a handler's span as the parent of `ctx.call`
 
+**Done.**
+
 | | |
 |---|---|
 | Scope | An optional `traceparent` on the protocol's `call` message, used instead of the request's own, and a way to pass it to `ctx.call` in each SDK |
-| Files | `unsworn-proto`, `workers.rs`, `sdk/js`, `sdk/python`, `sdk/go`, `sdk/rust`; [`protocol.md`](protocol.md), [`tracing.md`](tracing.md) |
+| Files | `unsworn-proto`, `unsworn-core`: `calls.rs`; `unsworn-wasm`, `workers.rs`, `workers/endpoint.rs`, `sdk/js`, `sdk/python`, `sdk/go`, `sdk/rust`; [`protocol.md`](protocol.md), [`tracing.md`](tracing.md) |
 | Done when | In each SDK, a function called from a handler's span is its child |
 
 - **The protocol.** The `call` message takes an optional `traceparent` and

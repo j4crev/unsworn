@@ -78,6 +78,10 @@ Unsworn checks the input against the function's schema, and the function
 gets this request's context and what is left of its time. With
 `unsworn gen ts`, the name, the input and the result are typed.
 
+The function joins the request's [trace](../../docs/tracing.md). To have it
+called under a span of your own, pass that span's `traceparent`:
+`ctx.call("embed", input, { traceparent })`.
+
 ## Reaching other services
 
 `ctx.fetch` sends a request to an [outbound service](../../docs/outbound.md),

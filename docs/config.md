@@ -630,7 +630,9 @@ are recorded.
 For a sampled request, each handler, upstream, function and service gets a
 `traceparent` naming the span Unsworn recorded for asking it. A request
 that isn't sampled keeps the `traceparent` and `tracestate` it came with,
-and gets none if it had none.
+and gets none if it had none. A handler can name a [span of its
+own](tracing.md#a-handlers-own-span) for a call or a fetch, whose sampled
+flag then decides for that one.
 
 `/_unsworn/health` and `/_unsworn/stats` aren't recorded.
 
@@ -690,7 +692,8 @@ else:
 - `handler`, `before`, `proxy` and verifier spans are below the request's.
   A `call` or `ctx.fetch` span is below the span of whatever asked: a
   `handler`, a `before`, another `call`, or the `proxy` span for an HTTP
-  runtime.
+  runtime. When the call or fetch names a span of its own with a sampled
+  `traceparent`, it's below that one instead.
 - `unsworn.wait_ms` is how long the call waited for a worker, starting one
   included.
 - `unsworn.upstream` is the upstream as the config has it, without any user,

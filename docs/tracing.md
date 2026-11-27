@@ -10,7 +10,7 @@ services record end up in one trace:
 |---|---|
 | A handler, a `before` handler, a `shadow` handler | The request's headers, as they came (`req.headers.traceparent`) |
 | A `proxy` route's upstream | The same two headers, forwarded as they came |
-| A [function](functions.md) called with `ctx.call` | `traceparent` and `tracestate` as its only headers, and so on down through any function it calls |
+| A [function](functions.md) called with `ctx.call` | `traceparent` and `tracestate` as its only headers (the request's, or those the call [names](#a-handlers-own-span)), and so on down through any function it calls |
 | An [outbound service](outbound.md) reached with `ctx.fetch` | The two headers, added to the request |
 
 There's nothing to configure for that. To also have Unsworn record spans
@@ -38,8 +38,9 @@ shows in the trace, rejected requests included. For a sampled request:
   function, an outbound service.
 - Each gets a `traceparent` naming the span for asking it, so the spans it
   records nest under that one, and what a handler calls or fetches nests
-  under the handler's. A `tracestate` goes along with the trace it came
-  with, and is removed when Unsworn starts a new one.
+  under the handler's, or under a [span of its own](#a-handlers-own-span)
+  that it names. A `tracestate` goes along with the trace it came with, and
+  is removed when Unsworn starts a new one.
 
 For a handler that calls a function and a service:
 
@@ -87,25 +88,50 @@ of whatever sent the request, next to the handler's own span, not below
 it. For a request Unsworn samples, they're below Unsworn's span for the
 handler call, next to the handler's own span. The trace is still one trace.
 
-For an outbound request, a handler that has a span of its own sends that
-instead, and Unsworn leaves it alone:
+To put them below the handler's span, give the call or the fetch that
+span's `traceparent`, and its `tracestate` if it has one. An OpenTelemetry
+SDK writes both for the span that's active:
 
 ```ts
-await ctx.fetch("index", "/query", { json: { vector }, headers: { traceparent: mySpan } });
+import { context, propagation } from "@opentelemetry/api";
+import type { CallOptions } from "@unswornjs/sdk";
+
+const trace: CallOptions = {};
+propagation.inject(context.active(), trace); // sets traceparent and tracestate
+
+const vector = await ctx.call("embed", { text: req.query.q }, trace);
+const hits = await ctx.fetch("index", "/query", { json: { vector }, headers: { ...trace } });
 ```
 
-A service whose `headers` in the config set `traceparent` keeps that one.
-Either way, Unsworn still records its span for a sampled request's fetch,
-but the service isn't below it.
+| | `ctx.call` | `ctx.fetch` |
+|---|---|---|
+| TypeScript | `ctx.call("embed", input, { traceparent, tracestate })` | `headers: { traceparent, tracestate }` |
+| Python | `ctx.call("embed", input, traceparent=..., tracestate=...)` | `headers={"traceparent": ...}` |
+| Go | `req.CallWith("embed", input, &out, &unsworn.CallOptions{Traceparent: ...})` | `Headers` in `unsworn.Outbound` |
+| Rust | `req.call_with("embed", input, CallOptions::trace(...))` | `Outbound::post(path).header("traceparent", ...)` |
+| An [HTTP runtime](http-runtime.md#calling-functions-and-outbound-services) | the headers of `POST /call/embed` | the headers of the fetch |
 
-`ctx.call` takes no headers yet, so a function can't be a child of a span
-the handler made. It's a child of the sender's span or, for a request
-Unsworn sampled, of the `call` span below Unsworn's span for the handler.
-It also means that when the handler got no `traceparent` and started the
-trace itself, the function doesn't join it.
+An HTTP runtime whose app is instrumented with OpenTelemetry sends these
+headers on its calls and fetches without any code for it.
+
+- **The function or service is below that span.** With
+  [`[telemetry]`](config.md#telemetry), when the `traceparent` is marked
+  sampled, Unsworn records its span for the call or fetch below it, and the
+  function or service is below Unsworn's.
+- **One that isn't marked sampled is passed on as it is,** and Unsworn
+  records no span for that call or fetch: the parent decides.
+- **A call ignores a `traceparent` a receiver wouldn't accept,** and uses
+  the request's. Among a fetch's headers, it goes to the service as any
+  header does.
+- **A service whose `headers` in the config set `traceparent` keeps that
+  one.**
+
+A handler that got no `traceparent`, and started the trace itself, has its
+functions and services join it the same way.
 
 ## Where it works
 
-Passing the headers on works on every target: servers and containers,
-Cloudflare Workers and serverless functions. Unsworn's own spans come from
-the server only, in a container and on AWS Lambda included.
+Passing the headers on works on every target, a handler's own among them:
+servers and containers, Cloudflare Workers and serverless functions.
+Unsworn's own spans come from the server only, in a container and on AWS
+Lambda included.

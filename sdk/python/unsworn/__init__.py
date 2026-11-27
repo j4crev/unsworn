@@ -135,7 +135,14 @@ class Context(dict):
     #: Set by the worker: how to ask Unsworn to run a function.
     _call: Any = None
 
-    def call(self, name: str, input: Any = None) -> Any:  # noqa: A002
+    def call(
+        self,
+        name: str,
+        input: Any = None,  # noqa: A002
+        *,
+        traceparent: str | None = None,
+        tracestate: str | None = None,
+    ) -> Any:
         """Calls a ``[[function]]``: a handler in any language, declared in
         the config.
 
@@ -149,12 +156,16 @@ class Context(dict):
 
             vector = ctx.call("embed", {"text": text})
 
+        The function joins the request's trace. To have it called under a
+        span of your own instead, pass that span's W3C ``traceparent``, and
+        its ``tracestate`` if it has one. One that isn't valid is ignored.
+
         Raises :class:`CallError` when the function answers 400 or above,
         or can't be called.
         """
         if self._call is None:
             raise CallError(501, "ctx.call works in a handler that Unsworn is running")
-        return self._call(name, input)
+        return self._call(name, input, traceparent, tracestate)
 
     #: Set by the worker: how to ask Unsworn for a request to a service.
     _fetch: Any = None

@@ -16,7 +16,7 @@ import {
   splitRef,
   toBytes,
 } from "./handler.ts";
-import { CallError, FetchError, type FetchInit } from "./index.ts";
+import { CallError, type CallOptions, FetchError, type FetchInit } from "./index.ts";
 
 /**
  * `ctx.call` and `ctx.fetch` for a handler that runs in the core's own
@@ -33,11 +33,18 @@ function calls(project: Unsworn | undefined, bridge: Bridge, caller: string | un
     return answer;
   };
   return {
-    call: (name: string, input?: unknown) =>
+    call: (name: string, input?: unknown, options?: CallOptions) =>
       quiet(
         (async () => {
           if (!project || caller === undefined) throw new CallError(404, none);
-          const r = await project.callFunction(caller, name, JSON.stringify(input ?? null), bridge);
+          const r = await project.callFunction(
+            caller,
+            name,
+            JSON.stringify(input ?? null),
+            bridge,
+            options?.traceparent,
+            options?.tracestate,
+          );
           if (r.status < 400) return r.json ?? null;
           throw new CallError(r.status, r.error ?? `the function answered ${r.status}`, r.json);
         })(),

@@ -19,6 +19,8 @@ use unsworn_core::project::{Function, Outbound};
 
 /// The function the suite gives the `relay` handler to call.
 const ECHO_FUNCTION: &str = "conformance.echo";
+/// The `traceparent` of a span of the `relay` handler's own.
+const OWN_SPAN: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 
 const HANDLERS: &[&str] = &[
     "echo", "text", "binary", "status", "stream", "fail", "slow", "crash", "allow", "deny",
@@ -443,7 +445,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
 
     // calls to functions
     if pool.calls_supported() {
-        let relay = |function: &str| {
+        let relay = |function: &str, traceparent: Option<&str>| {
             let mut req = Request {
                 handler: format!("{handlers}#relay"),
                 route: "/conformance".into(),
@@ -452,6 +454,9 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
                 ..Default::default()
             };
             req.query.insert("fn".into(), json!(function));
+            if let Some(traceparent) = traceparent {
+                req.query.insert("traceparent".into(), json!(traceparent));
+            }
             req.json = Some(unsworn_proto::Json::unchecked(Bytes::from_static(
                 br#"{"n": 1}"#,
             )));
@@ -471,7 +476,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
                 serde_json::from_slice::<Value>(&text).map_err(|e| format!("not JSON: {e}"))
             })
         };
-        let res = answer(relay("no.such.function").await).and_then(|v| {
+        let res = answer(relay("no.such.function", None).await).and_then(|v| {
             if v == json!({ "failed": 404 }) {
                 Ok(())
             } else {
@@ -482,7 +487,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
         // The function is another handler of this worker, so the worker
         // has to take its request while it waits for the answer.
         if pool.max_in_flight() > 1 {
-            let res = answer(relay(ECHO_FUNCTION).await).and_then(|v| {
+            let res = answer(relay(ECHO_FUNCTION, None).await).and_then(|v| {
                 let got = &v["answer"];
                 if got["json"] != json!({ "n": 1 }) {
                     Err(format!("got {v}, want the input back as answer.json"))
@@ -493,6 +498,14 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
                 }
             });
             s.report("a call to a function gives back its answer", res);
+            let res = answer(relay(ECHO_FUNCTION, Some(OWN_SPAN)).await).and_then(|v| {
+                if v["answer"]["traceparent"] == json!(OWN_SPAN) {
+                    Ok(())
+                } else {
+                    Err(format!("got {v}, want {OWN_SPAN} as answer.traceparent"))
+                }
+            });
+            s.report("a call can name the handler's own span as its parent", res);
         } else {
             println!("  - calling a function: max_in_flight is 1, so only a failing call is tried");
         }
