@@ -262,6 +262,27 @@ build differed by, so what Phase 3 adds doesn't show.
 | Files | `unsworn-proto`, `workers.rs`, `sdk/js`, `sdk/python`, `sdk/go`, `sdk/rust`; [`protocol.md`](protocol.md), [`tracing.md`](tracing.md) |
 | Done when | In each SDK, a function called from a handler's span is its child |
 
+- **The protocol.** The `call` message takes an optional `traceparent` and
+  `tracestate`. A `traceparent` a receiver would accept is used instead of
+  the calling request's, with the `tracestate` sent beside it. One that
+  isn't is ignored, as is a `tracestate` alone: the call goes ahead with
+  the request's trace. An older Unsworn ignores both fields, so a newer SDK
+  still works with it.
+- **HTTP runtimes.** A call to `$UNSWORN_CALLS_URL/call/<function>` uses
+  the request's own `traceparent` and `tracestate` headers by the same
+  rule. An app instrumented with OpenTelemetry sets them without any code.
+- **With `[telemetry]`,** a sampled `traceparent` from a handler is the
+  parent of Unsworn's `call` span, and the function goes below that. One
+  that isn't sampled gets no span, and is passed on as it came: the parent
+  decides.
+- **`ctx.fetch` too.** With `[telemetry]`, a sampled `traceparent` among a
+  fetch's headers is the parent of Unsworn's span for the fetch, and the
+  service gets that span's, with the handler's `tracestate`. Any other
+  header goes to the service as before, and without `[telemetry]` nothing
+  changes.
+- **Edge and serverless** take the same options for `ctx.call`. They record
+  no spans until Phase 5.
+
 ### Phase 5: later
 
 - **Metrics over OTLP.** Until then, an OpenTelemetry Collector can scrape
