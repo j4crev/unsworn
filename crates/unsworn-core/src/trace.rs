@@ -1,9 +1,11 @@
 //! W3C Trace Context: the `traceparent` and `tracestate` headers a request
 //! arrives with, carried to what its handler asks Unsworn to do for it.
 //!
-//! Unsworn doesn't start traces or record spans. A request's own headers
-//! reach its handlers and a `proxy` route's upstream as they came. What
-//! this adds is the rest of the way: a function a handler calls and a
+//! The core doesn't start traces or record spans. A request's own headers
+//! reach its handlers and a `proxy` route's upstream as the core got them.
+//! (With `[telemetry]`, the server gives it a sampled request whose
+//! `traceparent` names the server's span.) What this adds is the rest of
+//! the way: a function a handler calls and a
 //! request a handler makes to an outbound service get the same headers, so
 //! their spans join the trace the request belongs to.
 //!

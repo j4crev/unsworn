@@ -8,7 +8,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
@@ -25,10 +25,12 @@ use unsworn_core::pipeline::{
     StaticRequest,
 };
 use unsworn_core::policy::HandlerRef;
+use unsworn_core::trace::{TRACEPARENT, TRACESTATE};
 
 use super::support::{Body, BoxError, empty, full, json_response};
 use super::{Generation, Shared, access, proxy, static_files};
 use crate::store::{Store, now_ms};
+use crate::telemetry::{Answered, SpanRecord, Started, Tracer};
 use crate::workers::{self, CallBody, ReplyBody};
 
 static X_REQUEST_ID: http::HeaderName = http::HeaderName::from_static("x-request-id");
@@ -72,6 +74,8 @@ async fn handle_inner(
 
     let mut in_handlers = Duration::ZERO;
     let mut runtime = None;
+    // Set when the request is sampled.
+    let mut traced = None;
     let (mut resp, route_label) = if path == "/_unsworn/health" {
         // Anyone can ask here, so outside dev mode the answer is only
         // whether the instance is healthy. The admin listener says why.
@@ -91,6 +95,10 @@ async fn handle_inner(
             in_handlers: AtomicU64::new(0),
             runtime: std::sync::OnceLock::new(),
         };
+        let mut req = req;
+        if let Some(tracer) = &generation.telemetry {
+            traced = Traced::begin(tracer, &mut req, start);
+        }
         let req = req.map(|b| b.map_err(BoxError::from).boxed_unsync());
         let handled = generation.router.handle(&host, req, client_ip).await;
         in_handlers = Duration::from_nanos(host.in_handlers.load(Ordering::Relaxed));
@@ -108,6 +116,7 @@ async fn handle_inner(
         in_handlers,
         runtime.as_ref(),
     );
+    let trace_id = traced.as_ref().map(|t| t.span.trace_id.hex());
     access::log(&access::Entry {
         method: method.as_str(),
         path,
@@ -116,8 +125,60 @@ async fn handle_inner(
         ms: (elapsed.as_secs_f64() * 1_000_000.0).round() / 1000.0,
         ip: client_ip,
         id: request_id.to_str().unwrap_or_default(),
+        trace_id: trace_id.as_deref(),
     });
+    if let Some(traced) = traced {
+        let answered = Answered {
+            started_at: traced.started_at,
+            elapsed,
+            method: method.as_str(),
+            path,
+            tls,
+            route: &route_label,
+            status,
+            client: client_ip,
+            version: traced.version,
+            request_id: request_id.to_str().unwrap_or_default(),
+            runtime: runtime.as_ref(),
+            in_handlers,
+        };
+        traced
+            .tracer
+            .record(SpanRecord::new(&traced.span, answered));
+    }
     resp
+}
+
+/// A sampled request: what's noted before the pipeline takes it.
+struct Traced<'a> {
+    tracer: &'a Tracer,
+    span: Started,
+    /// The wall clock's time when the request's own timing started.
+    started_at: SystemTime,
+    version: http::Version,
+}
+
+impl<'a> Traced<'a> {
+    /// Samples a request. A sampled one goes on with this span as its
+    /// parent, so its handlers, upstream, functions and services nest under
+    /// it. Any other keeps the headers it came with: a span id that's never
+    /// sent would leave their spans without a parent.
+    fn begin(tracer: &'a Tracer, req: &mut Request<Incoming>, start: Instant) -> Option<Self> {
+        let span = tracer.start(req.headers())?;
+        let traceparent = HeaderValue::try_from(span.traceparent()).ok()?;
+        req.headers_mut().insert(TRACEPARENT, traceparent);
+        // A `tracestate` belongs to the `traceparent` it came with.
+        if span.new_root {
+            req.headers_mut().remove(TRACESTATE);
+        }
+        let now = SystemTime::now();
+        Some(Traced {
+            tracer,
+            span,
+            started_at: now.checked_sub(start.elapsed()).unwrap_or(now),
+            version: req.version(),
+        })
+    }
 }
 
 fn into_body(body: core::Body<Body>) -> Body {

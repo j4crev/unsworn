@@ -150,7 +150,9 @@ which calls back into the binary for I/O.
 11. **Transform and respond.** Header rules apply, the cache is filled and the
     response is sent.
 12. **Observe.** The access log and metrics record the request, with how
-    long of it was spent waiting for handlers.
+    long of it was spent waiting for handlers. With
+    [`[telemetry]`](config.md#telemetry), a sampled request is also recorded
+    as a span.
 
 A rejected request stops at the step that rejects it, and a cache hit stops
 at step 9. Routes with a `respond`, `redirect`, `static` or `proxy` action

@@ -30,6 +30,8 @@ pub struct Entry<'a> {
     pub ms: f64,
     pub ip: IpAddr,
     pub id: &'a str,
+    /// The trace of a request that's recorded as a span.
+    pub trace_id: Option<&'a str>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -90,16 +92,7 @@ pub fn flush() {
 
 pub fn log(entry: &Entry<'_>) {
     let Some(batched) = BATCHED.get() else {
-        tracing::info!(
-            target: "access",
-            method = %entry.method,
-            path = %entry.path,
-            status = entry.status,
-            route = %entry.route,
-            ms = entry.ms,
-            ip = %entry.ip,
-            id = %entry.id,
-        );
+        event(entry);
         return;
     };
     let full = {
@@ -117,17 +110,49 @@ pub fn log(entry: &Entry<'_>) {
     }
 }
 
+/// The entry as a `tracing` event. A line has a `trace_id` only when there
+/// is one, and an event's fields are fixed, so there are two.
+fn event(entry: &Entry<'_>) {
+    match entry.trace_id {
+        None => tracing::info!(
+            target: "access",
+            method = %entry.method,
+            path = %entry.path,
+            status = entry.status,
+            route = %entry.route,
+            ms = entry.ms,
+            ip = %entry.ip,
+            id = %entry.id,
+        ),
+        Some(trace_id) => tracing::info!(
+            target: "access",
+            method = %entry.method,
+            path = %entry.path,
+            status = entry.status,
+            route = %entry.route,
+            ms = entry.ms,
+            ip = %entry.ip,
+            id = %entry.id,
+            trace_id = %trace_id,
+        ),
+    }
+}
+
 /// Appends the line `tracing` would write for the entry.
 fn line(out: &mut Vec<u8>, format: Format, now: SystemTime, entry: &Entry<'_>) {
     let mut text = Text(out);
     match format {
         Format::Text => {
             timestamp(&mut text, now);
-            let _ = writeln!(
+            let _ = write!(
                 text,
                 "  INFO access: method={} path={} status={} route={} ms={:?} ip={} id={}",
                 entry.method, entry.path, entry.status, entry.route, entry.ms, entry.ip, entry.id
             );
+            if let Some(trace_id) = entry.trace_id {
+                let _ = write!(text, " trace_id={trace_id}");
+            }
+            let _ = writeln!(text);
         }
         Format::Json => {
             text.0.extend_from_slice(b"{\"timestamp\":\"");
@@ -143,6 +168,10 @@ fn line(out: &mut Vec<u8>, format: Format, now: SystemTime, entry: &Entry<'_>) {
             json(text.0, &entry.ms);
             let _ = write!(text, ",\"ip\":\"{}\",\"id\":", entry.ip);
             json(text.0, entry.id);
+            if let Some(trace_id) = entry.trace_id {
+                text.0.extend_from_slice(b",\"trace_id\":");
+                json(text.0, trace_id);
+            }
             text.0.extend_from_slice(b",\"target\":\"access\"}\n");
         }
     }
@@ -249,6 +278,7 @@ mod tests {
                 ms: 0.123,
                 ip: "127.0.0.1".parse().unwrap(),
                 id: "1a2b-3f",
+                trace_id: None,
             },
             Entry {
                 method: "POST",
@@ -258,6 +288,7 @@ mod tests {
                 ms: 12.0,
                 ip: "2001:db8::7".parse().unwrap(),
                 id: "from the client",
+                trace_id: None,
             },
             Entry {
                 method: "DELETE",
@@ -267,6 +298,7 @@ mod tests {
                 ms: 0.0,
                 ip: "10.1.2.3".parse().unwrap(),
                 id: "x",
+                trace_id: None,
             },
             Entry {
                 method: "GET",
@@ -276,6 +308,17 @@ mod tests {
                 ms: 123_456_789.25,
                 ip: "10.1.2.3".parse().unwrap(),
                 id: "y",
+                trace_id: None,
+            },
+            Entry {
+                method: "GET",
+                path: "/traced",
+                status: 200,
+                route: "/traced",
+                ms: 0.5,
+                ip: "10.1.2.3".parse().unwrap(),
+                id: "z",
+                trace_id: Some("4bf92f3577b34da6a3ce929d0e0e4736"),
             },
         ]
     }
@@ -286,20 +329,7 @@ mod tests {
         let builder = tracing_subscriber::fmt()
             .with_ansi(false)
             .with_writer(sink.clone());
-        let emit = || {
-            for entry in entries() {
-                tracing::info!(
-                    target: "access",
-                    method = %entry.method,
-                    path = %entry.path,
-                    status = entry.status,
-                    route = %entry.route,
-                    ms = entry.ms,
-                    ip = %entry.ip,
-                    id = %entry.id,
-                );
-            }
-        };
+        let emit = || entries().iter().for_each(event);
         match format {
             Format::Text => tracing::subscriber::with_default(builder.finish(), emit),
             Format::Json => {

@@ -182,10 +182,36 @@ impl Server {
     pub fn pid(&self) -> u32 {
         self.child.id()
     }
+
+    /// Asks the server to shut down, as a deployment does, and waits until
+    /// it has exited.
+    pub fn terminate(&mut self) {
+        let sent = Command::new("kill")
+            .arg("-TERM")
+            .arg(self.child.id().to_string())
+            .status();
+        assert!(
+            sent.is_ok_and(|s| s.success()),
+            "couldn't signal the server"
+        );
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                assert!(status.success(), "{status}:\n{}", self.logs());
+                return;
+            }
+            assert!(Instant::now() < deadline, "still running:\n{}", self.logs());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
+        // After `terminate`, its process id may be another's by now.
+        if let Ok(Some(_)) = self.child.try_wait() {
+            return;
+        }
         let _ = Command::new("kill")
             .arg("-TERM")
             .arg(self.child.id().to_string())

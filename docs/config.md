@@ -63,7 +63,7 @@ into a second programming language.
 [[route]]      # explicit routes, and policies for routes from other sources
 [[function]]   # optional: handlers that other handlers call by name
 [outbound.*]   # optional: services Unsworn calls for handlers, adding their credentials
-[telemetry]    # optional: OpenTelemetry traces, sent to an outbound service (not sent yet)
+[telemetry]    # optional: OpenTelemetry traces, sent to an outbound service
 ```
 
 ### `[server]`
@@ -590,10 +590,6 @@ the request and adds `headers`, so no handler holds the credential. See
 
 ### `[telemetry]`
 
-**Nothing is sent yet.** This section is checked and listed in
-`unsworn plan`; the spans and the exporter come with Phase 1 of
-[`telemetry-design.md`](telemetry-design.md).
-
 ```toml
 [outbound.otel]
 url     = "https://otlp.example.com"
@@ -607,22 +603,75 @@ service_name = "api"                             # optional
 sample       = 0.1                               # optional; default: 0
 ```
 
-Where Unsworn sends OpenTelemetry traces. There's no URL here:
-`outbound` names an `[outbound.<name>]` service, and spans go to its
-`url` over OTLP/HTTP, with its `headers`. The service has to be declared
-and has to allow `POST /v1/traces`. An `http://` URL to another machine
-gets a warning. `OTEL_EXPORTER_OTLP_ENDPOINT` and
-`OTEL_EXPORTER_OTLP_HEADERS` aren't read, so the environment can't send
-spans somewhere else.
+OpenTelemetry traces: the server records a span for each request it
+samples and sends it over OTLP/HTTP. How that fits into a trace is in
+[`tracing.md`](tracing.md).
 
-`service_name` defaults to `OTEL_SERVICE_NAME`, then `unsworn`.
+#### Where spans go
 
-`sample` is the share, from 0 to 1, of the requests arriving without a
-`traceparent` that start a trace. A request that arrives with one follows
-its sampled flag. At 0, only requests that arrive sampled are recorded.
+There's no URL here: `outbound` names an `[outbound.<name>]` service, and
+spans are sent with `POST /v1/traces` to its `url`, with its `headers` and
+within its `timeout`. The service has to be declared and has to allow that
+request. An `http://` URL to another machine gets a warning. Redirects
+aren't followed. `OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`
+are ignored, with a warning, so the environment can't send spans somewhere
+else. A handler can `ctx.fetch` the service as it can any other.
 
-A handler can `ctx.fetch` the service as it can any other. Cloudflare,
-Vercel and Netlify targets ignore the section.
+#### Which requests
+
+A request that arrives with a `traceparent` follows its sampled flag,
+whatever `sample` is. That also means a client that sends a sampled one
+has its request recorded. `sample` is the share, from 0 to 1, of the
+other requests that start a trace. At 0, only requests that arrive sampled
+are recorded.
+
+A sampled request goes on to its handlers, upstream, functions and
+services with a `traceparent` that names Unsworn's span. A request that
+isn't sampled keeps the `traceparent` and `tracestate` it came with, and
+gets none if it had none.
+
+`/_unsworn/health` and `/_unsworn/stats` aren't recorded.
+
+#### The span
+
+One `SERVER` span per sampled request, from when Unsworn read the request
+to when it had the response's headers. It's named for the method and the
+route, such as `GET /users/{id}`, or the method alone when no route
+matched. A response of `500` or above sets its status to error.
+
+| Attribute | Value |
+|---|---|
+| `http.request.method` | The method, or `_OTHER` for one that isn't standard |
+| `url.path` | The path without its query string, up to 2,048 bytes |
+| `url.scheme` | `http` or `https`, as the connection to Unsworn was |
+| `http.route` | The route's pattern, when one matched |
+| `http.response.status_code` | The status |
+| `client.address` | The client's address, as `trusted_proxies` makes it |
+| `network.protocol.version` | `1.0`, `1.1` or `2` |
+| `unsworn.request_id` | The `x-request-id`, as in the access log |
+| `unsworn.runtime` | The runtime that ran the route's handler, if one did |
+| `unsworn.in_handlers_ms` | How long the request waited for handlers |
+
+The resource's `service.name` is `service_name`, else `OTEL_SERVICE_NAME`,
+else the one in `OTEL_RESOURCE_ATTRIBUTES`, else `unsworn`. The other
+attributes in `OTEL_RESOURCE_ATTRIBUTES` (`key=value`, separated by commas,
+percent-encoded) are added to the resource.
+
+A recorded request's access log line also has its `trace_id`.
+
+#### Sending
+
+Spans are sent in batches of 512, or 5 s after a batch's first span, one
+request to the collector at a time. No request waits for the collector. Up to 2,048 spans wait their turn; when
+that many are waiting, new ones are dropped. A batch the service doesn't
+answer with a `2xx` is dropped too: there are no retries. Lost spans are
+counted in a warning, at most one a minute. On shutdown, what's waiting is
+sent, taking up to 5 s, or `[server].shutdown_timeout` if that's shorter.
+
+Only the server sends spans, in a container and on AWS Lambda included.
+Lambda freezes it between invocations, so spans can arrive late or be
+lost there. Cloudflare, Vercel and Netlify targets ignore the section.
 
 ### `{env.NAME}`
 

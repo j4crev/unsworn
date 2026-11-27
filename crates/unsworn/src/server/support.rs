@@ -164,8 +164,8 @@ pub fn build_client() -> HttpClient {
         .build(https)
 }
 
-/// The methods metrics name. Any other is counted as `OTHER`.
-const KNOWN_METHODS: &[&str] = &[
+/// The methods metrics and spans name. Metrics count any other as `OTHER`.
+pub(crate) const KNOWN_METHODS: &[&str] = &[
     "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE",
 ];
 

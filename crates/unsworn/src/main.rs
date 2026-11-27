@@ -25,6 +25,7 @@ mod plan;
 mod scale;
 mod server;
 mod store;
+mod telemetry;
 mod top;
 mod workers;
 

@@ -861,7 +861,7 @@ impl Outbound {
 /// The path spans are POSTed to, below the telemetry service's URL.
 pub const TRACES_PATH: &str = "/v1/traces";
 
-/// Where spans go (`[telemetry]`). Nothing sends them yet: see
+/// Where spans go (`[telemetry]`). The server sends them; see
 /// `docs/telemetry-design.md`.
 #[derive(Debug, Clone)]
 pub struct Telemetry {

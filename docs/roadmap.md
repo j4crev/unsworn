@@ -208,16 +208,16 @@ on the way out. In the order planned:
      writes the server's image with AWS's Lambda Web Adapter in it, which
      replaces the Node function that target used to build. See
      [`lambda.md`](lambda.md).
-7. **OpenTelemetry traces.** A request's `traceparent` is already carried
-   through `ctx.call` and `ctx.fetch` ([`tracing.md`](tracing.md)), but
-   Unsworn records no spans of its own. The design and each phase are in
+7. **OpenTelemetry traces.** Spans of Unsworn's own, next to the
+   `traceparent` it carries through `ctx.call` and `ctx.fetch`
+   ([`tracing.md`](tracing.md)). The design and each phase are in
    [`telemetry-design.md`](telemetry-design.md).
-   - **Phase 0: config and checks.** `[telemetry]` names an `[outbound]`
-     service to send spans to, checked when the config is compiled and
-     listed in `unsworn plan`.
-   - **Phase 1: a span for every sampled request, exported** over
-     OTLP/HTTP by the server, once the size of the dependencies has been
-     measured.
+   - ~~**Phase 0: config and checks.**~~ Done: `[telemetry]` names an
+     `[outbound]` service to send spans to, checked when the config is
+     compiled and listed in `unsworn plan`.
+   - ~~**Phase 1: a span for every sampled request, exported.**~~ Done: the
+     server sends them over OTLP/HTTP, with an exporter of its own. See
+     [`config.md`](config.md#telemetry).
    - **Phase 2: spans for the server's I/O:** handler calls and the wait
      for a worker, upstreams, verifiers, functions and services.
    - **Phase 3: the pipeline's steps,** such as auth, rate limits,

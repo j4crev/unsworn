@@ -1,13 +1,15 @@
 # OpenTelemetry: the design and its phases
 
-The plan for spans and an exporter in Unsworn. It isn't a page about using
-them yet: today Unsworn records no spans (see [`tracing.md`](tracing.md)).
+The design of Unsworn's spans and exporter, and the phases they're built
+in. How to use what's built is in [`config.md`](config.md#telemetry) and
+[`tracing.md`](tracing.md).
 
 ## Why
 
-Today a trace has a gap wherever Unsworn is. With spans of its own:
+Without spans of its own, a trace has a gap wherever Unsworn is. With them,
+once every phase is built:
 
-| What a user gets | Today |
+| What a user gets | Without them |
 |---|---|
 | Unsworn's own time in the trace: auth, rate limits, validation, the wait for a worker, cache lookups | Invisible. A slow handler and a busy worker pool look the same |
 | Rejected and failed requests (`401`, `429`, `413`, `504`, `502`) traced | No span records them unless the handler ran and recorded one |
@@ -87,6 +89,8 @@ Unsworn's own use.
 
 ### Phase 0: config and checks
 
+**Done.**
+
 | | |
 |---|---|
 | Scope | The `[telemetry]` section; the checks above when the config is compiled; a `telemetry` entry in `unsworn plan`, with `unsworn diff` marking what got looser (telemetry added, a higher `sample`, another service); `unsworn check --target` saying the section is ignored on Cloudflare, Vercel and Netlify. Nothing is exported |
@@ -94,6 +98,8 @@ Unsworn's own use.
 | Done when | A bad service name, a service that doesn't allow the export and a `sample` outside 0 to 1 fail `unsworn check`, and the plan shows the entry |
 
 ### Phase 1: a span for every sampled request, exported
+
+**Done.**
 
 For the `unsworn` binary only.
 
@@ -110,14 +116,16 @@ that's never exported would leave the spans below it with no parent.
 **Export.** Spans wait in a queue of 2,048. When it's full, new ones are
 dropped and a warning says how many. They're sent in batches of 512, or
 5 s after the first one in a batch, and what's waiting is sent when the
-server shuts down. A failed batch isn't retried yet.
+server shuts down. A failed batch isn't retried yet. One request is in
+flight at a time, so at most 512 spans are sent in each round trip to the
+collector: a distant or slow one drops spans under load. A span keeps up to
+2,048 bytes of the path, since the client picks its length.
 
 **The exporter is written by hand,** as the metrics and the access log are:
 OTLP/HTTP with protobuf, and no new runtime dependencies. The
 OpenTelemetry crates aren't used:
 
-- `opentelemetry-otlp` needs the gRPC stack's message types even to send
-  over HTTP.
+- They'd add several crates to the binary, to encode a few messages.
 - The crates change their API in most releases.
 - Spans have to be sent as the `[outbound]` service says, with the
   server's own HTTP client, whatever builds them.
@@ -127,6 +135,24 @@ OpenTelemetry crates aren't used:
 - The part of the protobuf format spans need is small.
 
 The tests decode what's sent with OpenTelemetry's own message definitions.
+
+**The cost.** The `telemetry` group in [`bench/run.py`](../bench/run.py)
+measured the cost on a shared server with 4 vCPUs, three runs of each, next
+to a build without any of this:
+
+| CPU µs per request (median) | `respond` | `proxy` |
+|---|--:|--:|
+| A build without telemetry | 20.6 | 42.0 |
+| No `[telemetry]` | 18.1 | 39.9 |
+| 1% sampled | 17.5 | 38.2 |
+| Every request sampled | 23.7 | 43.8 |
+
+With telemetry off, no cost shows. Sampling everything added about 2 to
+6 µs. Runs of the same row differed by up to 9 µs, and requests per second
+by too much to compare, so these are rough: measure on a quiet machine
+before publishing figures in [`benchmarks.md`](benchmarks.md). No span was
+dropped at up to 60,000 requests a second, with a collector on the same
+machine that discards them.
 
 ### Phase 2: spans for the I/O the server does
 
@@ -182,5 +208,8 @@ The tests decode what's sent with OpenTelemetry's own message definitions.
   upstreams are written in their own sections and aren't checked against
   `[outbound]`. A rule that Unsworn sends nothing to an undeclared host
   would have to cover them too.
+- **Clients decide too.** A request that arrives with a sampled
+  `traceparent` is recorded whatever `sample` is, so any client can add to
+  what's sent. A setting could limit that to `trusted_proxies`.
 - **Lambda.** It freezes the process between invocations, so spans may be
   sent late or lost.
