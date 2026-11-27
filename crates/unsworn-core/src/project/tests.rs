@@ -2508,6 +2508,30 @@ fn telemetry_is_checked_against_its_service() {
 }
 
 #[test]
+fn metrics_and_logs_are_allowed_by_their_service() {
+    let https = "https://otlp.example.com";
+    let everything = "paths = [\"/v1/traces\", \"/v1/metrics\", \"/v1/logs\"]";
+    let cfg = telemetry(https, everything, "otel", "metrics = true\nlogs = true");
+    let t = project(&[("unsworn.toml", &cfg)]).telemetry.unwrap();
+    assert_eq!((t.metrics, t.logs), (true, true));
+    // Off unless asked for, and then the service needn't allow them.
+    let traces = "paths = [\"/v1/traces\"]";
+    for keys in ["", "metrics = false\nlogs = false"] {
+        let cfg = telemetry(https, traces, "otel", keys);
+        let t = project(&[("unsworn.toml", &cfg)]).telemetry.unwrap();
+        assert_eq!((t.metrics, t.logs), (false, false));
+    }
+    for signal in ["metrics", "logs"] {
+        let cfg = telemetry(https, traces, "otel", &format!("{signal} = true"));
+        let e = errors(&[("unsworn.toml", &cfg)]);
+        assert_eq!(e.len(), 1, "{e:#?}");
+        let expected =
+            format!("[telemetry].{signal}: [outbound.otel] doesn't allow the path /v1/{signal}");
+        assert!(e[0].contains(&expected), "{}", e[0]);
+    }
+}
+
+#[test]
 fn telemetry_over_plain_http_warns_unless_it_stays_here() {
     let warned = |url: &str| {
         let cfg = telemetry(url, "", "otel", "");

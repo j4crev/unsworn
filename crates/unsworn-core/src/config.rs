@@ -61,6 +61,12 @@ pub struct RawTelemetry {
     /// proxy in `[server].trusted_proxies` that has a `traceparent` follows
     /// its sampled flag instead. Default: 0.
     pub sample: Option<f64>,
+    /// Whether the server's metrics are sent too, with `POST /v1/metrics`,
+    /// which the service must then allow. Default: false.
+    pub metrics: Option<bool>,
+    /// Whether the server's logs are sent too, worker output included, with
+    /// `POST /v1/logs`, which the service must then allow. Default: false.
+    pub logs: Option<bool>,
 }
 
 /// `[outbound.<name>]`: a service handlers reach with `ctx.fetch(name, ...)`.

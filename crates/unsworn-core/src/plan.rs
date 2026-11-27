@@ -1046,6 +1046,13 @@ fn telemetry(t: &crate::project::Telemetry) -> Entry {
         e.plain("service_name", name);
     }
     e.push("sample", t.sample.to_string(), Weigh::Share(t.sample));
+    let sends: Vec<String> = [(true, "traces"), (t.metrics, "metrics"), (t.logs, "logs")]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, what)| what.to_string())
+        .collect();
+    // Each kind of data added is more that leaves the server.
+    e.push("sends", sends.join(", "), Weigh::Allow(sends.clone()));
     e
 }
 

@@ -595,12 +595,14 @@ the request and adds `headers`, so no handler holds the credential. See
 url     = "https://otlp.example.com"
 headers = { Authorization = "Bearer {env.OTLP_TOKEN}" }
 methods = ["POST"]                               # optional
-paths   = ["/v1/traces"]                         # optional
+paths   = ["/v1/traces", "/v1/metrics", "/v1/logs"]  # optional
 
 [telemetry]
 outbound     = "otel"                            # required
 service_name = "api"                             # optional
 sample       = 0.1                               # optional; default: 0
+metrics      = true                              # optional; default: false
+logs         = true                              # optional; default: false
 ```
 
 OpenTelemetry traces: for each request it samples, the server records a
@@ -612,8 +614,10 @@ and sends them over OTLP/HTTP. How that fits into a trace is in
 
 There's no URL here: `outbound` names an `[outbound.<name>]` service, and
 spans are sent with `POST /v1/traces` to its `url`, with its `headers` and
-within its `timeout`. The service has to be declared and has to allow that
-request. An `http://` URL to another machine gets a warning. Redirects
+within its `timeout`. With `metrics` or `logs` on, those go there too, with
+`POST /v1/metrics` and `POST /v1/logs`. The service has to be declared and
+has to allow each of these requests that's used. An `http://` URL to another
+machine gets a warning. Redirects
 aren't followed. `OTEL_EXPORTER_OTLP_ENDPOINT`,
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`
 are ignored, with a warning, so the environment can't send spans somewhere

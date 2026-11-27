@@ -861,6 +861,11 @@ impl Outbound {
 /// The path spans are POSTed to, below the telemetry service's URL.
 pub const TRACES_PATH: &str = "/v1/traces";
 
+/// The path metrics are POSTed to, below the telemetry service's URL.
+pub const METRICS_PATH: &str = "/v1/metrics";
+/// The path logs are POSTed to, below the telemetry service's URL.
+pub const LOGS_PATH: &str = "/v1/logs";
+
 /// Where spans go (`[telemetry]`). The server sends them; see
 /// `docs/telemetry-design.md`.
 #[derive(Debug, Clone)]
@@ -874,6 +879,10 @@ pub struct Telemetry {
     /// whose sampled flag isn't taken: see
     /// [`decide`](crate::telemetry::decide).
     pub sample: f64,
+    /// The server's metrics go there too, with `POST` to [`METRICS_PATH`].
+    pub metrics: bool,
+    /// Its logs go there too, with `POST` to [`LOGS_PATH`].
+    pub logs: bool,
 }
 
 /// One file of typed request models to write; see [`crate::codegen`].
@@ -2052,10 +2061,19 @@ impl<'h> Compiler<'h> {
                 return None;
             }
         };
-        if let Err(why) = service.allows("POST", TRACES_PATH) {
-            self.diags.push(Diagnostic::error(at, why).hint(format!(
-                "spans are sent with `POST {TRACES_PATH}`, which the service's `methods` and `paths` have to allow"
-            )));
+        let metrics = t.metrics.unwrap_or(false);
+        let logs = t.logs.unwrap_or(false);
+        let sent = [
+            (true, at, "spans", TRACES_PATH),
+            (metrics, "[telemetry].metrics", "metrics", METRICS_PATH),
+            (logs, "[telemetry].logs", "logs", LOGS_PATH),
+        ];
+        for (_, at, what, path) in sent.into_iter().filter(|(on, ..)| *on) {
+            if let Err(why) = service.allows("POST", path) {
+                self.diags.push(Diagnostic::error(at, why).hint(format!(
+                    "{what} are sent with `POST {path}`, which the service's `methods` and `paths` have to allow"
+                )));
+            }
         }
         self.warn_plain_http(
             &service.url,
@@ -2066,6 +2084,8 @@ impl<'h> Compiler<'h> {
             outbound: service.clone(),
             service_name: t.service_name.clone(),
             sample,
+            metrics,
+            logs,
         })
     }
 

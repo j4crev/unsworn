@@ -29,12 +29,22 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
         "lambda" => return lambda(project),
         _ => functions(project, target),
     };
-    // Only the server sends spans.
-    if project.telemetry.is_some() {
+    // Only the server sends telemetry.
+    if let Some(telemetry) = &project.telemetry {
         out.push(Diagnostic::warning(
             "[telemetry]",
             format!("ignored on {target}: no spans are sent from there"),
         ));
+        let server_only = [
+            (telemetry.metrics, "[telemetry].metrics"),
+            (telemetry.logs, "[telemetry].logs"),
+        ];
+        for (_, at) in server_only.into_iter().filter(|(on, _)| *on) {
+            out.push(Diagnostic::warning(
+                at,
+                format!("ignored on {target}: only the server sends them"),
+            ));
+        }
     }
     // Functions, outbound services and shadows run on every target. What
     // differs is said here.
@@ -452,6 +462,8 @@ url = "https://otlp.example.com"
 
 [telemetry]
 outbound = "otel"
+metrics = true
+logs = true
 "#,
         );
         for target in ["cloudflare", "vercel", "netlify"] {
@@ -459,14 +471,16 @@ outbound = "otel"
                 .into_iter()
                 .map(|d| (d.is_error(), d.location))
                 .collect();
-            assert_eq!(warnings, [(false, "[telemetry]".to_string())], "{target}");
+            let expected = ["[telemetry]", "[telemetry].metrics", "[telemetry].logs"]
+                .map(|at| (false, at.to_string()));
+            assert_eq!(warnings, expected, "{target}");
         }
         assert_eq!(check(&p, "server"), vec![]);
         // Lambda runs the server.
         assert!(
             check(&p, "lambda")
                 .iter()
-                .all(|d| d.location != "[telemetry]")
+                .all(|d| !d.location.starts_with("[telemetry]"))
         );
     }
 

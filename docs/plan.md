@@ -102,8 +102,9 @@ What's in it:
   URL, the names of the headers Unsworn adds, and the methods and paths
   handlers may use.
 - **`telemetry`** for [`[telemetry]`](config.md#telemetry): the outbound
-  service spans go to, the service name if the config gives one, and the
-  share sampled.
+  service spans go to, the service name if the config gives one, the share
+  sampled, and what it's sent (`traces`, and `metrics` and `logs` when
+  they're on).
 
 A route's `timeout` and `max_body` are written only when they differ from
 the server's.
@@ -158,7 +159,7 @@ requests coming in or data about them going out:
 | `max_body` | raised |
 | `params`, `query`, `headers`, `body`, a tool's or function's `input` | the check is removed |
 | an outbound service's `methods`, `paths` | removed, or more allowed |
-| `[telemetry]` | added; for `outbound`, another service; for `sample`, raised |
+| `[telemetry]` | added; for `outbound`, another service; for `sample`, raised; for `sends`, more added |
 
 The opposite is marked `(tighter)`. Anything else is listed without a
 mark: a different schema, a different scheme, a handler that moved to

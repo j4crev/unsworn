@@ -2132,6 +2132,20 @@
       "additionalProperties": false,
       "description": "`[telemetry]`: where Unsworn sends spans, and of how many requests. It\nhas no URL of its own: spans only go to a declared outbound service.",
       "properties": {
+        "logs": {
+          "description": "Whether the server's logs are sent too, worker output included, with\n`POST /v1/logs`, which the service must then allow. Default: false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "metrics": {
+          "description": "Whether the server's metrics are sent too, with `POST /v1/metrics`,\nwhich the service must then allow. Default: false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "outbound": {
           "description": "The name of the `[outbound.<name>]` that spans are sent to over\nOTLP/HTTP. It must allow `POST /v1/traces`.",
           "type": "string"
