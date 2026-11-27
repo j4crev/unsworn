@@ -13,6 +13,7 @@ use super::Problem;
 use crate::policy::HandlerRef;
 use crate::project::Proxy;
 use crate::store::{RateLimiter, ResponseCache};
+use crate::telemetry::{self, Attr};
 use crate::{MaybeSend, MaybeSync};
 
 /// A body the core passes around without reading: empty, bytes it holds,
@@ -186,6 +187,46 @@ pub enum Step<'a> {
     ResponseInvalid,
     /// A rule answered the request instead of its action.
     Rejected(Rule),
+}
+
+impl Step<'_> {
+    /// What spans say of the step, so every host names it the same.
+    pub fn describe(&self) -> StepDescription {
+        let (event, says, sets) = match *self {
+            Step::Authenticated(scheme) => {
+                let scheme = Attr::Str(telemetry::cut(scheme).to_string());
+                let scheme = ("unsworn.auth.scheme", scheme);
+                ("unsworn.authenticated", Some(scheme.clone()), Some(scheme))
+            }
+            Step::Checked => ("unsworn.checked", None, None),
+            Step::Cache(what) => {
+                let what = ("unsworn.cache", Attr::Static(what.name()));
+                ("unsworn.cache", Some(what.clone()), Some(what))
+            }
+            Step::ResponseInvalid => (
+                "unsworn.response_invalid",
+                None,
+                Some(("unsworn.response_validation", Attr::Static("failed"))),
+            ),
+            Step::Rejected(rule) => (
+                "unsworn.rejected",
+                Some(("unsworn.rule", Attr::Static(rule.name()))),
+                Some(("unsworn.rejected_by", Attr::Static(rule.name()))),
+            ),
+        };
+        StepDescription { event, says, sets }
+    }
+}
+
+/// What a [`Step`] adds to its request's span.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepDescription {
+    /// The event's name.
+    pub event: &'static str,
+    /// The event's attribute.
+    pub says: Option<(&'static str, Attr)>,
+    /// The attribute the step sets on the span itself.
+    pub sets: Option<(&'static str, Attr)>,
 }
 
 /// What the cache did for a request.

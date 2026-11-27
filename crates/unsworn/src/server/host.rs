@@ -30,7 +30,9 @@ use unsworn_core::trace::{TRACEPARENT, TRACESTATE};
 use super::support::{Body, BoxError, empty, full, json_response};
 use super::{Generation, Shared, access, proxy, static_files};
 use crate::store::{Store, now_ms};
-use crate::telemetry::{self, Attr, Ended, Outcome, Parent, SpanRecord, Started, Steps, Tracer};
+use crate::telemetry::{
+    self, Attr, Ended, Outcome, Parent, Recorder, SpanRecord, Started, Steps, Tracer,
+};
 use crate::workers::{self, CallBody, ReplyBody, Timed};
 
 static X_REQUEST_ID: http::HeaderName = http::HeaderName::from_static("x-request-id");
@@ -138,7 +140,7 @@ async fn handle_inner(
         let outcome = Outcome {
             route: &route_label,
             status,
-            runtime: runtime.as_ref(),
+            runtime: runtime.as_deref(),
             in_handlers,
         };
         traced.record(elapsed, Some(outcome));
@@ -215,7 +217,7 @@ impl Traced {
     fn record(&mut self, elapsed: Duration, outcome: Option<Outcome<'_>>) {
         self.recorded = true;
         let ended = Ended {
-            started_at: self.started_at,
+            start_unix_nano: telemetry::unix_nano(self.started_at),
             elapsed,
             method: self.method.as_str(),
             path: self.uri.path(),
@@ -410,14 +412,8 @@ impl Host for ServerHost {
         };
         let handles = request.phase == unsworn_proto::Phase::Handle;
         let span = self.span.as_ref().map(|parent| {
-            let what = if handles { "handler" } else { "before" };
-            let span = parent.child(
-                format!("{what} {}", handler.raw),
-                vec![
-                    ("unsworn.handler", Attr::Str(handler.raw.clone())),
-                    ("unsworn.runtime", Attr::Str(handler.runtime.clone())),
-                ],
-            );
+            let what = telemetry::handler_span(&handler.raw, &handler.runtime, handles);
+            let span = parent.child(what);
             // The handler, and what it asks for, go below this span.
             request
                 .headers
@@ -446,11 +442,7 @@ impl Host for ServerHost {
                 Attr::Double(waited.as_secs_f64() * 1000.0),
             );
             match &reply {
-                Ok(workers::Reply::Response { response, .. }) => {
-                    let status = response.status;
-                    span.set("http.response.status_code", Attr::Int(i64::from(status)));
-                    span.finish(telemetry::failed_status(status));
-                }
+                Ok(workers::Reply::Response { response, .. }) => span.answered(response.status),
                 Ok(workers::Reply::Continue(_)) => span.finish(None),
                 Err(e) => span.finish(Some(e.to_string())),
             }
@@ -473,7 +465,7 @@ impl Host for ServerHost {
 
     fn step(&self, step: Step<'_>) {
         if let Some(steps) = &self.steps {
-            steps.note(step);
+            steps.note(step, telemetry::unix_nano(SystemTime::now()));
         }
     }
 
@@ -580,15 +572,8 @@ impl Host for ServerHost {
         limit: usize,
     ) -> Result<http::Response<Bytes>, FetchError> {
         let span = self.span.as_ref().map(|parent| {
-            let method = telemetry::known_method(request.method().as_str());
-            let mut attributes = vec![("http.request.method", Attr::Static(method))];
-            if let Some(host) = request.uri().host() {
-                attributes.push(("server.address", Attr::Str(host.to_string())));
-            }
-            // Without the query string, which may hold a credential.
-            let path = telemetry::cut(request.uri().path()).to_string();
-            attributes.push(("url.path", Attr::Str(path)));
-            let span = parent.child(method.to_string(), attributes);
+            let what = telemetry::fetch_span(request.method().as_str(), request.uri());
+            let span = parent.child(what);
             if let Ok(value) = HeaderValue::try_from(span.traceparent()) {
                 request.headers_mut().insert(TRACEPARENT, value);
             }
@@ -611,13 +596,9 @@ impl Host for ServerHost {
         let answer = tokio::time::timeout(timeout, call)
             .await
             .unwrap_or(Err(FetchError::Timeout));
-        if let Some(mut span) = span {
+        if let Some(span) = span {
             match &answer {
-                Ok(response) => {
-                    let status = response.status().as_u16();
-                    span.set("http.response.status_code", Attr::Int(i64::from(status)));
-                    span.finish(telemetry::failed_status(status));
-                }
+                Ok(response) => span.answered(response.status().as_u16()),
                 Err(e) => span.finish(Some(e.to_string())),
             }
         }

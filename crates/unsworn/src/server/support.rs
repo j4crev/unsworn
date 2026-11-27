@@ -13,6 +13,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use serde_json::Value;
 use unsworn_core::pipeline::Problem;
+use unsworn_core::telemetry::KNOWN_METHODS;
 
 use crate::store::Store;
 
@@ -163,11 +164,6 @@ pub fn build_client() -> HttpClient {
         .pool_idle_timeout(Duration::from_secs(60))
         .build(https)
 }
-
-/// The methods metrics and spans name. Metrics count any other as `OTHER`.
-pub(crate) const KNOWN_METHODS: &[&str] = &[
-    "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE",
-];
 
 /// A small number for the calling thread, the same every time: its place
 /// in state that's kept per thread so threads don't wait on each other.

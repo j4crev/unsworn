@@ -26,7 +26,7 @@ use unsworn_core::Project;
 use unsworn_core::config::ResponseValidation;
 use unsworn_core::config::{Listen, Protocol};
 use unsworn_core::project::{Function, Outbound, Runtime, Target};
-use unsworn_core::trace::{TRACEPARENT, TRACESTATE, TraceContext};
+use unsworn_core::trace::TraceContext;
 use unsworn_core::{calls, outbound};
 use unsworn_proto::{
     self as proto, Cancel, Chunk, DecodeError, End, Frame, Json, LogLevel, Message,
@@ -580,17 +580,9 @@ impl Pools {
         input: &Value,
         mut caller: Caller,
     ) -> Result<(u16, Value), calls::Failure> {
-        let mut span = self.parent_span(&caller).map(|parent| {
-            // A handler can ask for any name.
-            let name = telemetry::cut(name);
-            parent.child(
-                format!("call {name}"),
-                vec![
-                    ("unsworn.function", Attr::Str(name.to_string())),
-                    ("unsworn.caller", Attr::Str(caller.handler.clone())),
-                ],
-            )
-        });
+        let mut span = self
+            .parent_span(&caller)
+            .map(|parent| parent.child(telemetry::call_span(name, &caller.handler)));
         if let Some(span) = &span {
             caller.trace = Some(span.context());
         }
@@ -724,10 +716,7 @@ impl Pools {
         // A `traceparent` the handler sent: `Some(None)` is one that
         // isn't sampled.
         let own = self.telemetry.as_ref().and_then(|tracer| {
-            let own = TraceContext::from_headers(|name| {
-                let found = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name));
-                found.map(|(_, value)| value.as_str())
-            })?;
+            let own = telemetry::outbound_trace(headers)?;
             Some(Parent::from_trace(tracer, Some(&own)))
         });
         let named = own.is_some();
@@ -740,47 +729,19 @@ impl Pools {
         // The new span's headers go in place of the handler's.
         let rest: BTreeMap<String, String>;
         let headers = if named {
-            let of_trace = |name: &str| {
-                name.eq_ignore_ascii_case(TRACEPARENT) || name.eq_ignore_ascii_case(TRACESTATE)
-            };
-            rest = headers
-                .iter()
-                .filter(|(name, _)| !of_trace(name))
-                .map(|(name, value)| (name.clone(), value.clone()))
-                .collect();
+            rest = telemetry::strip_trace(headers);
             &rest
         } else {
             headers
         };
-        let known = telemetry::known_method(&method.to_ascii_uppercase());
-        let mut attributes = vec![
-            ("http.request.method", Attr::Static(known)),
-            (
-                "unsworn.service",
-                Attr::Str(telemetry::cut(name).to_string()),
-            ),
-        ];
-        let address = self
-            .outbound
-            .get(name)
-            .and_then(|service| service.url.parse::<http::Uri>().ok())
-            .and_then(|url| url.host().map(String::from));
-        if let Some(address) = address {
-            attributes.push(("server.address", Attr::Str(address)));
-        }
-        let asked = path.split('?').next().unwrap_or_default();
-        attributes.push(("url.path", Attr::Str(telemetry::cut(asked).to_string())));
-        let mut span = parent.child(known.to_string(), attributes);
+        let url = self.outbound.get(name).map(|service| service.url.as_str());
+        let span = parent.child(telemetry::service_span(method, name, url, path));
         let trace = span.context();
         let sent = self
             .reach(name, method, path, headers, body, caller, Some(&trace))
             .await;
         match &sent {
-            Ok((parts, _)) => {
-                let status = parts.status.as_u16();
-                span.set("http.response.status_code", Attr::Int(i64::from(status)));
-                span.finish(telemetry::failed_status(status));
-            }
+            Ok((parts, _)) => span.answered(parts.status.as_u16()),
             Err((_, why)) => span.finish(Some(why.clone())),
         }
         sent

@@ -24,7 +24,7 @@ pub use auth::KeyCache;
 pub use flow::{Handled, Router, json_response, problem_response};
 pub use host::{
     BODY_IDLE, Body, BodyError, CacheStep, CallError, Deadline, FetchError, Host, ProxyRequest,
-    Reply, Response, Rule, StaticRequest, Step,
+    Reply, Response, Rule, StaticRequest, Step, StepDescription,
 };
 
 pub(crate) use checks::NOT_UNRESERVED;

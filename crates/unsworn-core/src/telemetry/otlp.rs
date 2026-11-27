@@ -2,9 +2,8 @@
 //! numbers are those of opentelemetry-proto's `trace.proto`, `common.proto`
 //! and `resource.proto`.
 
-use unsworn_core::VERSION;
-
 use super::{Attr, SpanRecord};
+use crate::VERSION;
 
 // How a field's value is laid out.
 const VARINT: u32 = 0;

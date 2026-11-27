@@ -52,12 +52,8 @@ async fn forward_inner(
     // Before the call token is made, which keeps the trace an `http`
     // runtime's server was sent: what it calls goes below this span.
     let mut span = for_calls.span.as_ref().map(|parent| {
-        let method = telemetry::known_method(parts.method.as_str());
-        let mut attributes = vec![("http.request.method", Attr::Static(method))];
-        if let Some(name) = &proxy.runtime {
-            attributes.push(("unsworn.upstream", Attr::Str(format!("runtime:{name}"))));
-        }
-        let span = parent.child(method.to_string(), attributes);
+        let what = telemetry::proxy_span(parts.method.as_str(), proxy.runtime.as_deref());
+        let span = parent.child(what);
         if let Ok(value) = HeaderValue::try_from(span.traceparent()) {
             parts.headers.insert(TRACEPARENT, value);
         }
@@ -125,7 +121,8 @@ async fn forward_inner(
     let req = Request::from_parts(parts, body);
     if let Some(span) = &mut span {
         if proxy.runtime.is_none() {
-            span.set("unsworn.upstream", Attr::Str(without_credentials(upstream)));
+            let upstream = telemetry::without_credentials(upstream);
+            span.set("unsworn.upstream", Attr::Str(upstream));
         }
         let path = telemetry::cut(req.uri().path()).to_string();
         span.set("url.path", Attr::Str(path));
@@ -159,10 +156,8 @@ async fn forward_inner(
         }
     };
     // The span ends with the response's head. A WebSocket's ends here too.
-    if let Some(mut span) = span {
-        let status = resp.status().as_u16();
-        span.set("http.response.status_code", Attr::Int(i64::from(status)));
-        span.finish(telemetry::failed_status(status));
+    if let Some(span) = span {
+        span.answered(resp.status().as_u16());
     }
 
     if resp.status() == StatusCode::SWITCHING_PROTOCOLS
@@ -210,35 +205,5 @@ async fn forward_inner(
 fn unanswered(span: Option<ChildSpan>, why: &str) {
     if let Some(span) = span {
         span.finish(Some(why.to_string()));
-    }
-}
-
-/// An upstream as a span names it: without a user and password or a query,
-/// which are credentials the collector has no use for.
-fn without_credentials(upstream: &str) -> String {
-    let upstream = upstream.split(['?', '#']).next().unwrap_or_default();
-    let Some((scheme, rest)) = upstream.split_once("://") else {
-        return upstream.to_string();
-    };
-    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-    let host = authority.rsplit('@').next().unwrap_or_default();
-    format!("{scheme}://{host}{path}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_span_names_an_upstream_without_its_credentials() {
-        for (upstream, named) in [
-            ("http://app:8080", "http://app:8080"),
-            ("https://user:p%40ss@app/base", "https://app/base"),
-            ("https://u:a@b@app", "https://app"),
-            ("http://app/a@b?key=secret", "http://app/a@b"),
-            ("unix:/run/app.sock", "unix:/run/app.sock"),
-        ] {
-            assert_eq!(without_credentials(upstream), named);
-        }
     }
 }
