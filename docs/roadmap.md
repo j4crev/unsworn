@@ -208,17 +208,30 @@ on the way out. In the order planned:
      writes the server's image with AWS's Lambda Web Adapter in it, which
      replaces the Node function that target used to build. See
      [`lambda.md`](lambda.md).
+7. **OpenTelemetry traces.** A request's `traceparent` is already carried
+   through `ctx.call` and `ctx.fetch` ([`tracing.md`](tracing.md)), but
+   Unsworn records no spans of its own. The design and each phase are in
+   [`telemetry-design.md`](telemetry-design.md).
+   - **Phase 0: config and checks.** `[telemetry]` names an `[outbound]`
+     service to send spans to, checked when the config is compiled and
+     listed in `unsworn plan`.
+   - **Phase 1: a span for every sampled request, exported** over
+     OTLP/HTTP by the server, once the size of the dependencies has been
+     measured.
+   - **Phase 2: spans for the server's I/O:** handler calls and the wait
+     for a worker, upstreams, verifiers, functions and services.
+   - **Phase 3: the pipeline's steps,** such as auth, rate limits,
+     validation and the cache.
+   - **Phase 4: a handler's own span as the parent of `ctx.call`,** in
+     every SDK.
+   - **Phase 5, later:** metrics and logs over OTLP, and the edge and
+     serverless targets.
 
 ## Not scheduled yet
 
 - **Automatic TLS certificates (ACME).** Until then, run behind a platform
   load balancer, Caddy or Cloudflare.
 - **HTTP/3.**
-- **OpenTelemetry** traces and metrics, alongside the Prometheus endpoint.
-  A request's `traceparent` is already carried through `ctx.call` and
-  `ctx.fetch` ([`tracing.md`](tracing.md)). Still to do: spans for
-  Unsworn's own work, an exporter, and a way for a handler to give
-  `ctx.call` its own span as the parent.
 - **More MCP features:** resources and prompts, elicitation, progress and
   change notifications, tasks. See [`mcp.md`](mcp.md#later).
 

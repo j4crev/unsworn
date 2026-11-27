@@ -29,8 +29,8 @@ export async function search(req, ctx) {
 - **It records no spans.** Unsworn's own time (auth, validation, rate
   limits) doesn't show up in a trace, and nothing is exported. A handler
   that wants spans uses its language's OpenTelemetry SDK, reading the
-  context from `req.headers`. Spans and an exporter in Unsworn are on the
-  [roadmap](roadmap.md#not-scheduled-yet).
+  context from `req.headers`. Spans and an exporter in Unsworn are planned
+  in phases ([`telemetry-design.md`](telemetry-design.md)).
 - **It starts no traces.** A request that arrives without a `traceparent`
   gets none. A made-up one would carry a sampling decision Unsworn has no
   grounds for: marked sampled, every service behind it would record every
