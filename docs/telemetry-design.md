@@ -99,16 +99,34 @@ For the `unsworn` binary only.
 
 | | |
 |---|---|
-| Scope | A tracer provider and batched OTLP/HTTP export; a sampler that follows an incoming `traceparent`'s sampled flag and picks `sample` of the requests without one; one `SERVER` span per request with the HTTP semantic-convention attributes; the request's `traceparent` replaced by that span's context, so the propagation there already is nests handlers, upstreams, functions and services under it; `trace_id` in the access log, in both formats; a flush on shutdown |
-| Files | `crates/unsworn/src/telemetry.rs` (new), `server/host.rs` (`handle_inner`), `server/access.rs` |
+| Scope | Batched OTLP/HTTP export; a sampler that follows an incoming `traceparent`'s sampled flag and picks `sample` of the requests without one; one `SERVER` span per sampled request with the HTTP semantic-convention attributes; that request's `traceparent` replaced by the span's context, so the propagation there already is nests handlers, upstreams, functions and services under it; `trace_id` in the access log, in both formats; a flush on shutdown |
+| Files | `crates/unsworn/src/telemetry/` (new), `server/host.rs` (`handle_inner`), `server/access.rs` |
 | Done when | A fake collector receives the spans, `lines_match_what_tracing_writes` still passes, and the overhead is measured |
 
-**The dependency gate comes first.** Add `opentelemetry`,
-`opentelemetry_sdk` and `opentelemetry-otlp` with HTTP/protobuf only (no
-`tonic`, no `reqwest`), then measure the `dist` binary's size and run
-`cargo deny`. If either result isn't acceptable, write a small OTLP/HTTP
-span exporter by hand instead, as the metrics are. `tracing-opentelemetry`
-isn't used: it adds work to every span and ties export to the log filter.
+**A request that isn't sampled is left alone.** It keeps its `traceparent`
+and `tracestate` as they came, and gets none if it had none. A span id
+that's never exported would leave the spans below it with no parent.
+
+**Export.** Spans wait in a queue of 2,048. When it's full, new ones are
+dropped and a warning says how many. They're sent in batches of 512, or
+5 s after the first one in a batch, and what's waiting is sent when the
+server shuts down. A failed batch isn't retried yet.
+
+**The exporter is written by hand,** as the metrics and the access log are:
+OTLP/HTTP with protobuf, and no new runtime dependencies. The
+OpenTelemetry crates aren't used:
+
+- `opentelemetry-otlp` needs the gRPC stack's message types even to send
+  over HTTP.
+- The crates change their API in most releases.
+- Spans have to be sent as the `[outbound]` service says, with the
+  server's own HTTP client, whatever builds them.
+- A span is built after its request, from times the server already
+  records, so a live span object would add cost to every sampled request
+  for nothing.
+- The part of the protobuf format spans need is small.
+
+The tests decode what's sent with OpenTelemetry's own message definitions.
 
 ### Phase 2: spans for the I/O the server does
 
@@ -150,10 +168,11 @@ isn't used: it adds work to every span and ties export to the log filter.
   that exports go only to the service's URL with its headers, and that a
   redirect isn't followed.
 - With telemetry off, the existing tests pass unchanged.
-- Benchmark rows in [`bench/suite.sh`](../bench/suite.sh) with tracing
-  off, sampling 1% and sampling everything, for `respond`, `proxy` and a
-  handler that answers "hello". The goal: off costs nothing measurable,
-  and sampling everything stays within a few µs of CPU per request.
+- A `telemetry` group in [`bench/run.py`](../bench/run.py) with tracing
+  off, sampling 1% and sampling everything, for `respond` and `proxy`,
+  and from Phase 2 a handler that answers "hello". The goal: off costs
+  nothing measurable, and sampling everything stays within a few µs of CPU
+  per request.
 - `cargo fmt`, `cargo clippy`, the core's `wasm32` build, `cargo deny` and
   the `dist` binary's size.
 
@@ -163,3 +182,5 @@ isn't used: it adds work to every span and ties export to the log filter.
   upstreams are written in their own sections and aren't checked against
   `[outbound]`. A rule that Unsworn sends nothing to an undeclared host
   would have to cover them too.
+- **Lambda.** It freezes the process between invocations, so spans may be
+  sent late or lost.
