@@ -42,6 +42,25 @@ pub struct RawConfig {
     /// Services Unsworn calls for handlers, adding each one's credential.
     #[serde(default)]
     pub outbound: BTreeMap<String, RawOutbound>,
+    /// OpenTelemetry traces, sent to one of the `outbound` services.
+    pub telemetry: Option<RawTelemetry>,
+}
+
+/// `[telemetry]`: where Unsworn sends spans, and of how many requests. It
+/// has no URL of its own: spans only go to a declared outbound service.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawTelemetry {
+    /// The name of the `[outbound.<name>]` that spans are sent to over
+    /// OTLP/HTTP. It must allow `POST /v1/traces`.
+    pub outbound: String,
+    /// The service name on the spans. Default: `OTEL_SERVICE_NAME`, then
+    /// "unsworn".
+    pub service_name: Option<String>,
+    /// The share of requests arriving without a `traceparent` that start a
+    /// trace, from 0 to 1. A request with one follows its sampled flag.
+    /// Default: 0.
+    pub sample: Option<f64>,
 }
 
 /// `[outbound.<name>]`: a service handlers reach with `ctx.fetch(name, ...)`.

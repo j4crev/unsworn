@@ -858,6 +858,23 @@ impl Outbound {
     }
 }
 
+/// The path spans are POSTed to, below the telemetry service's URL.
+pub const TRACES_PATH: &str = "/v1/traces";
+
+/// Where spans go (`[telemetry]`). Nothing sends them yet: see
+/// `docs/telemetry-design.md`.
+#[derive(Debug, Clone)]
+pub struct Telemetry {
+    /// The service they're sent to, which allows `POST` to
+    /// [`TRACES_PATH`].
+    pub outbound: Arc<Outbound>,
+    /// `None` leaves the name to the host.
+    pub service_name: Option<String>,
+    /// The share of requests without a `traceparent` that start a trace,
+    /// from 0 to 1.
+    pub sample: f64,
+}
+
 /// One file of typed request models to write; see [`crate::codegen`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Generated {
@@ -905,6 +922,8 @@ pub struct Project {
     pub functions: BTreeMap<String, Arc<Function>>,
     /// `[outbound.<name>]` entries.
     pub outbound: BTreeMap<String, Arc<Outbound>>,
+    /// `[telemetry]`, when it's set.
+    pub telemetry: Option<Telemetry>,
     /// The files of generated types `[gen]` asks for.
     pub generated: Vec<Generated>,
     /// Files read while loading, for watching in dev mode.
@@ -1792,6 +1811,7 @@ impl<'h> Compiler<'h> {
         let functions = self.functions(&raw, server_timeout);
         let outbound = self.outbound(&raw, server_timeout);
         self.check_calls(&functions, &outbound);
+        let telemetry = self.telemetry(&raw, &outbound);
 
         Some(Project {
             config_file: self.config_file.clone(),
@@ -1807,6 +1827,7 @@ impl<'h> Compiler<'h> {
             mcp,
             functions,
             outbound,
+            telemetry,
             generated: self.generated(&raw),
             files: std::mem::take(&mut self.files),
             routes_dir,
@@ -2005,6 +2026,46 @@ impl<'h> Compiler<'h> {
             );
         }
         out
+    }
+
+    /// Spans go only where an outbound service says they may, checked as a
+    /// handler's `fetch` is.
+    fn telemetry(
+        &mut self,
+        raw: &RawConfig,
+        outbound: &BTreeMap<String, Arc<Outbound>>,
+    ) -> Option<Telemetry> {
+        let t = raw.telemetry.as_ref()?;
+        let sample = t.sample.unwrap_or(0.0);
+        if !(0.0..=1.0).contains(&sample) {
+            self.diags.error(
+                "[telemetry].sample",
+                format!("sample is a share of requests, from 0 to 1, not {sample}"),
+            );
+        }
+        let at = "[telemetry].outbound";
+        let service = match crate::outbound::service(outbound, &t.outbound) {
+            Ok(service) => service,
+            Err((_, why)) => {
+                self.diags.error(at, why);
+                return None;
+            }
+        };
+        if let Err(why) = service.allows("POST", TRACES_PATH) {
+            self.diags.push(Diagnostic::error(at, why).hint(format!(
+                "spans are sent with `POST {TRACES_PATH}`, which the service's `methods` and `paths` have to allow"
+            )));
+        }
+        self.warn_plain_http(
+            &service.url,
+            at,
+            "spans, which carry clients' addresses, can be read on the network path",
+        );
+        Some(Telemetry {
+            outbound: service.clone(),
+            service_name: t.service_name.clone(),
+            sample,
+        })
     }
 
     fn generated(&mut self, raw: &RawConfig) -> Vec<Generated> {

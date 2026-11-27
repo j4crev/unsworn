@@ -48,6 +48,8 @@ pub enum Kind {
     Function,
     /// A service Unsworn calls for handlers.
     Outbound,
+    /// Where spans are sent, and of how many requests.
+    Telemetry,
     /// Part of a route's paths with rules of its own.
     Inside,
 }
@@ -106,6 +108,7 @@ impl Entry {
             Kind::Tool => format!("tool {}", self.name),
             Kind::Function => format!("function {}", self.name),
             Kind::Outbound => format!("outbound {}", self.name),
+            Kind::Telemetry => "telemetry".into(),
             Kind::Inside if methods.is_empty() => format!("at {}", self.name),
             Kind::Inside => format!("at {methods} {}", self.name),
         }
@@ -160,9 +163,14 @@ enum Weigh {
     Cors(Cors),
     /// Handlers that run first and may reject the request.
     Before(Vec<String>),
+    /// Where Unsworn sends data about requests: anywhere new is looser.
+    Destination,
+    /// The share of requests whose data is sent: a larger one sends more.
+    Share(f64),
 }
 
-/// Whether a change lets more requests through, fewer, or can't be said.
+/// Whether a change lets more through (requests in, or data about them
+/// out), less, or can't be said.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Looser,
@@ -188,6 +196,8 @@ fn direction(old: Option<&Fact>, new: Option<&Fact>) -> Direction {
             by(new > old, new < old)
         }
         (Some(Weigh::Limit(a)), Some(Weigh::Limit(b))) => by(b > a, b < a),
+        (Some(Weigh::Share(a)), Some(Weigh::Share(b))) => by(b > a, b < a),
+        (Some(Weigh::Destination), Some(Weigh::Destination)) => Looser,
         (Some(Weigh::Allow(a)), Some(Weigh::Allow(b))) => by(superset(b, a), superset(a, b)),
         (Some(Weigh::Cors(a)), Some(Weigh::Cors(b))) => by(cors_wider(b, a), cors_wider(a, b)),
         (None, Some(Weigh::Cors(_))) => Looser,
@@ -292,6 +302,7 @@ impl Plan {
         entries.extend(tools);
         entries.extend(project.functions.values().map(|f| function(project, f)));
         entries.extend(project.outbound.values().map(|o| outbound(project, o)));
+        entries.extend(project.telemetry.as_ref().map(telemetry));
         Plan {
             config_file: project.config_file.clone(),
             entries,
@@ -1028,6 +1039,16 @@ fn outbound(project: &Project, o: &crate::project::Outbound) -> Entry {
     e
 }
 
+fn telemetry(t: &crate::project::Telemetry) -> Entry {
+    let mut e = Entry::new(Kind::Telemetry, "");
+    e.push("outbound", &t.outbound.name, Weigh::Destination);
+    if let Some(name) = &t.service_name {
+        e.plain("service_name", name);
+    }
+    e.push("sample", t.sample.to_string(), Weigh::Share(t.sample));
+    e
+}
+
 /// One changed line of an entry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Change {
@@ -1069,10 +1090,15 @@ impl Diff {
         })
     }
 
-    /// How many changes let more requests through: rules that got looser,
-    /// and new routes and tools that anyone may call.
+    /// How many changes let more through: rules that got looser, new routes
+    /// and tools that anyone may call, and `[telemetry]` being added.
     pub fn looser(&self) -> usize {
-        self.loosened() + self.opened()
+        let exporting = self
+            .items
+            .iter()
+            .filter(|(_, d)| matches!(d, Delta::Added(e) if e.kind == Kind::Telemetry))
+            .count();
+        self.loosened() + self.opened() + exporting
     }
 
     /// How many rules got looser.
@@ -1100,7 +1126,7 @@ impl Diff {
     }
 
     /// The difference as text. A `!` marks each change that lets more
-    /// requests through.
+    /// through.
     pub fn render(&self) -> String {
         if self.is_empty() {
             return "The rules are the same.\n".into();
@@ -1119,15 +1145,19 @@ impl Diff {
                         let rule = line.trim_start();
                         let open = guarded
                             && rule.split_whitespace().collect::<Vec<_>>() == ["auth", "none"];
-                        if open {
+                        let note = if open {
+                            Some("anyone may call it")
+                        } else if entry.kind == Kind::Telemetry && rule.starts_with("outbound ") {
+                            Some("spans are sent there")
+                        } else {
+                            None
+                        };
+                        if let Some(note) = note {
                             // The `!` goes where a looser change has it,
                             // in the margin.
                             let indent = &line[..line.len() - rule.len()];
                             let indent = &indent[..indent.len().saturating_sub(2)];
-                            let _ = writeln!(
-                                out,
-                                "{mark}! {indent}{rule}  (looser: anyone may call it)"
-                            );
+                            let _ = writeln!(out, "{mark}! {indent}{rule}  (looser: {note})");
                         } else {
                             let _ = writeln!(out, "{mark}{line}");
                         }

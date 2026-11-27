@@ -2128,6 +2128,35 @@
       },
       "type": "object"
     },
+    "RawTelemetry": {
+      "additionalProperties": false,
+      "description": "`[telemetry]`: where Unsworn sends spans, and of how many requests. It\nhas no URL of its own: spans only go to a declared outbound service.",
+      "properties": {
+        "outbound": {
+          "description": "The name of the `[outbound.<name>]` that spans are sent to over\nOTLP/HTTP. It must allow `POST /v1/traces`.",
+          "type": "string"
+        },
+        "sample": {
+          "description": "The share of requests arriving without a `traceparent` that start a\ntrace, from 0 to 1. A request with one follows its sampled flag.\nDefault: 0.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "service_name": {
+          "description": "The service name on the spans. Default: `OTEL_SERVICE_NAME`, then\n\"unsworn\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "outbound"
+      ],
+      "type": "object"
+    },
     "RawTls": {
       "additionalProperties": false,
       "properties": {
@@ -2412,6 +2441,17 @@
           "type": "null"
         }
       ]
+    },
+    "telemetry": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RawTelemetry"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "OpenTelemetry traces, sent to one of the `outbound` services."
     }
   },
   "title": "Unsworn configuration",

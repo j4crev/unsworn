@@ -63,6 +63,7 @@ into a second programming language.
 [[route]]      # explicit routes, and policies for routes from other sources
 [[function]]   # optional: handlers that other handlers call by name
 [outbound.*]   # optional: services Unsworn calls for handlers, adding their credentials
+[telemetry]    # optional: OpenTelemetry traces, sent to an outbound service (not sent yet)
 ```
 
 ### `[server]`
@@ -586,6 +587,42 @@ paths   = ["/v1/charges", "/v1/charges/{id}"]    # optional
 A service handlers reach with `ctx.fetch("stripe", path)`. Unsworn makes
 the request and adds `headers`, so no handler holds the credential. See
 [`outbound.md`](outbound.md).
+
+### `[telemetry]`
+
+**Nothing is sent yet.** This section is checked and listed in
+`unsworn plan`; the spans and the exporter come with Phase 1 of
+[`telemetry-design.md`](telemetry-design.md).
+
+```toml
+[outbound.otel]
+url     = "https://otlp.example.com"
+headers = { Authorization = "Bearer {env.OTLP_TOKEN}" }
+methods = ["POST"]                               # optional
+paths   = ["/v1/traces"]                         # optional
+
+[telemetry]
+outbound     = "otel"                            # required
+service_name = "api"                             # optional
+sample       = 0.1                               # optional; default: 0
+```
+
+Where Unsworn sends OpenTelemetry traces. There's no URL here:
+`outbound` names an `[outbound.<name>]` service, and spans go to its
+`url` over OTLP/HTTP, with its `headers`. The service has to be declared
+and has to allow `POST /v1/traces`. An `http://` URL to another machine
+gets a warning. `OTEL_EXPORTER_OTLP_ENDPOINT` and
+`OTEL_EXPORTER_OTLP_HEADERS` aren't read, so the environment can't send
+spans somewhere else.
+
+`service_name` defaults to `OTEL_SERVICE_NAME`, then `unsworn`.
+
+`sample` is the share, from 0 to 1, of the requests arriving without a
+`traceparent` that start a trace. A request that arrives with one follows
+its sampled flag. At 0, only requests that arrive sampled are recorded.
+
+A handler can `ctx.fetch` the service as it can any other. Cloudflare,
+Vercel and Netlify targets ignore the section.
 
 ### `{env.NAME}`
 
