@@ -85,6 +85,30 @@ names. The worst a handler can do with this one is send made-up spans with
 Unsworn's token. If that matters later, a setting could keep a service for
 Unsworn's own use.
 
+## Who decides whether a request is sampled
+
+A `traceparent` carries a sampled flag. Following it from anyone would let
+any client have its requests recorded, whatever `sample` says, and add to
+what's sent to the collector.
+
+| The `traceparent` came from | Who decides |
+|---|---|
+| A peer in `[server].trusted_proxies` | Its sampled flag |
+| Any other peer | `sample`. The flag is ignored |
+| Nobody: there's none a receiver would accept | `sample` |
+
+- **An untrusted `traceparent` still places the span.** Its trace id and
+  parent are kept, so the span joins the client's trace. The draw is a
+  fresh random one, since the client chose the trace id.
+- **A flag that isn't followed is cleared.** When an untrusted request is
+  marked sampled and Unsworn doesn't sample it, the `traceparent` goes on
+  with the flag off (`…-00`), and its `tracestate` unchanged. Otherwise the
+  services behind Unsworn would record a request Unsworn declined to.
+- **With no `trusted_proxies`, no client is trusted.** Nor is any peer on
+  Cloudflare, Vercel and Netlify, which ignore that setting.
+- **A trusted proxy has to be one that decides.** If it forwards a client's
+  `traceparent` as it came, it forwards the client's choice too.
+
 ## Phases
 
 ### Phase 0: config and checks
@@ -285,14 +309,63 @@ build differed by, so what Phase 3 adds doesn't show.
 - **Edge and serverless** take the same options for `ctx.call`. They record
   no spans until Phase 5.
 
-### Phase 5: later
+### Phase 5: metrics, logs, and the edge and serverless targets
 
-- **Metrics over OTLP.** Until then, an OpenTelemetry Collector can scrape
-  `/_unsworn/metrics` with its Prometheus receiver. The service then also
-  has to allow `POST /v1/metrics`.
-- **Logs over OTLP,** worker output included, with `POST /v1/logs` allowed.
-- **Edge and serverless targets,** passing the core's steps through the
-  JavaScript bridge to an OpenTelemetry API the project brings.
+#### Metrics over OTLP
+
+| | |
+|---|---|
+| Scope | `[telemetry] metrics = true`, off by default, with `POST /v1/metrics` allowed and checked as `/v1/traces` is. The server's metrics, as `/_unsworn/metrics` has them, sent every 60 s and once more on shutdown |
+| Files | `unsworn-core`: `config.rs`, `project.rs`, `plan.rs`, `targets.rs`, `telemetry/`; `server/mod.rs`, `server/support.rs`, `telemetry/` |
+| Done when | A fake collector decodes them with OpenTelemetry's own message definitions |
+
+Totals are cumulative, counted from when the server started.
+
+| Metric | Kind | Attributes |
+|---|---|---|
+| `http.server.request.duration` | Histogram, in seconds, with the bounds `unsworn top` sorts durations into | `http.request.method`, `http.route`, `http.response.status_code` |
+| `unsworn.handler.time` | Sum, in seconds: the part of that time waiting for handlers | The same |
+| `unsworn.runtime.workers`, `unsworn.runtime.crashes` | Gauges | `unsworn.runtime` |
+| `unsworn.store.up` | Gauge | `unsworn.store.backend` |
+| `unsworn.store.errors` | Sum | `unsworn.store.backend` |
+
+`http.route` is left out for a request no route matched, and
+`unsworn.handler.time` for a series that never waited for a handler.
+
+#### Logs over OTLP
+
+| | |
+|---|---|
+| Scope | `[telemetry] logs = true`, off by default, with `POST /v1/logs` allowed. Every log event that `UNSWORN_LOG` lets through, worker output included |
+| Files | `unsworn-core`: `telemetry/`; `main.rs`, `workers.rs`, `telemetry/` |
+| Done when | A worker's log line arrives with the ids of the span it was written under |
+
+- **Two targets are left out:** `access`, whose request has a span, and
+  `telemetry`, which would otherwise report on itself.
+- **The limits are the spans':** a queue of 2,048, batches of 512 or 5 s,
+  and a flush on shutdown.
+- **A worker's line for a sampled request** carries the `trace_id` and
+  `span_id` of the handler's or function's span, on stderr and in the
+  record sent.
+
+#### Edge and serverless targets
+
+| | |
+|---|---|
+| Scope | The same spans, attributes and step events on Cloudflare, Vercel and Netlify: the core builds them for every host, and the JavaScript bridge sends them |
+| Files | `unsworn-core`: `telemetry/`, `targets.rs`; `unsworn-wasm` |
+| Done when | A function run in Node sends a fake collector a trace that nests as the server's does |
+
+- **No OpenTelemetry SDK of the project's.** One would send spans wherever
+  it's set up to, and `[telemetry]` sends only to a declared `[outbound]`
+  service.
+- **One export for each sampled request:** a `POST /v1/traces` to the
+  service, sent without making the response wait, with redirects not
+  followed.
+- **`metrics` and `logs` are ignored there,** and `unsworn check --target`
+  says so.
+- **Clocks are coarse.** An isolate may hold its clock still while it
+  computes, so a span can read as taking no time.
 
 ## Verification, in each phase
 
@@ -315,8 +388,5 @@ build differed by, so what Phase 3 adds doesn't show.
   upstreams are written in their own sections and aren't checked against
   `[outbound]`. A rule that Unsworn sends nothing to an undeclared host
   would have to cover them too.
-- **Clients decide too.** A request that arrives with a sampled
-  `traceparent` is recorded whatever `sample` is, so any client can add to
-  what's sent. A setting could limit that to `trusted_proxies`.
 - **Lambda.** It freezes the process between invocations, so spans may be
   sent late or lost.
