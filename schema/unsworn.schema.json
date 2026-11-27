@@ -2137,7 +2137,7 @@
           "type": "string"
         },
         "sample": {
-          "description": "The share of requests arriving without a `traceparent` that start a\ntrace, from 0 to 1. A request with one follows its sampled flag.\nDefault: 0.",
+          "description": "The share of requests that are recorded, from 0 to 1. One from a\nproxy in `[server].trusted_proxies` that has a `traceparent` follows\nits sampled flag instead. Default: 0.",
           "format": "double",
           "type": [
             "number",

@@ -870,8 +870,9 @@ pub struct Telemetry {
     pub outbound: Arc<Outbound>,
     /// `None` leaves the name to the host.
     pub service_name: Option<String>,
-    /// The share of requests without a `traceparent` that start a trace,
-    /// from 0 to 1.
+    /// The share of requests that are recorded, from 0 to 1, among those
+    /// whose sampled flag isn't taken: see
+    /// [`decide`](crate::telemetry::decide).
     pub sample: f64,
 }
 

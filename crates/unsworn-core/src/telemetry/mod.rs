@@ -134,38 +134,69 @@ pub fn parse(value: &str) -> Option<(TraceId, SpanId, bool)> {
     ))
 }
 
-/// Whether a request is sampled. One that came with a `traceparent` follows
-/// its sampled flag. `sample` of the others start a trace.
+/// What's decided about a request.
+#[derive(Debug, Clone)]
+pub enum Decision {
+    /// It's recorded.
+    Sampled(Started),
+    /// It isn't.
+    NotSampled {
+        /// The `traceparent` to pass on in place of the one that came: the
+        /// same one, marked unsampled. Only when someone whose word isn't
+        /// taken marked it sampled, so that what's behind the host doesn't
+        /// record a request the host declined to.
+        cleared: Option<String>,
+    },
+}
+
+/// Whether a request is sampled. A `traceparent` from a `trusted` peer, one
+/// of `[server].trusted_proxies`, follows its sampled flag. From anyone
+/// else it only says where the request's span goes in its trace, and
+/// `sample` is the share taken, as it is of requests without one.
 pub fn decide(
     sample: f64,
     headers: &HeaderMap,
+    trusted: bool,
     random: &mut dyn FnMut() -> u64,
-) -> Option<Started> {
+) -> Decision {
     let incoming = headers
         .get(TRACEPARENT)
         .and_then(|v| v.to_str().ok())
         .and_then(parse);
-    if let Some((trace_id, parent, sampled)) = incoming {
-        return sampled.then(|| Started {
-            trace_id,
-            parent: Some(parent),
-            span_id: SpanId::random(random),
-            new_root: false,
-        });
+    if let Some((trace_id, parent, flagged)) = incoming {
+        let sampled = match trusted {
+            true => flagged,
+            // A fresh draw: whoever sent the trace id could have picked it
+            // to be taken.
+            false => sample > 0.0 && taken(sample, random()),
+        };
+        if sampled {
+            return Decision::Sampled(Started {
+                trace_id,
+                parent: Some(parent),
+                span_id: SpanId::random(random),
+                new_root: false,
+            });
+        }
+        let cleared =
+            (!trusted && flagged).then(|| format!("00-{}-{}-00", trace_id.hex(), parent.hex()));
+        return Decision::NotSampled { cleared };
     }
-    if sample <= 0.0 {
-        return None;
+    if sample > 0.0 {
+        let trace_id = TraceId::random(random);
+        // Decided by the id itself, its last 8 bytes.
+        let mut low = [0; 8];
+        low.copy_from_slice(&trace_id.0[8..]);
+        if taken(sample, u64::from_be_bytes(low)) {
+            return Decision::Sampled(Started {
+                trace_id,
+                parent: None,
+                span_id: SpanId::random(random),
+                new_root: true,
+            });
+        }
     }
-    let trace_id = TraceId::random(random);
-    // Decided by the id's last 53 bits' worth, as a number from 0 to 1.
-    let mut low = [0; 8];
-    low.copy_from_slice(&trace_id.0[8..]);
-    taken(sample, u64::from_be_bytes(low)).then(|| Started {
-        trace_id,
-        parent: None,
-        span_id: SpanId::random(random),
-        new_root: true,
-    })
+    Decision::NotSampled { cleared: None }
 }
 
 /// Whether a draw falls in the share `sample` takes.

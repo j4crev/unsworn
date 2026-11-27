@@ -129,13 +129,15 @@ For the `unsworn` binary only.
 
 | | |
 |---|---|
-| Scope | Batched OTLP/HTTP export; a sampler that follows an incoming `traceparent`'s sampled flag and picks `sample` of the requests without one; one `SERVER` span per sampled request with the HTTP semantic-convention attributes; that request's `traceparent` replaced by the span's context, so the propagation there already is nests handlers, upstreams, functions and services under it; `trace_id` in the access log, in both formats; a flush on shutdown |
+| Scope | Batched OTLP/HTTP export; a sampler (see [who decides](#who-decides-whether-a-request-is-sampled)) that picks `sample` of requests; one `SERVER` span per sampled request with the HTTP semantic-convention attributes; that request's `traceparent` replaced by the span's context, so the propagation there already is nests handlers, upstreams, functions and services under it; `trace_id` in the access log, in both formats; a flush on shutdown |
 | Files | `crates/unsworn/src/telemetry/` (new), `server/host.rs` (`handle_inner`), `server/access.rs` |
 | Done when | A fake collector receives the spans, `lines_match_what_tracing_writes` still passes, and the overhead is measured |
 
 **A request that isn't sampled is left alone.** It keeps its `traceparent`
 and `tracestate` as they came, and gets none if it had none. A span id
-that's never exported would leave the spans below it with no parent.
+that's never exported would leave the spans below it with no parent. The
+one exception is a [flag that isn't
+followed](#who-decides-whether-a-request-is-sampled), which is cleared.
 
 **Export.** Spans wait in a queue of 2,048. When it's full, new ones are
 dropped and a warning says how many. They're sent in batches of 512, or

@@ -31,7 +31,7 @@ use super::support::{Body, BoxError, empty, full, json_response};
 use super::{Generation, Shared, access, proxy, static_files};
 use crate::store::{Store, now_ms};
 use crate::telemetry::{
-    self, Attr, Ended, Outcome, Parent, Recorder, SpanRecord, Started, Steps, Tracer,
+    self, Attr, Decision, Ended, Outcome, Parent, Recorder, SpanRecord, Started, Steps, Tracer,
 };
 use crate::workers::{self, CallBody, ReplyBody, Timed};
 
@@ -92,6 +92,7 @@ async fn handle_inner(
             let arrival = Arrival {
                 client_ip,
                 tls,
+                trusted_peer,
                 request_id: &request_id,
             };
             traced = Traced::begin(tracer, &mut req, start, arrival);
@@ -153,6 +154,8 @@ async fn handle_inner(
 struct Arrival<'a> {
     client_ip: IpAddr,
     tls: bool,
+    /// Its peer is one of `[server].trusted_proxies`.
+    trusted_peer: bool,
     request_id: &'a HeaderValue,
 }
 
@@ -180,15 +183,24 @@ struct Traced {
 impl Traced {
     /// Samples a request. A sampled one goes on with this span as its
     /// parent, so its handlers, upstream, functions and services nest under
-    /// it. Any other keeps the headers it came with: a span id that's never
-    /// sent would leave their spans without a parent.
+    /// it. Any other keeps the headers it came with, since a span id that's
+    /// never sent would leave their spans without a parent. The exception is
+    /// a sampled flag from a peer that isn't trusted, which is cleared.
     fn begin(
         tracer: &Arc<Tracer>,
         req: &mut Request<Incoming>,
         start: Instant,
         arrival: Arrival<'_>,
     ) -> Option<Self> {
-        let span = tracer.start(req.headers())?;
+        let span = match tracer.start(req.headers(), arrival.trusted_peer) {
+            Decision::Sampled(span) => span,
+            Decision::NotSampled { cleared } => {
+                if let Some(value) = cleared.and_then(|c| HeaderValue::try_from(c).ok()) {
+                    req.headers_mut().insert(TRACEPARENT, value);
+                }
+                return None;
+            }
+        };
         let traceparent = HeaderValue::try_from(span.traceparent()).ok()?;
         req.headers_mut().insert(TRACEPARENT, traceparent);
         // A `tracestate` belongs to the `traceparent` it came with.

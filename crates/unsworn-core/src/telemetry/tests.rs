@@ -60,8 +60,15 @@ fn headers(traceparent: Option<&str>) -> HeaderMap {
     headers
 }
 
+/// The span of a request from a trusted peer, if it's sampled.
 fn decided(sample: f64, traceparent: Option<&str>) -> Option<Started> {
-    decide(sample, &headers(traceparent), &mut numbers())
+    match decide(sample, &headers(traceparent), true, &mut numbers()) {
+        Decision::Sampled(span) => Some(span),
+        Decision::NotSampled { cleared } => {
+            assert_eq!(cleared, None);
+            None
+        }
+    }
 }
 
 #[test]
@@ -89,11 +96,52 @@ fn without_one_sample_decides() {
         assert!(s.new_root);
         assert_eq!(s.parent, None);
     }
-    let mut random = numbers();
-    let taken = (0..10_000)
-        .filter(|_| decide(0.5, &headers(None), &mut random).is_some())
-        .count();
-    assert!((4_500..=5_500).contains(&taken), "{taken}");
+    // From a peer that isn't trusted too, and there's nothing to clear.
+    for trusted in [false, true] {
+        let mut random = numbers();
+        let taken = (0..10_000)
+            .filter(
+                |_| match decide(0.5, &headers(None), trusted, &mut random) {
+                    Decision::Sampled(span) => span.new_root,
+                    Decision::NotSampled { cleared } => {
+                        assert_eq!(cleared, None);
+                        false
+                    }
+                },
+            )
+            .count();
+        assert!((4_500..=5_500).contains(&taken), "{taken}");
+    }
+}
+
+#[test]
+fn from_a_peer_that_isnt_trusted_sample_decides() {
+    for (incoming, flagged) in [(SAMPLED, true), (UNSAMPLED, false)] {
+        let from_a_client = |sample, random: &mut dyn FnMut() -> u64| {
+            decide(sample, &headers(Some(incoming)), false, random)
+        };
+        // Taken or not, whatever it's marked. A span taken is still the
+        // child of the one that was named.
+        let Decision::Sampled(s) = from_a_client(1.0, &mut numbers()) else {
+            panic!("not sampled: {incoming}");
+        };
+        assert_eq!(s.trace_id.hex(), "4bf92f3577b34da6a3ce929d0e0e4736");
+        assert_eq!(s.parent.unwrap().hex(), "00f067aa0ba902b7");
+        assert!(!s.new_root);
+
+        // A flag that isn't followed is cleared.
+        let Decision::NotSampled { cleared } = from_a_client(0.0, &mut numbers()) else {
+            panic!("sampled: {incoming}");
+        };
+        assert_eq!(cleared.as_deref(), flagged.then_some(UNSAMPLED));
+
+        // A share of them, drawn afresh: the trace id is the same each time.
+        let mut random = numbers();
+        let taken = (0..10_000)
+            .filter(|_| matches!(from_a_client(0.5, &mut random), Decision::Sampled(_)))
+            .count();
+        assert!((4_500..=5_500).contains(&taken), "{taken}");
+    }
 }
 
 #[test]

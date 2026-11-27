@@ -57,9 +57,9 @@ pub struct RawTelemetry {
     /// The service name on the spans. Default: `OTEL_SERVICE_NAME`, then
     /// "unsworn".
     pub service_name: Option<String>,
-    /// The share of requests arriving without a `traceparent` that start a
-    /// trace, from 0 to 1. A request with one follows its sampled flag.
-    /// Default: 0.
+    /// The share of requests that are recorded, from 0 to 1. One from a
+    /// proxy in `[server].trusted_proxies` that has a `traceparent` follows
+    /// its sampled flag instead. Default: 0.
     pub sample: Option<f64>,
 }
 

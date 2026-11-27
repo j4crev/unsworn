@@ -52,9 +52,13 @@ GET /search                        the request
    └─ POST                         the index service's too
 ```
 
-A request that arrives with a `traceparent` follows its sampled flag.
-`sample` says what share of the others start a trace. A request that isn't
-sampled is treated as it is without `[telemetry]`.
+A request that a proxy in `[server].trusted_proxies` sends with a
+`traceparent` follows its sampled flag. Anyone else's flag is ignored, so a
+client can't choose to be recorded: `sample` says what share of those
+requests is, and of the ones without a `traceparent`. A request that isn't
+sampled is treated as it is without `[telemetry]`, except that a flag that
+was ignored is cleared before it goes further. See
+[which requests](config.md#which-requests).
 
 The request's span also says what Unsworn decided, and when: the scheme
 that let the caller in, whether the cache answered, and for a request it

@@ -27,8 +27,8 @@ use tokio::time::Instant;
 use unsworn_core::outbound;
 use unsworn_core::project::{Outbound, TRACES_PATH, Telemetry};
 pub use unsworn_core::telemetry::{
-    Attr, Ended, Outcome, Recorder, SpanRecord, Started, Steps, call_span, cut, failed_status,
-    fetch_span, handler_span, outbound_trace, proxy_span, service_span, strip_trace,
+    Attr, Decision, Ended, Outcome, Recorder, SpanRecord, Started, Steps, call_span, cut,
+    failed_status, fetch_span, handler_span, outbound_trace, proxy_span, service_span, strip_trace,
     without_credentials,
 };
 use unsworn_core::telemetry::{Moment, decide, otlp, resource_attributes};
@@ -121,9 +121,10 @@ pub struct Tracer {
 }
 
 impl Tracer {
-    /// The request's span, if it's sampled.
-    pub fn start(&self, headers: &HeaderMap) -> Option<Started> {
-        decide(self.sample, headers, &mut random)
+    /// Whether a request is sampled. `trusted` says its peer is one of
+    /// `[server].trusted_proxies`.
+    pub fn start(&self, headers: &HeaderMap, trusted: bool) -> Decision {
+        decide(self.sample, headers, trusted, &mut random)
     }
 }
 

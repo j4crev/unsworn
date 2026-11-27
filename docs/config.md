@@ -621,18 +621,33 @@ else. A handler can `ctx.fetch` the service as it can any other.
 
 #### Which requests
 
-A request that arrives with a `traceparent` follows its sampled flag,
-whatever `sample` is. That also means a client that sends a sampled one
-has its request recorded. `sample` is the share, from 0 to 1, of the
-other requests that start a trace. At 0, only requests that arrive sampled
-are recorded.
+Who sent the request decides whose say counts:
+
+| The request | Whether it's recorded |
+|---|---|
+| From a proxy in [`trusted_proxies`](#server), with a `traceparent` | Its sampled flag decides, whatever `sample` is |
+| From anyone else, with a `traceparent` | `sample` decides. The flag is ignored |
+| Without a `traceparent` | `sample` decides |
+
+`sample` is a share, from 0 to 1. At 0, only requests that a trusted proxy
+marks sampled are recorded. Without `trusted_proxies`, no client can choose
+to have its request recorded, or not to.
+
+A request with a `traceparent` that's recorded stays in that trace: the
+span is a child of the one named. One without starts a new trace.
 
 For a sampled request, each handler, upstream, function and service gets a
 `traceparent` naming the span Unsworn recorded for asking it. A request
 that isn't sampled keeps the `traceparent` and `tracestate` it came with,
-and gets none if it had none. A handler can name a [span of its
-own](tracing.md#a-handlers-own-span) for a call or a fetch, whose sampled
-flag then decides for that one.
+and gets none if it had none. The one change: when a client that isn't
+trusted marked it sampled, the flag is cleared, so that nothing behind
+Unsworn records a request Unsworn declined to. A handler can name a [span
+of its own](tracing.md#a-handlers-own-span) for a call or a fetch, whose
+sampled flag then decides for that one.
+
+**A trusted proxy has to be one that decides.** If a proxy in
+`trusted_proxies` passes a client's `traceparent` on as it came, the client
+is deciding again. Have the proxy set the header itself, or remove it.
 
 `/_unsworn/health` and `/_unsworn/stats` aren't recorded.
 

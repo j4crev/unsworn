@@ -205,8 +205,20 @@ fn failure(span: &Span) -> &str {
 /// A project with a `respond` route and a `proxy` route, which sends spans
 /// to `collector`.
 fn project(collector: &Fake, upstream: &Fake, sample: &str) -> Project {
+    project_with("", collector, upstream, sample)
+}
+
+/// [`project`], taking its clients' word for whether they're sampled.
+fn trusting(collector: &Fake, upstream: &Fake, sample: &str) -> Project {
+    let server = "[server]\ntrusted_proxies = [\"127.0.0.1\"]";
+    project_with(server, collector, upstream, sample)
+}
+
+fn project_with(server: &str, collector: &Fake, upstream: &Fake, sample: &str) -> Project {
     let config = format!(
         r#"
+{server}
+
 [outbound.otel]
 url = "http://{}"
 headers = {{ Authorization = "Bearer t" }}
@@ -709,8 +721,8 @@ handler = "h.py#inner"
 #[test]
 fn a_sampled_traceparent_is_the_spans_parent() {
     let (collector, upstream) = (Fake::start(), Fake::start());
-    // `sample` is for requests that arrive without one.
-    let project = project(&collector, &upstream, "0.0");
+    // `sample` isn't for what a trusted proxy marks.
+    let project = trusting(&collector, &upstream, "0.0");
     let mut server = project.serve();
     let incoming = format!("00-{TRACE}-{PARENT}-01");
     get(
@@ -751,7 +763,7 @@ fn a_sampled_traceparent_is_the_spans_parent() {
 #[test]
 fn an_unsampled_request_is_left_as_it_came() {
     let (collector, upstream) = (Fake::start(), Fake::start());
-    let project = project(&collector, &upstream, "1.0");
+    let project = trusting(&collector, &upstream, "1.0");
     let mut server = project.serve();
     let incoming = format!("00-{TRACE}-{PARENT}-00");
     get(
@@ -764,6 +776,44 @@ fn an_unsampled_request_is_left_as_it_came() {
     let proxied = upstream.request("/up/unsampled");
     assert_eq!(proxied.headers["traceparent"], incoming);
     assert_eq!(proxied.headers["tracestate"], "vendor=1");
+}
+
+#[test]
+fn a_client_cant_choose_to_be_recorded() {
+    let (collector, upstream) = (Fake::start(), Fake::start());
+    let none = project(&collector, &upstream, "0.0");
+    let mut server = none.serve();
+    let marked = format!("00-{TRACE}-{PARENT}-01");
+    get(
+        &server,
+        "/up/marked",
+        &[("traceparent", &marked), ("tracestate", "vendor=1")],
+    );
+    server.terminate();
+    assert!(collector.seen().is_empty(), "{:?}", collector.seen());
+    // What's behind the server isn't told to record it either.
+    let proxied = upstream.request("/up/marked");
+    assert_eq!(
+        proxied.headers["traceparent"],
+        format!("00-{TRACE}-{PARENT}-00")
+    );
+    assert_eq!(proxied.headers["tracestate"], "vendor=1");
+
+    // Nor can a client keep its request from being recorded.
+    let all = project(&collector, &upstream, "1.0");
+    let mut server = all.serve();
+    let unmarked = format!("00-{TRACE}-{PARENT}-00");
+    get(&server, "/up/unmarked", &[("traceparent", &unmarked)]);
+    server.terminate();
+    let spans = collector.spans();
+    let servers = of_kind(&spans, SpanKind::Server);
+    assert_eq!(servers.len(), 1, "{}", server.logs());
+    // Its span is still in the client's trace.
+    assert_eq!(hex(&servers[0].trace_id), TRACE);
+    assert_eq!(hex(&servers[0].parent_span_id), PARENT);
+    let forwarded = below(&spans, servers[0], "GET");
+    let proxied = upstream.request("/up/unmarked");
+    assert_eq!(proxied.headers["traceparent"], traceparent(forwarded));
 }
 
 #[test]
