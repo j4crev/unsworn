@@ -93,6 +93,7 @@ impl DimeBackend {
                     let wasm_cfg = WasmConfig {
                         consume_fuel: true,
                         fuel_per_check: cfg.fuel_per_check,
+                        ..WasmConfig::default()
                     };
                     let eng = DynamicEngine::open(
                         &root.join(&cfg.dir),
