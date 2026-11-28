@@ -934,6 +934,8 @@ pub struct Project {
     pub outbound: BTreeMap<String, Arc<Outbound>>,
     /// `[telemetry]`, when it's set.
     pub telemetry: Option<Telemetry>,
+    /// `[dimedb]`, when it's set.
+    pub dimedb: Option<Arc<crate::dimedb::DimeDbConfig>>,
     /// The files of generated types `[gen]` asks for.
     pub generated: Vec<Generated>,
     /// Files read while loading, for watching in dev mode.
@@ -1642,7 +1644,9 @@ impl<'h> Compiler<'h> {
             self.config_route(r, source, &mut drafts, &mut exacts, &mut entries);
         }
 
-        let mcp_pending = match &raw.mcp {
+        let dimedb = raw.dimedb.as_ref().and_then(|d| self.compile_dimedb(d));
+
+        let mut mcp_pending = match &raw.mcp {
             Some(m) => {
                 let lines = if format == Format::Toml {
                     McpLines {
@@ -1656,6 +1660,17 @@ impl<'h> Compiler<'h> {
             }
             None => None,
         };
+        if let (Some(dime), Some(pending)) = (&dimedb, &mut mcp_pending)
+            && dime.mcp
+            && pending.endpoint.hosted()
+        {
+            let endpoint_layer = drafts
+                .iter()
+                .find(|d| matches!(d.action, Action::Mcp))
+                .map(|d| (d.source.loc(), d.own.clone()))
+                .unwrap_or_else(|| ("[mcp]".into(), Layer::default()));
+            self.register_dimedb_mcp_tools(dime, pending, endpoint_layer, &mut drafts);
+        }
 
         let routes_dir = raw
             .routes
@@ -1818,7 +1833,10 @@ impl<'h> Compiler<'h> {
         self.warnings(&routes, &entries);
 
         let (routers, slots, catch_alls) = self.build_routers(&routes);
-        let functions = self.functions(&raw, server_timeout);
+        let mut functions = self.functions(&raw, server_timeout);
+        if let Some(dime) = &dimedb {
+            self.register_dimedb_functions(dime, server_timeout, &mut functions);
+        }
         let outbound = self.outbound(&raw, server_timeout);
         self.check_calls(&functions, &outbound);
         let telemetry = self.telemetry(&raw, &outbound);
@@ -1838,6 +1856,7 @@ impl<'h> Compiler<'h> {
             functions,
             outbound,
             telemetry,
+            dimedb,
             generated: self.generated(&raw),
             files: std::mem::take(&mut self.files),
             routes_dir,
@@ -1962,6 +1981,226 @@ impl<'h> Compiler<'h> {
             );
         }
         out
+    }
+
+    fn compile_dimedb(
+        &mut self,
+        raw: &config::RawDimeDb,
+    ) -> Option<Arc<crate::dimedb::DimeDbConfig>> {
+        let loc = "[dimedb]";
+        let Some(schema_toml) = self.host.read(&raw.schema) else {
+            self.diags.push(
+                Diagnostic::error(
+                    format!("{loc}.schema"),
+                    format!("schema file \"{}\" not found", raw.schema),
+                )
+                .hint("schema paths are relative to the project root"),
+            );
+            return None;
+        };
+        self.files.push(raw.schema.clone());
+        let schema = match crate::dimedb::DimeSchema::from_toml(&schema_toml) {
+            Ok(s) => s,
+            Err(e) => {
+                self.diags.error(format!("{loc}.schema"), e);
+                return None;
+            }
+        };
+        let prefix = raw
+            .prefix
+            .as_deref()
+            .unwrap_or(crate::dimedb::RUNTIME)
+            .to_string();
+        if prefix.is_empty()
+            || !prefix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        {
+            self.diags.error(
+                format!("{loc}.prefix"),
+                "prefix must be letters, digits, `_` or `-`",
+            );
+            return None;
+        }
+        let url = raw.url.as_ref().map(|u| self.subst(u, &format!("{loc}.url")));
+        match raw.mode {
+            config::DimeDbMode::Embedded => {
+                if let Some(rules) = &raw.rules {
+                    if !self.host.exists(rules) {
+                        self.diags.push(
+                            Diagnostic::error(
+                                format!("{loc}.rules"),
+                                format!("WebAssembly rules file \"{rules}\" not found"),
+                            )
+                            .hint("compile your guest rules to wasm32-unknown-unknown"),
+                        );
+                    } else {
+                        self.files.push(rules.clone());
+                    }
+                } else {
+                    self.diags.error(
+                        format!("{loc}.rules"),
+                        "embedded [dimedb] requires `rules` pointing to a compiled .wasm module",
+                    );
+                }
+            }
+            config::DimeDbMode::Remote => {
+                if let Some(u) = &url {
+                    self.check_url(u, &format!("{loc}.url"));
+                } else {
+                    self.diags.error(
+                        format!("{loc}.url"),
+                        "remote [dimedb] requires `url` pointing to a dimeDB server",
+                    );
+                }
+            }
+        }
+        Some(Arc::new(crate::dimedb::DimeDbConfig {
+            mode: raw.mode,
+            schema_path: raw.schema.clone(),
+            schema_toml,
+            schema,
+            dir: raw.dir.clone().unwrap_or_else(|| "data/dimedb".into()),
+            rules_path: raw.rules.clone(),
+            url: url.map(|u| u.trim_end_matches('/').to_string()),
+            retry_window: raw.retry_window.map(|d| d.0),
+            lookup_window: raw.lookup_window.map(|d| d.0),
+            prefix,
+            mcp: raw.mcp,
+            fuel_per_check: raw.fuel_per_check.unwrap_or(200_000),
+        }))
+    }
+
+    fn register_dimedb_functions(
+        &mut self,
+        dime: &crate::dimedb::DimeDbConfig,
+        timeout: Duration,
+        out: &mut BTreeMap<String, Arc<Function>>,
+    ) {
+        let mut insert_fn = |name: String, op: String, input_schema: Value| {
+            let input = BodyRule::new(input_schema, true, self.schemas).ok();
+            out.entry(name.clone()).or_insert_with(|| {
+                Arc::new(Function {
+                    name,
+                    handler: crate::dimedb::handler_ref(&op),
+                    input,
+                    output: None,
+                    timeout,
+                })
+            });
+        };
+        for cmd in &dime.schema.commands {
+            let fn_name = format!("{}.{}", dime.prefix, crate::dimedb::to_snake(&cmd.name));
+            insert_fn(
+                fn_name,
+                format!("cmd:{}", cmd.name),
+                crate::dimedb::command_input_schema(cmd),
+            );
+        }
+        insert_fn(
+            format!("{}.lookup", dime.prefix),
+            "lookup".into(),
+            crate::dimedb::lookup_input_schema(),
+        );
+        for table in &dime.schema.tables {
+            insert_fn(
+                format!("{}.get.{}", dime.prefix, table.name),
+                format!("get:{}", table.name),
+                crate::dimedb::get_input_schema(table),
+            );
+        }
+    }
+
+    fn register_dimedb_mcp_tools(
+        &mut self,
+        dime: &crate::dimedb::DimeDbConfig,
+        pending: &mut McpPending,
+        endpoint: (String, Layer),
+        drafts: &mut Vec<Draft>,
+    ) {
+        let mut add_tool = |name: String,
+                            desc: String,
+                            op: String,
+                            input: Value,
+                            read_only: bool| {
+            if pending.tools.iter().any(|t| t.name == name) {
+                return;
+            }
+            let input_rule = BodyRule::new(input.clone(), true, self.schemas).ok();
+            let annotations = if read_only {
+                Some(serde_json::json!({ "readOnlyHint": true, "idempotentHint": true }))
+            } else {
+                Some(serde_json::json!({ "idempotentHint": true }))
+            };
+            drafts.push(Draft {
+                methods: Some(vec!["POST".into()]),
+                path: format!("mcp:{name}"),
+                host: None,
+                action: Action::Handler(crate::dimedb::handler_ref(&op)),
+                source: Source::McpTool {
+                    file: self.config_file.clone(),
+                    line: None,
+                    index: pending.tools.len() + 1,
+                    name: name.clone(),
+                },
+                own: Layer::default(),
+                inherit: vec![endpoint.clone()],
+                validation: RawValidation {
+                    body: Some((input.clone(), true)),
+                    response: None,
+                    ..Default::default()
+                },
+                openapi_layer: None,
+                op: None,
+                mcp: None,
+                shadow: None,
+                invalidates: None,
+            });
+            pending.tools.push(McpTool {
+                name,
+                title: None,
+                description: Some(desc),
+                input_schema: input,
+                output_schema: None,
+                annotations,
+                param_headers: Vec::new(),
+                route: 0,
+                own: Layer::default(),
+                input_rule,
+                binding: None,
+            });
+        };
+
+        for cmd in &dime.schema.commands {
+            let name = format!("{}_{}", dime.prefix, crate::dimedb::to_snake(&cmd.name));
+            let desc = format!(
+                "Execute dimeDB command `{}` at most once. Pass a unique `request_id` (UUIDv7 or integer) and reuse it on retries.",
+                cmd.name
+            );
+            add_tool(
+                name,
+                desc,
+                format!("cmd:{}", cmd.name),
+                crate::dimedb::command_input_schema(cmd),
+                false,
+            );
+        }
+        add_tool(
+            format!("{}_lookup", dime.prefix),
+            "Look up what became of a previous dimeDB `request_id` (applied, not_applied, or unknown).".into(),
+            "lookup".into(),
+            crate::dimedb::lookup_input_schema(),
+            true,
+        );
+        for table in &dime.schema.tables {
+            add_tool(
+                format!("{}_get_{}", dime.prefix, table.name),
+                format!("Read a row from dimeDB table `{}` by primary key.", table.name),
+                format!("get:{}", table.name),
+                crate::dimedb::get_input_schema(table),
+                true,
+            );
+        }
     }
 
     fn outbound(
@@ -4793,6 +5032,9 @@ impl<'h> Compiler<'h> {
     fn check_handlers(&mut self, routes: &[Route], entries: &[PolicyEntry]) {
         let mut checked = std::collections::HashSet::new();
         let mut check = |c: &mut Self, h: &HandlerRef, loc: String| {
+            if h.runtime == crate::dimedb::RUNTIME {
+                return;
+            }
             if checked.insert(h.file.clone()) && !c.host.exists(&h.file) {
                 c.diags.push(
                     Diagnostic::error(loc, format!("handler file \"{}\" not found", h.file))

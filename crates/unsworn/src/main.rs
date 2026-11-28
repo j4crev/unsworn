@@ -20,6 +20,7 @@ mod build;
 mod codegen;
 mod commands;
 mod conformance;
+mod dimedb;
 mod load;
 mod plan;
 mod scale;

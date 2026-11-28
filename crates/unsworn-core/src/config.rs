@@ -44,6 +44,48 @@ pub struct RawConfig {
     pub outbound: BTreeMap<String, RawOutbound>,
     /// OpenTelemetry traces, sent to one of the `outbound` services.
     pub telemetry: Option<RawTelemetry>,
+    /// Durable, in-memory transactional state backed by dimeDB.
+    pub dimedb: Option<RawDimeDb>,
+}
+
+/// How `[dimedb]` executes commands and reads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DimeDbMode {
+    /// Embedded in-process WAL + WebAssembly rules (VPS, container, local dev).
+    #[default]
+    Embedded,
+    /// Remote HTTP dimeDB server (AWS Lambda, Vercel, edge, multi-node).
+    Remote,
+}
+
+/// `[dimedb]`: durable transactional state with at-most-once `request_id`s,
+/// `lookup`, `ctx.call` functions, and automatic MCP tools.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawDimeDb {
+    /// `"embedded"` (default) or `"remote"`.
+    #[serde(default)]
+    pub mode: DimeDbMode,
+    /// Path to `dimedb.toml`, relative to the project root.
+    pub schema: String,
+    /// Database directory for `mode = "embedded"`. Default: `"data/dimedb"`.
+    pub dir: Option<String>,
+    /// Compiled WebAssembly rules `.wasm` file for `mode = "embedded"`.
+    pub rules: Option<String>,
+    /// Remote dimeDB server URL for `mode = "remote"`.
+    pub url: Option<String>,
+    /// Retry window for UUIDv7 request IDs (e.g. `"10m"`).
+    pub retry_window: Option<ConfigDuration>,
+    /// Lookup window for expired request IDs (e.g. `"1h"`).
+    pub lookup_window: Option<ConfigDuration>,
+    /// Prefix for generated `ctx.call` functions and MCP tools. Default: `"dimedb"`.
+    pub prefix: Option<String>,
+    /// Expose commands, `lookup`, and table reads as MCP tools when `[mcp]` is set.
+    #[serde(default = "default_true")]
+    pub mcp: bool,
+    /// Optional Wasmtime fuel budget per `check` call (default: 200_000).
+    pub fuel_per_check: Option<u64>,
 }
 
 /// `[telemetry]`: where Unsworn sends spans, and of how many requests. It
