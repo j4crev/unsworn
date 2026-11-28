@@ -264,6 +264,13 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
     let listener = TcpListener::bind(&server.listen)
         .await
         .map_err(|e| format!("can't listen on {}: {e}", server.listen))?;
+    // Start watching before announcing that the server is listening, so
+    // anything waiting for the banner can't write a file before inotify is
+    // registered.
+    if opts.dev {
+        spawn_watcher(shared.clone(), opts.config.clone());
+    }
+    spawn_reload_on_hup(shared.clone(), opts.config.clone());
     let scheme = if tls.is_some() { "https" } else { "http" };
     let local = listener
         .local_addr()
@@ -282,11 +289,6 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
             );
         }
     }
-
-    if opts.dev {
-        spawn_watcher(shared.clone(), opts.config.clone());
-    }
-    spawn_reload_on_hup(shared.clone(), opts.config.clone());
 
     let graceful = GracefulShutdown::new();
     let mut builder = auto::Builder::new(TokioExecutor::new());
