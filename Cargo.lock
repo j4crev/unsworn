@@ -766,6 +766,7 @@ dependencies = [
 [[package]]
 name = "dimedb"
 version = "0.1.0"
+source = "git+https://github.com/j4crev/dimedb?tag=v0.1.0#cdd4bee75736e505bd37406347cdd63e871e6cc1"
 dependencies = [
  "crc32c",
  "dimedb-derive",
@@ -774,6 +775,7 @@ dependencies = [
 [[package]]
 name = "dimedb-derive"
 version = "0.1.0"
+source = "git+https://github.com/j4crev/dimedb?tag=v0.1.0#cdd4bee75736e505bd37406347cdd63e871e6cc1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -783,6 +785,7 @@ dependencies = [
 [[package]]
 name = "dimedb-wasm"
 version = "0.1.0"
+source = "git+https://github.com/j4crev/dimedb?tag=v0.1.0#cdd4bee75736e505bd37406347cdd63e871e6cc1"
 dependencies = [
  "dimedb",
  "serde",
