@@ -7,6 +7,7 @@
 
 use std::fs;
 use std::net::TcpListener;
+#[cfg(feature = "dimedb")]
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -73,6 +74,7 @@ fn free_port() -> u16 {
         .port()
 }
 
+#[cfg(feature = "dimedb")]
 fn guest_wasm_bytes() -> Vec<u8> {
     let guest_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../dimedb/wasm/guest-rules");
     let target_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("unsworn-dimedb-guest");
@@ -154,6 +156,7 @@ async fn wait_health(port: u16) {
     panic!("unsworn server did not become healthy on port {port}");
 }
 
+#[cfg(feature = "dimedb")]
 #[tokio::test]
 async fn dimedb_mcp_tools_at_most_once_and_lookup() {
     let tmp = TempDir::new().unwrap();
