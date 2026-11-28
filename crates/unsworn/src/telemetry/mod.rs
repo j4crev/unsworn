@@ -11,6 +11,8 @@
 //! then waits in a queue that one task sends from in batches. Nothing a
 //! request does waits for the collector.
 
+mod logs;
+
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::hash::{BuildHasher, RandomState};
@@ -21,6 +23,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use http::{HeaderMap, HeaderValue, header};
 use http_body_util::{BodyExt, Limited};
+pub use logs::log_layer;
 use ring::rand::{SecureRandom, SystemRandom};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -42,13 +45,13 @@ pub type Parent = unsworn_core::telemetry::Parent<Arc<Tracer>>;
 pub type ChildSpan = unsworn_core::telemetry::ChildSpan<Arc<Tracer>>;
 
 /// How many spans can wait to be sent. More are dropped.
-const QUEUE: usize = 2048;
+pub(super) const QUEUE: usize = 2048;
 
 /// The most spans sent in one request.
-const BATCH: usize = 512;
+pub(super) const BATCH: usize = 512;
 
 /// How long a batch waits to fill, from its first span.
-const DELAY: Duration = Duration::from_secs(5);
+pub(super) const DELAY: Duration = Duration::from_secs(5);
 
 /// How often, at most, lost spans are warned about.
 const WARN_EVERY: Duration = Duration::from_secs(60);
@@ -99,11 +102,11 @@ pub fn unix_nano(time: SystemTime) -> u64 {
     u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
 }
 
-/// Where one project's spans go, and what they say they come from.
-struct Sink {
-    outbound: Arc<Outbound>,
+/// Where one project's telemetry goes, and what it says it comes from.
+pub(super) struct Sink {
+    pub(super) outbound: Arc<Outbound>,
     /// The `Resource` message, put together once.
-    resource: Bytes,
+    pub(super) resource: Bytes,
 }
 
 /// A span waiting to be sent, and where to.
@@ -120,6 +123,7 @@ struct Queue {
 pub struct Tracer {
     sample: f64,
     metrics: bool,
+    logs: bool,
     sink: Arc<Sink>,
     queue: Queue,
 }
@@ -188,13 +192,14 @@ impl Recorder for Tracer {
     }
 }
 
-/// Sends the spans of every tracer it makes. One for the process, so spans
-/// waiting when the project is reloaded are still sent.
+/// Sends the spans and logs of every tracer it makes. One for the process,
+/// so records waiting when the project is reloaded are still sent.
 pub struct Exporter {
     queue: Queue,
     flushes: mpsc::Sender<oneshot::Sender<()>>,
     /// What does the sending, until the first tracer starts it.
     idle: Mutex<Option<Sending>>,
+    logs: logs::LogExporter,
 }
 
 impl Exporter {
@@ -204,6 +209,7 @@ impl Exporter {
         let (spans, queued) = mpsc::channel(QUEUE);
         let (flushes, asked) = mpsc::channel(1);
         let dropped = Arc::new(AtomicU64::new(0));
+        let logs = logs::LogExporter::new(client.clone());
         Exporter {
             queue: Queue {
                 spans,
@@ -214,13 +220,9 @@ impl Exporter {
                 client,
                 spans: queued,
                 flushes: asked,
-                lost: Lost {
-                    dropped,
-                    failed: 0,
-                    why: String::new(),
-                    warned: None,
-                },
+                lost: Lost::new("spans", dropped),
             })),
+            logs,
         }
     }
 
@@ -252,6 +254,7 @@ impl Exporter {
         Arc::new(Tracer {
             sample: telemetry.sample,
             metrics: telemetry.metrics,
+            logs: telemetry.logs,
             sink: Arc::new(Sink {
                 outbound: telemetry.outbound.clone(),
                 resource: otlp::resource(&attributes).into(),
@@ -260,43 +263,63 @@ impl Exporter {
         })
     }
 
+    /// Updates the global OTLP log sink for the active generation.
+    pub fn set_logs(&self, tracer: Option<&Tracer>) {
+        let sink = tracer.filter(|t| t.logs).map(|t| t.sink.clone());
+        self.logs.set_sink(sink);
+    }
+
     /// Sends what's waiting, taking at most `timeout`. Call before the
     /// process exits.
     pub async fn flush(&self, timeout: Duration) {
-        if self.idle.lock().unwrap().is_some() {
-            return;
-        }
-        let (done, sent) = oneshot::channel();
-        let flushed = async {
-            if self.flushes.send(done).await.is_ok() {
-                let _ = sent.await;
+        let spans_flush = async {
+            if self.idle.lock().unwrap().is_some() {
+                return;
+            }
+            let (done, sent) = oneshot::channel();
+            let flushed = async {
+                if self.flushes.send(done).await.is_ok() {
+                    let _ = sent.await;
+                }
+            };
+            if tokio::time::timeout(timeout, flushed).await.is_err() {
+                tracing::warn!(target: "telemetry", "not every span was sent before shutting down");
             }
         };
-        if tokio::time::timeout(timeout, flushed).await.is_err() {
-            tracing::warn!(target: "telemetry", "not every span was sent before shutting down");
-        }
+        tokio::join!(spans_flush, self.logs.flush(timeout));
     }
 }
 
-/// Spans that never arrived, since the last warning about them.
-struct Lost {
+/// Records that never arrived, since the last warning about them.
+pub(super) struct Lost {
+    what: &'static str,
     dropped: Arc<AtomicU64>,
-    /// Spans in requests that failed.
-    failed: u64,
+    /// Records in requests that failed.
+    pub(super) failed: u64,
     /// How the last of those failed.
-    why: String,
+    pub(super) why: String,
     warned: Option<Instant>,
 }
 
 impl Lost {
+    pub(super) fn new(what: &'static str, dropped: Arc<AtomicU64>) -> Lost {
+        Lost {
+            what,
+            dropped,
+            failed: 0,
+            why: String::new(),
+            warned: None,
+        }
+    }
+
     /// When there's next something to warn about.
-    fn due(&self) -> Option<Instant> {
+    pub(super) fn due(&self) -> Option<Instant> {
         let any = self.failed > 0 || self.dropped.load(Ordering::Relaxed) > 0;
         any.then(|| self.warned.map_or_else(Instant::now, |at| at + WARN_EVERY))
     }
 
     /// Warns about them, unless it did a moment ago and `now` isn't set.
-    fn warn(&mut self, now: bool) {
+    pub(super) fn warn(&mut self, now: bool) {
         let Some(due) = self.due() else { return };
         if !now && due > Instant::now() {
             return;
@@ -304,14 +327,15 @@ impl Lost {
         let failed = std::mem::take(&mut self.failed);
         let dropped = self.dropped.swap(0, Ordering::Relaxed);
         let why = std::mem::take(&mut self.why);
+        let what = self.what;
         if failed > 0 {
-            tracing::warn!(target: "telemetry", failed, dropped, "spans weren't exported: {why}");
+            tracing::warn!(target: "telemetry", failed, dropped, "{what} weren't exported: {why}");
         } else {
             tracing::warn!(
                 target: "telemetry",
                 failed,
                 dropped,
-                "spans were dropped: they came faster than they could be sent"
+                "{what} were dropped: they came faster than they could be sent"
             );
         }
         self.warned = Some(Instant::now());
@@ -495,7 +519,7 @@ fn build_metrics(
 /// Sends one request to the collector, built as a handler's `fetch` is,
 /// with the service's headers and `timeout`. Anything but a `2xx`, a
 /// redirect included, is a failure.
-async fn post(
+pub(super) async fn post(
     client: &HttpClient,
     service: &Outbound,
     path: &str,

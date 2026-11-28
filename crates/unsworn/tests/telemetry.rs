@@ -12,10 +12,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use common::{Project, Server};
+use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::KeyValue;
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
+use opentelemetry_proto::tonic::logs::v1::{LogRecord, SeverityNumber};
 use opentelemetry_proto::tonic::metrics::v1::{
     AggregationTemporality, Metric, metric::Data as MetricData, number_data_point::Value as NumVal,
 };
@@ -103,6 +105,21 @@ impl Fake {
             })
             .flat_map(|r| r.scope_metrics)
             .flat_map(|s| s.metrics)
+            .collect()
+    }
+
+    /// Every log record exported here, in the order they were sent.
+    fn log_records(&self) -> Vec<LogRecord> {
+        self.seen()
+            .iter()
+            .filter(|r| r.path == "/v1/logs")
+            .flat_map(|r| {
+                ExportLogsServiceRequest::decode(r.body.as_slice())
+                    .expect("an OTLP logs request")
+                    .resource_logs
+            })
+            .flat_map(|r| r.scope_logs)
+            .flat_map(|s| s.log_records)
             .collect()
     }
 }
@@ -1153,4 +1170,140 @@ respond = {{ status = 200, json = {{ ok = true }} }}
         );
         let _ = by_name("unsworn.runtime.crashes");
     }
+}
+
+const LOGGING_HANDLERS: &str = r#"
+import logging
+from unsworn import json
+
+def work(req, ctx):
+    logging.getLogger().info("from handler")
+    ctx.call("inner", {})
+    return json({"ok": True})
+
+def inner(req, ctx):
+    logging.getLogger().warning("from function")
+    return json({"ok": True})
+"#;
+
+#[test]
+fn logs_are_exported_over_otlp_with_worker_span_ids() {
+    if !common::has("python3") {
+        eprintln!("skipping: python3 not found");
+        return;
+    }
+    let collector = Fake::start();
+    let config = format!(
+        r#"
+[runtimes.py]
+extensions = [".py"]
+command = "python3 -u -m unsworn.worker"
+protocol = "framed"
+
+[outbound.otel]
+url = "http://{}"
+headers = {{ Authorization = "Bearer l" }}
+methods = ["POST"]
+paths = ["/v1/traces", "/v1/logs"]
+
+[telemetry]
+outbound = "otel"
+service_name = "api"
+sample = 1
+logs = true
+
+[[route]]
+path = "/work"
+handler = "h.py#work"
+
+[[function]]
+name = "inner"
+handler = "h.py#inner"
+"#,
+        collector.addr
+    );
+    let project = Project::new(&[("unsworn.toml", &config), ("h.py", LOGGING_HANDLERS)]);
+    let mut server = project.serve();
+    get(&server, "/work", &[]);
+    server.terminate();
+
+    let requests: Vec<Received> = collector
+        .seen()
+        .into_iter()
+        .filter(|r| r.path == "/v1/logs")
+        .collect();
+    assert!(!requests.is_empty(), "{}", server.logs());
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].headers["authorization"], "Bearer l");
+    assert_eq!(
+        requests[0].headers["content-type"],
+        "application/x-protobuf"
+    );
+
+    let spans = collector.spans();
+    let servers = of_kind(&spans, SpanKind::Server);
+    let handler = below(&spans, servers[0], "handler h.py#work");
+    let call = below(&spans, handler, "call inner");
+
+    let records = collector.log_records();
+    fn body(r: &LogRecord) -> &str {
+        match r.body.as_ref().and_then(|b| b.value.as_ref()) {
+            Some(Value::StringValue(s)) => s.as_str(),
+            _ => "",
+        }
+    }
+
+    // No `access` or `telemetry` logs are sent.
+    for r in &records {
+        let attrs = values(&r.attributes);
+        assert_ne!(attrs.get("target"), Some(&string("access")));
+        assert_ne!(attrs.get("target"), Some(&string("telemetry")));
+    }
+
+    // Server lifecycle log arrived.
+    assert!(
+        records.iter().any(|r| body(r).contains("listening on")),
+        "expected server startup log: {records:?}"
+    );
+
+    // Handler's log carries the handler span's trace_id and span_id.
+    let from_handler = records
+        .iter()
+        .find(|r| body(r) == "from handler")
+        .unwrap_or_else(|| panic!("no handler log in {records:?}"));
+    assert_eq!(from_handler.severity_number, SeverityNumber::Info as i32);
+    assert_eq!(from_handler.severity_text, "INFO");
+    assert_eq!(from_handler.trace_id, handler.trace_id);
+    assert_eq!(from_handler.span_id, handler.span_id);
+
+    // Function's log carries the call span's trace_id and span_id.
+    let from_fn = records
+        .iter()
+        .find(|r| body(r) == "from function")
+        .unwrap_or_else(|| panic!("no function log in {records:?}"));
+    assert_eq!(from_fn.severity_number, SeverityNumber::Warn as i32);
+    assert_eq!(from_fn.severity_text, "WARN");
+    assert_eq!(from_fn.trace_id, call.trace_id);
+    assert_eq!(from_fn.span_id, call.span_id);
+
+    // Both also carry trace_id and span_id on stderr.
+    let stderr = server.logs();
+    let handler_line = stderr
+        .lines()
+        .find(|l| l.contains("from handler"))
+        .unwrap_or_else(|| panic!("no handler line in stderr:\n{stderr}"));
+    assert!(
+        handler_line.contains(&format!("trace_id={}", hex(&handler.trace_id)))
+            && handler_line.contains(&format!("span_id={}", hex(&handler.span_id))),
+        "{handler_line}"
+    );
+    let fn_line = stderr
+        .lines()
+        .find(|l| l.contains("from function"))
+        .unwrap_or_else(|| panic!("no function line in stderr:\n{stderr}"));
+    assert!(
+        fn_line.contains(&format!("trace_id={}", hex(&call.trace_id)))
+            && fn_line.contains(&format!("span_id={}", hex(&call.span_id))),
+        "{fn_line}"
+    );
 }

@@ -56,6 +56,14 @@ impl TraceId {
     pub fn hex(&self) -> String {
         hex(&self.0)
     }
+
+    pub fn from_hex(text: &str) -> Option<TraceId> {
+        if text.len() != 32 {
+            return None;
+        }
+        let bytes = unhex::<16>(text)?;
+        (bytes != [0; 16]).then_some(TraceId(bytes))
+    }
 }
 
 impl SpanId {
@@ -71,6 +79,14 @@ impl SpanId {
 
     pub fn hex(&self) -> String {
         hex(&self.0)
+    }
+
+    pub fn from_hex(text: &str) -> Option<SpanId> {
+        if text.len() != 16 {
+            return None;
+        }
+        let bytes = unhex::<8>(text)?;
+        (bytes != [0; 8]).then_some(SpanId(bytes))
     }
 }
 
@@ -247,6 +263,7 @@ pub enum Attr {
     Static(&'static str),
     Int(i64),
     Double(f64),
+    Bool(bool),
 }
 
 pub type Attributes = Vec<(&'static str, Attr)>;

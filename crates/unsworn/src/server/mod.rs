@@ -194,6 +194,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         generation.pools.shutdown(Duration::from_secs(1)).await;
         return Err("an eager runtime failed to start".into());
     }
+    exporter.set_logs(generation.telemetry.as_deref());
     let server = generation.project.server.clone();
     let store = Store::new(&generation.project.store)?;
     if store.backend_name() != "memory" {
@@ -572,6 +573,7 @@ async fn reload(shared: &Arc<Shared>, config: &str) {
         tracing::info!(store = store.backend_name(), "the store changed");
         shared.store.store(Arc::new(store));
     }
+    shared.exporter.set_logs(generation.telemetry.as_deref());
     let old = shared.generation.swap(Arc::new(generation));
     tracing::info!("reloaded");
     if shared.dev {

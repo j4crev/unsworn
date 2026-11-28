@@ -90,6 +90,8 @@ enum Pending {
 struct CallInfo {
     request_id: String,
     route: String,
+    /// The handler's or function's span, when the request is sampled.
+    trace: Option<(String, String)>,
     /// What a function called for this request starts from. Only kept in
     /// a project that has functions.
     caller: Option<Box<Caller>>,
@@ -2008,6 +2010,11 @@ impl Pool {
                 .as_millis() as u64,
         );
         let (tx, rx) = oneshot::channel();
+        let trace = self.opts.telemetry.as_ref().and_then(|_| {
+            let header = request.headers.get("traceparent")?;
+            let (trace_id, span_id, sampled) = unsworn_core::telemetry::parse(header)?;
+            sampled.then(|| (trace_id.hex(), span_id.hex()))
+        });
         worker.calls.lock().unwrap().start(
             id.clone(),
             CallInfo {
@@ -2024,6 +2031,7 @@ impl Pool {
                 }),
                 request_id,
                 route: request.route.clone(),
+                trace,
             },
         );
         worker
@@ -2473,10 +2481,12 @@ fn emit_log(
     use tracing::field::display;
     let id = call.map(|c| display(&c.request_id));
     let route = call.map(|c| display(&c.route));
+    let trace_id = call.and_then(|c| c.trace.as_ref()).map(|(t, _)| display(t));
+    let span_id = call.and_then(|c| c.trace.as_ref()).map(|(_, s)| display(s));
     let fields = fields.map(display);
     macro_rules! event {
         ($level:expr) => {
-            tracing::event!(target: "worker", $level, runtime = %runtime, worker = %worker, id, route, fields, "{message}")
+            tracing::event!(target: "worker", $level, runtime = %runtime, worker = %worker, id, route, trace_id, span_id, fields, "{message}")
         };
     }
     match level {
@@ -2651,6 +2661,7 @@ mod tests {
         CallInfo {
             request_id: format!("req-{n}"),
             route: "/r".into(),
+            trace: None,
             caller: None,
         }
     }

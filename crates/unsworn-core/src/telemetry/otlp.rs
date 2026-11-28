@@ -2,7 +2,7 @@
 //! numbers are those of opentelemetry-proto's `trace.proto`, `common.proto`
 //! and `resource.proto`.
 
-use super::{Attr, Attributes, SpanRecord};
+use super::{Attr, Attributes, SpanId, SpanRecord, TraceId};
 use crate::VERSION;
 
 // How a field's value is laid out.
@@ -20,6 +20,7 @@ const CUMULATIVE: u64 = 2;
 #[derive(Clone, Copy)]
 enum Value<'a> {
     String(&'a str),
+    Bool(bool),
     Int(i64),
     Double(f64),
 }
@@ -65,6 +66,7 @@ fn attribute(out: &mut Vec<u8>, field: u32, key: &str, value: Value<'_>) {
         bytes(kv, 1, key.as_bytes());
         message(kv, 2, |any| match value {
             Value::String(s) => bytes(any, 1, s.as_bytes()),
+            Value::Bool(b) => uint(any, 2, u64::from(b)),
             Value::Int(n) => uint(any, 3, n as u64),
             Value::Double(n) => fixed64(any, 4, n.to_bits()),
         });
@@ -126,13 +128,17 @@ fn span(out: &mut Vec<u8>, span: &SpanRecord) {
 /// `KeyValue`s, each as the field `field`.
 fn attributes(out: &mut Vec<u8>, field: u32, attributes: &[(&'static str, Attr)]) {
     for (key, value) in attributes {
-        let value = match value {
-            Attr::Str(s) => Value::String(s),
-            Attr::Static(s) => Value::String(s),
-            Attr::Int(n) => Value::Int(*n),
-            Attr::Double(n) => Value::Double(*n),
-        };
-        attribute(out, field, key, value);
+        attribute(out, field, key, attr_value(value));
+    }
+}
+
+fn attr_value(value: &Attr) -> Value<'_> {
+    match value {
+        Attr::Str(s) => Value::String(s),
+        Attr::Static(s) => Value::String(s),
+        Attr::Bool(b) => Value::Bool(*b),
+        Attr::Int(n) => Value::Int(*n),
+        Attr::Double(n) => Value::Double(*n),
     }
 }
 
@@ -264,6 +270,76 @@ fn packed_fixed64(out: &mut Vec<u8>, field: u32, values: impl ExactSizeIterator<
     for value in values {
         out.extend_from_slice(&value.to_le_bytes());
     }
+}
+
+/// Severity of a log record, as OTLP numbers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Trace = 1,
+    Debug = 5,
+    Info = 9,
+    Warn = 13,
+    Error = 17,
+}
+
+impl Severity {
+    pub fn text(self) -> &'static str {
+        match self {
+            Severity::Trace => "TRACE",
+            Severity::Debug => "DEBUG",
+            Severity::Info => "INFO",
+            Severity::Warn => "WARN",
+            Severity::Error => "ERROR",
+        }
+    }
+}
+
+/// One log record to send over OTLP.
+#[derive(Debug)]
+pub struct LogRecord {
+    pub time_unix_nano: u64,
+    pub severity: Severity,
+    pub body: String,
+    pub attributes: Vec<(String, Attr)>,
+    pub trace_id: Option<TraceId>,
+    pub span_id: Option<SpanId>,
+}
+
+/// An `ExportLogsServiceRequest` with these records, all from `resource`.
+pub fn logs_request<'a>(resource: &[u8], records: impl Iterator<Item = &'a LogRecord>) -> Vec<u8> {
+    let mut out = Vec::new();
+    // `resource_logs`
+    message(&mut out, 1, |resource_logs| {
+        bytes(resource_logs, 1, resource);
+        // `scope_logs`
+        message(resource_logs, 2, |scope_logs| {
+            message(scope_logs, 1, |scope| {
+                bytes(scope, 1, b"unsworn");
+                bytes(scope, 2, VERSION.as_bytes());
+            });
+            for record in records {
+                message(scope_logs, 2, |out| log_record(out, record));
+            }
+        });
+    });
+    out
+}
+
+fn log_record(out: &mut Vec<u8>, record: &LogRecord) {
+    fixed64(out, 1, record.time_unix_nano);
+    uint(out, 2, record.severity as u64);
+    bytes(out, 3, record.severity.text().as_bytes());
+    message(out, 5, |any| bytes(any, 1, record.body.as_bytes()));
+    for (key, value) in &record.attributes {
+        attribute(out, 6, key, attr_value(value));
+    }
+    if let Some(trace_id) = &record.trace_id {
+        bytes(out, 9, &trace_id.0);
+    }
+    if let Some(span_id) = &record.span_id {
+        bytes(out, 10, &span_id.0);
+    }
+    fixed64(out, 11, record.time_unix_nano);
 }
 
 #[cfg(test)]
