@@ -35,7 +35,7 @@ __all__ = [
     "next",
     "PROTOCOL_VERSION",
 ]
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 PROTOCOL_VERSION = 1
 
