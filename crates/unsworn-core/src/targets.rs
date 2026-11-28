@@ -29,12 +29,8 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
         "lambda" => return lambda(project),
         _ => functions(project, target),
     };
-    // Only the server sends telemetry.
+    // Spans are sent from every target; metrics and logs are server-only.
     if let Some(telemetry) = &project.telemetry {
-        out.push(Diagnostic::warning(
-            "[telemetry]",
-            format!("ignored on {target}: no spans are sent from there"),
-        ));
         let server_only = [
             (telemetry.metrics, "[telemetry].metrics"),
             (telemetry.logs, "[telemetry].logs"),
@@ -454,7 +450,7 @@ rate_limit = { requests = 1, per = "1s" }
     }
 
     #[test]
-    fn only_the_server_sends_telemetry() {
+    fn only_the_server_sends_metrics_and_logs() {
         let p = project(
             r#"
 [outbound.otel]
@@ -471,7 +467,7 @@ logs = true
                 .into_iter()
                 .map(|d| (d.is_error(), d.location))
                 .collect();
-            let expected = ["[telemetry]", "[telemetry].metrics", "[telemetry].logs"]
+            let expected = ["[telemetry].metrics", "[telemetry].logs"]
                 .map(|at| (false, at.to_string()));
             assert_eq!(warnings, expected, "{target}");
         }

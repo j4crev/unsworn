@@ -20,6 +20,8 @@ mod exports;
 mod host;
 #[cfg(target_arch = "wasm32")]
 mod log;
+#[cfg(target_arch = "wasm32")]
+mod telemetry;
 
 pub use files::Files;
 pub use statics::candidates as static_candidates;

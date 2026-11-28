@@ -1307,3 +1307,146 @@ handler = "h.py#inner"
         "{fn_line}"
     );
 }
+
+#[test]
+fn a_node_function_exports_nested_spans() {
+    if !common::has("node") {
+        eprintln!("skipping: node not found");
+        return;
+    }
+    let (collector, echo) = (Fake::start(), Fake::start());
+    let config = format!(
+        r#"
+[runtimes.ts]
+extensions = [".ts"]
+command = "bun run worker.ts"
+
+[outbound.otel]
+url = "http://{}"
+headers = {{ Authorization = "Bearer edge" }}
+methods = ["POST"]
+paths = ["/v1/traces"]
+
+[outbound.echo]
+url = "http://{}"
+
+[telemetry]
+outbound = "otel"
+service_name = "edge-api"
+sample = 1
+
+[[route]]
+path = "/search"
+handler = "h.ts#search"
+before = ["h.ts#gate"]
+
+[[function]]
+name = "inner"
+handler = "h.ts#inner"
+"#,
+        collector.addr, echo.addr
+    );
+    let node_ts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../sdk/js/src/node.ts")
+        .canonicalize()
+        .unwrap();
+    let index_ts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../sdk/js/src/index.ts")
+        .canonicalize()
+        .unwrap();
+    let incoming = format!("00-{TRACE}-{PARENT}-01");
+    let script = format!(
+        r#"
+import {{ createHandler }} from {node_ts:?};
+import {{ json, next }} from {index_ts:?};
+
+const bundle = {{
+  config: "unsworn.toml",
+  files: {{ "unsworn.toml": {config:?}, "h.ts": null }},
+  modules: {{
+    "h.ts": {{
+      gate: () => next(),
+      search: async (_req, ctx) => {{
+        const inner = await ctx.call("inner", {{}});
+        await ctx.fetch("echo", "/seen?q=1");
+        return json(inner);
+      }},
+      inner: (req) => json([req.headers["traceparent"] ?? null, req.headers["tracestate"] ?? null]),
+    }},
+  }},
+}};
+
+const app = createHandler(bundle, {{ env: {{}} }});
+const res = await app.fetch(
+  new Request("https://example.com/search", {{
+    headers: {{ traceparent: {incoming:?}, tracestate: "vendor=1" }},
+  }}),
+  {{ ip: "203.0.113.9", requestId: "edge-1" }},
+);
+const text = await res.text();
+await app.idle();
+if (res.status !== 200) {{
+  console.error("bad status", res.status, text);
+  process.exit(1);
+}}
+process.stdout.write("\nRESULT:" + text + "\n");
+process.exit(0);
+"#,
+        node_ts = node_ts.display().to_string(),
+        index_ts = index_ts.display().to_string(),
+    );
+    let out = std::process::Command::new("node")
+        .args(["--input-type=module", "-e", &script])
+        .output()
+        .expect("run node");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "node failed:\nstdout: {stdout}\nstderr: {stderr}",
+    );
+    let line = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("RESULT:"))
+        .unwrap_or_else(|| panic!("no RESULT line:\nstdout: {stdout}\nstderr: {stderr}"));
+    let said: serde_json::Value = serde_json::from_str(line).expect("json body");
+
+    let sent = collector.seen();
+    assert_eq!(sent.len(), 1, "expected one export request: {sent:?}");
+    assert_eq!(sent[0].method, "POST");
+    assert_eq!(sent[0].path, "/v1/traces");
+    assert_eq!(sent[0].headers["authorization"], "Bearer edge");
+    assert_eq!(sent[0].headers["content-type"], "application/x-protobuf");
+    let exported = decode(&sent[0]);
+    let resource = values(
+        &exported.resource_spans[0]
+            .resource
+            .as_ref()
+            .unwrap()
+            .attributes,
+    );
+    assert_eq!(resource["service.name"], string("edge-api"));
+
+    let spans = collector.spans();
+    assert_eq!(spans.len(), 5, "{spans:?}");
+    let servers = of_kind(&spans, SpanKind::Server);
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0].name, "GET /search");
+    assert_eq!(hex(&servers[0].trace_id), TRACE);
+    assert_eq!(hex(&servers[0].parent_span_id), PARENT);
+    let steps = events(servers[0]);
+    assert_eq!(names(&steps), ["unsworn.checked"]);
+
+    let gate = below(&spans, servers[0], "before h.ts#gate");
+    let search = below(&spans, servers[0], "handler h.ts#search");
+    let call = below(&spans, search, "call inner");
+    let fetch = below(&spans, search, "GET");
+    for span in [gate, search, call, fetch] {
+        assert_eq!(span.kind, SpanKind::Client as i32, "{}", span.name);
+        assert!(span.status.is_none(), "{}", span.name);
+    }
+    assert_eq!(said, serde_json::json!([traceparent(call), "vendor=1"]));
+    let seen = echo.request("/seen?q=1");
+    assert_eq!(seen.headers["traceparent"], traceparent(fetch));
+    assert_eq!(seen.headers["tracestate"], "vendor=1");
+}
