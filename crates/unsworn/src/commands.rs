@@ -48,6 +48,7 @@ pub async fn check(
                 log_tap: None,
                 withheld_env: Vec::new(),
                 telemetry: None,
+                dimedb: None,
             },
         );
         for (runtime, missing, err) in pools.start_all().await {

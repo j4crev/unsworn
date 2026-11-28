@@ -203,6 +203,7 @@ pub async fn run(root: &Path, config: &str, runtime: &str, handlers: &str) -> Re
             log_tap: Some(log_tx),
             withheld_env: Vec::new(),
             telemetry: None,
+            dimedb: None,
         },
     );
 

@@ -17,6 +17,7 @@ pub mod calls;
 pub mod codegen;
 pub mod config;
 pub mod diag;
+pub mod dimedb;
 pub mod export;
 pub mod mcp;
 pub mod openapi;

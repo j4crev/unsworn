@@ -9,6 +9,7 @@ yanked = "deny"
 unmaintained = "workspace"
 
 [sources]
-# Every crate comes from crates.io: no git dependencies, no other registry.
+# Every crate comes from crates.io, except our own `dimedb` repository.
 unknown-registry = "deny"
 unknown-git = "deny"
+allow-git = ["https://github.com/j4crev/dimedb"]

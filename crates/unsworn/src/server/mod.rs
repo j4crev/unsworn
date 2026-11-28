@@ -22,6 +22,7 @@ use hyper_util::server::graceful::GracefulShutdown;
 use tokio::net::TcpListener;
 use unsworn_core::Project;
 
+use crate::dimedb::DimeBackend;
 use crate::load;
 use crate::telemetry::{Exporter, Tracer};
 use crate::workers::{PoolOptions, Pools, SocketDir};
@@ -38,6 +39,8 @@ pub struct Generation {
     pub client_ip: ClientIp,
     /// Records requests as spans, when the project has `[telemetry]`.
     pub telemetry: Option<Arc<Tracer>>,
+    /// Live `[dimedb]` backend, when configured.
+    pub dimedb: Option<Arc<DimeBackend>>,
 }
 
 /// State that lives for the whole process.
@@ -103,11 +106,22 @@ fn make_generation(
     socket_dir: &Path,
     generation: u64,
     exporter: &Exporter,
+    client: &HttpClient,
+    previous_dimedb: Option<&Arc<DimeBackend>>,
 ) -> Result<Generation, String> {
     let client_ip = ClientIp::new(&project.server.trusted_proxies)?;
     let dir = socket_dir.join(format!("g{generation}"));
     std::fs::create_dir_all(&dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
     let telemetry = project.telemetry.as_ref().map(|t| exporter.tracer(t));
+    let dimedb = match &project.dimedb {
+        Some(cfg) => Some(DimeBackend::open_or_reuse(
+            cfg,
+            root,
+            client.clone(),
+            previous_dimedb,
+        )?),
+        None => None,
+    };
     let pools = Pools::new(
         &project,
         PoolOptions {
@@ -118,6 +132,7 @@ fn make_generation(
             log_tap: None,
             withheld_env: Vec::new(),
             telemetry: telemetry.clone(),
+            dimedb: dimedb.clone(),
         },
     );
     let project = Arc::new(project);
@@ -127,6 +142,7 @@ fn make_generation(
         pools,
         client_ip,
         telemetry,
+        dimedb,
     })
 }
 
@@ -186,6 +202,8 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         sockets.path(),
         0,
         &exporter,
+        &client,
+        None,
     )?;
     if let Err(errors) = warm_up(&generation, opts.dev).await {
         for e in &errors {
@@ -544,6 +562,8 @@ async fn reload(shared: &Arc<Shared>, config: &str) {
         shared.sockets.path(),
         n,
         &shared.exporter,
+        &shared.client,
+        current.dimedb.as_ref(),
     ) {
         Ok(g) => g,
         Err(e) => {

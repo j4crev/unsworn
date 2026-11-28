@@ -411,6 +411,46 @@ impl Host for ServerHost {
         body: core::Body<Body>,
         deadline: Deadline,
     ) -> Result<Reply<Body>, CallError> {
+        if handler.runtime == unsworn_core::dimedb::RUNTIME {
+            let Some(backend) = &self.generation.dimedb else {
+                return Err(CallError::Unavailable(
+                    "dimedb backend is not configured".into(),
+                ));
+            };
+            let op = handler.name.as_deref().unwrap_or("");
+            let input: serde_json::Value = match (&request.json, body) {
+                (Some(unsworn_proto::Json::Value(v)), _) => v.clone(),
+                (Some(unsworn_proto::Json::Raw(raw)), _) => serde_json::from_slice(raw.text())
+                    .map_err(|e| CallError::BadJson(format!("invalid JSON body: {e}")))?,
+                (None, core::Body::Bytes(b)) if !b.is_empty() => serde_json::from_slice(&b)
+                    .map_err(|e| CallError::BadJson(format!("invalid JSON body: {e}")))?,
+                (None, _) => serde_json::Value::Object(serde_json::Map::new()),
+            };
+            let began = Instant::now();
+            let (status, json) = backend
+                .dispatch(op, &input)
+                .await
+                .map_err(CallError::Handler)?;
+            self.in_handlers
+                .fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            if request.phase == unsworn_proto::Phase::Handle {
+                let _ = self.runtime.set(Arc::from(unsworn_core::dimedb::RUNTIME));
+            }
+            return Ok(Reply::Response {
+                response: unsworn_proto::Response {
+                    id: request.id,
+                    status,
+                    headers: std::collections::BTreeMap::new(),
+                    json: Some(unsworn_proto::Json::Value(json)),
+                    text: None,
+                    body_len: None,
+                    body_json: false,
+                    stream: false,
+                    mcp_content: None,
+                },
+                body: core::Body::Empty,
+            });
+        }
         let Some(pool) = self.generation.pools.get(&handler.runtime).cloned() else {
             return Err(CallError::Unavailable(format!(
                 "no runtime \"{}\"",

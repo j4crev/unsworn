@@ -35,6 +35,7 @@ use unsworn_proto::{
 
 mod endpoint;
 
+use crate::dimedb::DimeBackend;
 use crate::scale::{self, Decision, Sample, Scaler};
 use crate::server::support::{Body, HttpClient};
 use crate::telemetry::{self, Attr, ChildSpan, Parent, Tracer};
@@ -328,6 +329,8 @@ pub struct PoolOptions {
     /// Records what handlers call and fetch as spans, when the project has
     /// `[telemetry]`.
     pub telemetry: Option<Arc<Tracer>>,
+    /// Live `[dimedb]` backend, when configured.
+    pub dimedb: Option<Arc<DimeBackend>>,
 }
 
 /// A call's reply, and how long it waited for a worker, starting one
@@ -408,6 +411,8 @@ pub struct Pools {
     client: std::sync::OnceLock<HttpClient>,
     /// Records the calls and requests, when the project has `[telemetry]`.
     telemetry: Option<Arc<Tracer>>,
+    /// Live `[dimedb]` backend for `ctx.call("dimedb.*", ...)`.
+    dimedb: Option<Arc<DimeBackend>>,
 }
 
 impl Pools {
@@ -434,6 +439,7 @@ impl Pools {
             outbound: project.outbound.clone(),
             client: std::sync::OnceLock::new(),
             telemetry: opts.telemetry,
+            dimedb: opts.dimedb,
         });
         if !pools.functions.is_empty() || !pools.outbound.is_empty() {
             for pool in pools.pools.values() {
@@ -464,6 +470,7 @@ impl Pools {
                 .collect(),
             client: std::sync::OnceLock::new(),
             telemetry: pool.opts.telemetry.clone(),
+            dimedb: pool.opts.dimedb.clone(),
         });
         let _ = pool.peers.set(Arc::downgrade(&pools));
         pools
@@ -618,6 +625,16 @@ impl Pools {
                 trace: caller.trace,
             },
         )?;
+        if function.handler.runtime == unsworn_core::dimedb::RUNTIME {
+            let Some(backend) = &self.dimedb else {
+                return Err(calls::Failure::new(503, "dimedb backend is not configured"));
+            };
+            let op = function.handler.name.as_deref().unwrap_or("");
+            return backend
+                .dispatch(op, input)
+                .await
+                .map_err(|e| calls::Failure::new(400, e));
+        }
         let Some(pool) = self.pools.get(&function.handler.runtime) else {
             return Err(calls::Failure::new(
                 503,
