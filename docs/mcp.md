@@ -615,6 +615,23 @@ mcp_tools = { tags = ["public"] }      # or "all"
   mcp    = { tool = "list_users", description = "List users, newest first" }
   ```
 
+### dimeDB commands and tables as tools
+
+When both `[mcp]` (hosted) and `[dimedb]` are configured with `mcp = true`
+(the default), Unsworn registers tools derived from `dimedb.toml` under `[mcp]`'s
+endpoint policies:
+
+- `<prefix>_<snake_command>` for each command (requires `request_id` for
+  at-most-once execution; annotated with `idempotentHint: true`)
+- `<prefix>_lookup` to check what became of a previous `request_id`
+  (`readOnlyHint: true`, `idempotentHint: true`)
+- `<prefix>_get_<table>` to read a row by primary key (`readOnlyHint: true`,
+  `idempotentHint: true`)
+
+Use `mcp_commands`, `mcp_tables`, and `mcp_lookup` on `[dimedb]` to restrict
+which commands or tables are exposed to MCP clients (see
+[`config.md`](config.md#transactional-state-dimedb)).
+
 ## Later
 
 Not planned for a specific version yet:

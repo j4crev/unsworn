@@ -64,6 +64,7 @@ into a second programming language.
 [[function]]   # optional: handlers that other handlers call by name
 [outbound.*]   # optional: services Unsworn calls for handlers, adding their credentials
 [telemetry]    # optional: OpenTelemetry traces, sent to an outbound service
+[dimedb]       # optional: embedded or remote dimeDB transactional state store
 ```
 
 ### `[server]`
@@ -1644,6 +1645,60 @@ MCP support is described in [`mcp.md`](mcp.md). In config it adds:
 | `[mcp] proxy`, with handler-less `[[mcp.tool]]` entries for per-tool policies | top level |
 | `mcp = { tool = ... }` ([routes as tools](mcp.md#level-3-routes-as-tools)) | `[[route]]` with a handler, or a policy-only `[[route]]` entry |
 | `mcp_tools` | `[openapi]` |
+| `mcp`, `mcp_commands`, `mcp_tables`, `mcp_lookup` | `[dimedb]` |
+
+## Transactional state (`[dimedb]`)
+
+`[dimedb]` attaches a schema-driven [dimeDB](https://github.com/j4crev/dimedb)
+transactional store to an Unsworn project—either embedded in-process with
+sandboxed, hot-swappable WebAssembly rules (`mode = "embedded"`, the default) or
+forwarded to a remote dimeDB HTTP node (`mode = "remote"`, for multi-node,
+Lambda, or edge deploys).
+
+```toml
+[dimedb]
+mode            = "embedded"                # "embedded" (default) | "remote"
+schema          = "dimedb.toml"             # path to dimedb.toml (relative to project root)
+dir             = "data/dimedb"             # embedded WAL/snapshot directory (default: "data/dimedb")
+rules           = "rules/wallet.wasm"       # compiled Wasm rules module (required for embedded)
+retry_window    = "10m"                     # optional UUIDv7 request_id retry window
+lookup_window   = "1h"                      # optional expired request_id lookup window
+prefix          = "dimedb"                  # prefix for ctx.call functions & MCP tools (default: "dimedb")
+fuel_per_check  = 200000                    # Wasmtime fuel budget per check call (default: 200_000)
+max_rows        = 1000000                   # embedded live-row cap (default: 1_000_000; 0 = unlimited)
+max_request_ids = 1000000                   # embedded in-memory request_id cap (default: 1_000_000; 0 = unlimited)
+disk_limit_mb   = 4096                      # embedded disk cap in MiB (default: 4096; 0 = unlimited)
+mcp             = true                      # expose as MCP tools when [mcp] is hosted (default: true)
+mcp_commands    = ["Debit"]                 # optional allowlist of command names for MCP (default: all)
+mcp_tables      = ["accounts"]              # optional allowlist of table names for MCP (default: all)
+mcp_lookup      = true                      # expose <prefix>_lookup as an MCP tool (default: true)
+```
+
+For `mode = "remote"` (which works even when `unsworn` is built with
+`--no-default-features` without the `dimedb` Cargo feature):
+
+```toml
+[dimedb]
+mode    = "remote"
+schema  = "dimedb.toml"
+url     = "https://dime.internal:8080"
+headers = { Authorization = "Bearer {env.DIMEDB_TOKEN}" }
+```
+
+- **Generated `ctx.call` functions:** Unsworn registers `<prefix>.<snake_command>`
+  for each command in `dimedb.toml`, `<prefix>.lookup`, and
+  `<prefix>.get.<table>` for each table. Every command requires a `request_id`
+  (UUIDv7 string or non-negative integer) for at-most-once execution.
+- **Hot-swapping rules:** On config reload, if `dir` and `schema` are unchanged
+  in `mode = "embedded"`, Unsworn hot-swaps the `.wasm` rules module in place
+  without restarting or reloading state.
+- **Schema constraints:** Table tags in `dimedb.toml` must be unique integers in
+  `1..=32`.
+- **Security & limits:** Embedded mode defaults to bounded memory and disk
+  limits (`max_rows`, `max_request_ids`, `disk_limit_mb`). Remote mode warns on
+  non-loopback `http://` URLs, supports `{env.*}` secret headers, enforces the
+  route or function timeout, caps response bodies at 4 MiB, and sanitizes
+  transport errors returned to callers.
 
 ## Deployment targets
 
