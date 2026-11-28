@@ -2050,6 +2050,11 @@ impl<'h> Compiler<'h> {
             config::DimeDbMode::Remote => {
                 if let Some(u) = &url {
                     self.check_url(u, &format!("{loc}.url"));
+                    self.warn_plain_http(
+                        u,
+                        &format!("{loc}.url"),
+                        "dimedb commands and credentials travel in plaintext",
+                    );
                 } else {
                     self.diags.error(
                         format!("{loc}.url"),
@@ -2058,6 +2063,49 @@ impl<'h> Compiler<'h> {
                 }
             }
         }
+        let mut headers = BTreeMap::new();
+        for (k, v) in &raw.headers {
+            let val = self.subst_secret(v, &format!("{loc}.headers.{k}"));
+            headers.insert(k.clone(), val);
+        }
+        if let Some(allowed) = &raw.mcp_commands {
+            for name in allowed {
+                if !schema.commands.iter().any(|c| c.name == *name) {
+                    self.diags.error(
+                        format!("{loc}.mcp_commands"),
+                        format!("unknown command \"{name}\" in dimedb schema"),
+                    );
+                }
+            }
+        }
+        if let Some(allowed) = &raw.mcp_tables {
+            for name in allowed {
+                if !schema.tables.iter().any(|t| t.name == *name) {
+                    self.diags.error(
+                        format!("{loc}.mcp_tables"),
+                        format!("unknown table \"{name}\" in dimedb schema"),
+                    );
+                }
+            }
+        }
+        const DEFAULT_MAX_ROWS: u64 = 1_000_000;
+        const DEFAULT_MAX_REQUEST_IDS: u64 = 1_000_000;
+        const DEFAULT_DISK_LIMIT_MB: u64 = 4096;
+        let max_rows = match raw.max_rows {
+            Some(0) => None,
+            Some(n) => Some(n),
+            None => Some(DEFAULT_MAX_ROWS),
+        };
+        let max_request_ids = match raw.max_request_ids {
+            Some(0) => None,
+            Some(n) => Some(n),
+            None => Some(DEFAULT_MAX_REQUEST_IDS),
+        };
+        let disk_limit = match raw.disk_limit_mb {
+            Some(0) => None,
+            Some(mb) => Some(mb.saturating_mul(1 << 20)),
+            None => Some(DEFAULT_DISK_LIMIT_MB << 20),
+        };
         Some(Arc::new(crate::dimedb::DimeDbConfig {
             mode: raw.mode,
             schema_path: raw.schema.clone(),
@@ -2066,11 +2114,18 @@ impl<'h> Compiler<'h> {
             dir: raw.dir.clone().unwrap_or_else(|| "data/dimedb".into()),
             rules_path: raw.rules.clone(),
             url: url.map(|u| u.trim_end_matches('/').to_string()),
+            headers,
             retry_window: raw.retry_window.map(|d| d.0),
             lookup_window: raw.lookup_window.map(|d| d.0),
             prefix,
             mcp: raw.mcp,
+            mcp_commands: raw.mcp_commands.clone(),
+            mcp_tables: raw.mcp_tables.clone(),
+            mcp_lookup: raw.mcp_lookup,
             fuel_per_check: raw.fuel_per_check.unwrap_or(200_000),
+            max_rows,
+            max_request_ids,
+            disk_limit,
         }))
     }
 
@@ -2172,6 +2227,11 @@ impl<'h> Compiler<'h> {
             };
 
         for cmd in &dime.schema.commands {
+            if let Some(allowed) = &dime.mcp_commands
+                && !allowed.iter().any(|n| n == &cmd.name)
+            {
+                continue;
+            }
             let name = format!("{}_{}", dime.prefix, crate::dimedb::to_snake(&cmd.name));
             let desc = format!(
                 "Execute dimeDB command `{}` at most once. Pass a unique `request_id` (UUIDv7 or integer) and reuse it on retries.",
@@ -2185,14 +2245,21 @@ impl<'h> Compiler<'h> {
                 false,
             );
         }
-        add_tool(
-            format!("{}_lookup", dime.prefix),
-            "Look up what became of a previous dimeDB `request_id` (applied, not_applied, or unknown).".into(),
-            "lookup".into(),
-            crate::dimedb::lookup_input_schema(),
-            true,
-        );
+        if dime.mcp_lookup {
+            add_tool(
+                format!("{}_lookup", dime.prefix),
+                "Look up what became of a previous dimeDB `request_id` (applied, not_applied, or unknown).".into(),
+                "lookup".into(),
+                crate::dimedb::lookup_input_schema(),
+                true,
+            );
+        }
         for table in &dime.schema.tables {
+            if let Some(allowed) = &dime.mcp_tables
+                && !allowed.iter().any(|n| n == &table.name)
+            {
+                continue;
+            }
             add_tool(
                 format!("{}_get_{}", dime.prefix, table.name),
                 format!(

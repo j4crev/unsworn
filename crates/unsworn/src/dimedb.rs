@@ -16,8 +16,9 @@ use dimedb::Options;
 use dimedb_wasm::WasmConfig;
 #[cfg(feature = "dimedb")]
 use dimedb_wasm::dynamic::{DynamicEngine, DynamicSchema, parse_request_id};
+use http::header::{HeaderName, HeaderValue};
 use http::{Method, Request};
-use http_body_util::BodyExt;
+use http_body_util::{BodyExt, Limited};
 use serde_json::Value;
 #[cfg(feature = "dimedb")]
 use serde_json::json;
@@ -35,11 +36,15 @@ pub struct DimeBackend {
     inner: BackendInner,
 }
 
+/// Maximum size of a JSON response body accepted from a remote dimeDB server.
+const MAX_REMOTE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
 enum BackendInner {
     #[cfg(feature = "dimedb")]
     Embedded(Arc<DynamicEngine>),
     Remote {
         base_url: String,
+        headers: Vec<(HeaderName, HeaderValue)>,
         client: HttpClient,
     },
 }
@@ -82,9 +87,13 @@ impl DimeBackend {
                     let mut opts = Options::default();
                     opts.limits.retry_window_ms = cfg.retry_window.map(|d| d.as_millis() as u64);
                     opts.limits.lookup_window_ms = cfg.lookup_window.map(|d| d.as_millis() as u64);
+                    opts.limits.max_rows = cfg.max_rows;
+                    opts.limits.max_request_ids = cfg.max_request_ids;
+                    opts.disk_limit = cfg.disk_limit;
                     let wasm_cfg = WasmConfig {
                         consume_fuel: true,
                         fuel_per_check: cfg.fuel_per_check,
+                        ..WasmConfig::default()
                     };
                     let eng = DynamicEngine::open(
                         &root.join(&cfg.dir),
@@ -110,12 +119,24 @@ impl DimeBackend {
             DimeDbMode::Remote => {
                 let _ = (root, previous);
                 let base_url = cfg.url.clone().ok_or("remote [dimedb] requires `url`")?;
+                let mut headers = Vec::with_capacity(cfg.headers.len());
+                for (k, v) in &cfg.headers {
+                    let name = HeaderName::from_bytes(k.as_bytes())
+                        .map_err(|e| format!("invalid [dimedb].headers name `{k}`: {e}"))?;
+                    let val = HeaderValue::from_str(v)
+                        .map_err(|e| format!("invalid [dimedb].headers value for `{k}`: {e}"))?;
+                    headers.push((name, val));
+                }
                 Ok(Arc::new(DimeBackend {
                     #[cfg(feature = "dimedb")]
                     dir: cfg.dir.clone(),
                     #[cfg(feature = "dimedb")]
                     schema_toml: cfg.schema_toml.clone(),
-                    inner: BackendInner::Remote { base_url, client },
+                    inner: BackendInner::Remote {
+                        base_url,
+                        headers,
+                        client,
+                    },
                 }))
             }
         }
@@ -127,9 +148,11 @@ impl DimeBackend {
         match &self.inner {
             #[cfg(feature = "dimedb")]
             BackendInner::Embedded(eng) => dispatch_embedded(eng, op, input).await,
-            BackendInner::Remote { base_url, client } => {
-                dispatch_remote(base_url, client, op, input).await
-            }
+            BackendInner::Remote {
+                base_url,
+                headers,
+                client,
+            } => dispatch_remote(base_url, headers, client, op, input).await,
         }
     }
 }
@@ -171,6 +194,7 @@ async fn dispatch_embedded(
 
 async fn dispatch_remote(
     base_url: &str,
+    headers: &[(HeaderName, HeaderValue)],
     client: &HttpClient,
     op: &str,
     input: &Value,
@@ -185,24 +209,32 @@ async fn dispatch_remote(
         return Err(format!("unknown dimedb op `{op}`"));
     };
     let body = serde_json::to_vec(input).map_err(|e| e.to_string())?;
-    let req = Request::builder()
+    let mut builder = Request::builder()
         .method(Method::POST)
         .uri(&path)
-        .header("content-type", "application/json")
+        .header("content-type", "application/json");
+    for (name, val) in headers {
+        builder = builder.header(name, val);
+    }
+    let req = builder
         .body(full(Bytes::from(body)))
-        .map_err(|e| e.to_string())?;
-    let resp = client
-        .request(req)
-        .await
-        .map_err(|e| format!("remote dimedb request failed: {e}"))?;
+        .map_err(|_| "invalid remote dimedb request".to_string())?;
+    let resp = client.request(req).await.map_err(|e| {
+        tracing::warn!(op, error = %e, "remote dimedb request failed");
+        "remote dimedb request failed".to_string()
+    })?;
     let status = resp.status().as_u16();
-    let bytes = resp
-        .into_body()
+    let bytes = Limited::new(resp.into_body(), MAX_REMOTE_RESPONSE_BYTES)
         .collect()
         .await
-        .map_err(|e| format!("reading remote dimedb response: {e}"))?
+        .map_err(|e| {
+            tracing::warn!(op, status, error = %e, "reading remote dimedb response failed");
+            "remote dimedb response unreadable or exceeded size limit".to_string()
+        })?
         .to_bytes();
-    let json: Value = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("invalid JSON from remote dimedb: {e}"))?;
+    let json: Value = serde_json::from_slice(&bytes).map_err(|e| {
+        tracing::warn!(op, status, error = %e, "invalid JSON from remote dimedb");
+        "invalid JSON response from remote dimedb".to_string()
+    })?;
     Ok((status, json))
 }

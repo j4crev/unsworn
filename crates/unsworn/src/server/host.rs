@@ -427,10 +427,11 @@ impl Host for ServerHost {
                 (None, _) => serde_json::Value::Object(serde_json::Map::new()),
             };
             let began = Instant::now();
-            let (status, json) = backend
-                .dispatch(op, &input)
-                .await
-                .map_err(CallError::Handler)?;
+            let (status, json) =
+                tokio::time::timeout_at(instant(deadline).into(), backend.dispatch(op, &input))
+                    .await
+                    .map_err(|_| CallError::Timeout)?
+                    .map_err(CallError::Handler)?;
             self.in_handlers
                 .fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
             if request.phase == unsworn_proto::Phase::Handle {

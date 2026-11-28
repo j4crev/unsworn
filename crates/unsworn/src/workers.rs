@@ -630,9 +630,9 @@ impl Pools {
                 return Err(calls::Failure::new(503, "dimedb backend is not configured"));
             };
             let op = function.handler.name.as_deref().unwrap_or("");
-            return backend
-                .dispatch(op, input)
+            return tokio::time::timeout(function.timeout, backend.dispatch(op, input))
                 .await
+                .map_err(|_| calls::Failure::new(504, "dimedb request timed out"))?
                 .map_err(|e| calls::Failure::new(400, e));
         }
         let Some(pool) = self.pools.get(&function.handler.runtime) else {
