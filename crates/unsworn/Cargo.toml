@@ -22,8 +22,8 @@ arc-swap = "1.9.5"
 async-compression = { version = "0.4.52", features = ["tokio", "gzip", "brotli", "zstd"] }
 bytes = "1.12.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
-dimedb = { git = "https://github.com/j4crev/dimedb", tag = "v0.1.0", optional = true }
-dimedb-wasm = { git = "https://github.com/j4crev/dimedb", tag = "v0.1.0", optional = true }
+dimedb = { version = "0.1.1", optional = true }
+dimedb-wasm = { version = "0.1.1", optional = true }
 futures-util = "0.3.34"
 http = "1.5.0"
 http-body = "1.1.0"
@@ -50,8 +50,8 @@ tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.7.1", features = ["fs"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
-unsworn-core = { version = "0.8.0", path = "../unsworn-core" }
-unsworn-proto = { version = "0.8.0", path = "../unsworn-proto" }
+unsworn-core = { version = "0.9.0", path = "../unsworn-core" }
+unsworn-proto = { version = "0.9.0", path = "../unsworn-proto" }
 
 [lints]
 workspace = true

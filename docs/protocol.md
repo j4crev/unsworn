@@ -21,7 +21,7 @@ variables:
 | Variable | Example | Meaning |
 |---|---|---|
 | `UNSWORN_PROTOCOL` | `1` | Protocol version Unsworn speaks |
-| `UNSWORN_VERSION` | `0.8.0` | Unsworn version |
+| `UNSWORN_VERSION` | `0.9.0` | Unsworn version |
 | `UNSWORN_TRANSPORT` | `stdio` or `unix:/run/unsworn/ts-0.sock` | Where to talk |
 | `UNSWORN_ROOT` | `/app` | Project root; handler paths are relative to it |
 | `UNSWORN_WORKER_ID` | `ts-0` | Worker id, for logs |
@@ -48,7 +48,7 @@ means nothing to a worker, and can't be guessed from another one.
 ### `ready` (worker → Unsworn)
 
 ```json
-{"type":"ready","protocol":1,"max_in_flight":1,"verify":true,"sdk":"unsworn-python/0.8.0"}
+{"type":"ready","protocol":1,"max_in_flight":1,"verify":true,"sdk":"unsworn-python/0.9.0"}
 ```
 
 - `protocol`: required. Unsworn stops the worker if it can't speak this
