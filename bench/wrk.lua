@@ -1,12 +1,44 @@
 -- Used by run.py: sends BENCH_METHOD with the body in BENCH_BODY_FILE, if
 -- set, and prints the results as one JSON line.
+-- If BENCH_UNIQUE_ID_TOKEN is set, each request replaces that token in the
+-- body with a unique per-thread monotonic integer string (for at-most-once
+-- transactional write benchmarks such as [dimedb]).
 local method = os.getenv("BENCH_METHOD")
 local body_file = os.getenv("BENCH_BODY_FILE")
+local unique_token = os.getenv("BENCH_UNIQUE_ID_TOKEN")
+local body_template = nil
+
 if method then wrk.method = method end
 if body_file and body_file ~= "" then
   local f = assert(io.open(body_file, "rb"))
-  wrk.body = f:read("*a")
+  local content = f:read("*a")
   f:close()
+  if unique_token and unique_token ~= "" then
+    body_template = content
+  else
+    wrk.body = content
+  end
+end
+
+local thread_counter = 0
+function setup(thread)
+  thread_counter = thread_counter + 1
+  thread:set("tid", thread_counter)
+end
+
+local req_seq = 0
+local id_prefix = 0
+function init(args)
+  -- Offset by time so warmup and measured runs never reuse request_ids.
+  id_prefix = (os.time() % 1000000) * 1000000000 + tid * 10000000
+end
+
+if unique_token and unique_token ~= "" then
+  function request()
+    req_seq = req_seq + 1
+    local body = string.gsub(body_template, unique_token, tostring(id_prefix + req_seq))
+    return wrk.format(nil, nil, nil, body)
+  end
 end
 
 function done(summary, latency, requests)
