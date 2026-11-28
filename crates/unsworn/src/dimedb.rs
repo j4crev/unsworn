@@ -206,10 +206,7 @@ async fn dispatch_embedded(
         ))
     } else if let Some(table_name) = op.strip_prefix("list:") {
         let cursor = input.get("cursor");
-        let limit = input
-            .get("limit")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize;
+        let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(0) as usize;
         let page = eng.list_json(table_name, cursor, limit)?;
         Ok((200, page))
     } else if let Some(rest) = op.strip_prefix("find:") {
@@ -217,10 +214,7 @@ async fn dispatch_embedded(
             .split_once(':')
             .ok_or_else(|| format!("invalid dimedb find op `{op}`"))?;
         let value = input.get("value").ok_or("missing required `value`")?;
-        let limit = input
-            .get("limit")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize;
+        let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(0) as usize;
         let res = eng.find_json(table_name, field_name, value, limit)?;
         Ok((200, res))
     } else {
