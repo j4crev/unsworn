@@ -510,6 +510,15 @@
             "null"
           ]
         },
+        "disk_limit_mb": {
+          "description": "Maximum disk usage in MiB for `mode = \"embedded\"` (default: 4096; 0 = unlimited).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "fuel_per_check": {
           "description": "Optional Wasmtime fuel budget per `check` call (default: 200_000).",
           "format": "uint64",
@@ -518,6 +527,14 @@
             "integer",
             "null"
           ]
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Optional HTTP headers (supports `${env:...}`) sent to the remote dimeDB server.",
+          "type": "object"
         },
         "lookup_window": {
           "anyOf": [
@@ -530,10 +547,53 @@
           ],
           "description": "Lookup window for expired request IDs (e.g. `\"1h\"`)."
         },
+        "max_request_ids": {
+          "description": "Maximum request IDs held in memory for `mode = \"embedded\"` (default: 1_000_000; 0 = unlimited).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_rows": {
+          "description": "Maximum live rows held in memory for `mode = \"embedded\"` (default: 1_000_000; 0 = unlimited).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "mcp": {
           "default": true,
           "description": "Expose commands, `lookup`, and table reads as MCP tools when `[mcp]` is set.",
           "type": "boolean"
+        },
+        "mcp_commands": {
+          "description": "Optional allowlist of command names to expose as MCP tools (default: all commands).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "mcp_lookup": {
+          "default": true,
+          "description": "Expose `<prefix>_lookup` as an MCP tool when `mcp = true`. Default: `true`.",
+          "type": "boolean"
+        },
+        "mcp_tables": {
+          "description": "Optional allowlist of table names to expose as MCP `get` tools (default: all tables).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "mode": {
           "$ref": "#/$defs/DimeDbMode",

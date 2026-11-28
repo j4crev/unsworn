@@ -1,6 +1,7 @@
 //! Pure `[dimedb]` configuration, schema parsing, JSON Schema derivation,
 //! and virtual handler synthesis for `unsworn-core` (no I/O, `wasm32`-clean).
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -65,16 +66,36 @@ pub struct DimeDbConfig {
     pub dir: String,
     pub rules_path: Option<String>,
     pub url: Option<String>,
+    pub headers: BTreeMap<String, String>,
     pub retry_window: Option<Duration>,
     pub lookup_window: Option<Duration>,
     pub prefix: String,
     pub mcp: bool,
+    pub mcp_commands: Option<Vec<String>>,
+    pub mcp_tables: Option<Vec<String>>,
+    pub mcp_lookup: bool,
     pub fuel_per_check: u64,
+    pub max_rows: Option<u64>,
+    pub max_request_ids: Option<u64>,
+    pub disk_limit: Option<u64>,
 }
 
 impl DimeSchema {
     pub fn from_toml(src: &str) -> Result<Self, String> {
-        toml::from_str(src).map_err(|e| format!("invalid dimedb.toml: {e}"))
+        let schema: Self = toml::from_str(src).map_err(|e| format!("invalid dimedb.toml: {e}"))?;
+        let mut seen_tags = std::collections::BTreeSet::new();
+        for t in &schema.tables {
+            if !(1..=32).contains(&t.tag) {
+                return Err(format!(
+                    "table `{}` tag {} is outside supported range 1..=32",
+                    t.name, t.tag
+                ));
+            }
+            if !seen_tags.insert(t.tag) {
+                return Err(format!("duplicate table tag {} for `{}`", t.tag, t.name));
+            }
+        }
+        Ok(schema)
     }
 }
 

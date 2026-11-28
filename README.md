@@ -15,6 +15,7 @@ Unsworn also handles the below parts of your app, configured in `unsworn.toml` i
 | Security | JWT/JWKS, API keys, signed webhooks (Stripe, GitHub, Slack, Standard Webhooks), `require` rules that tie a path to the caller's claims, CORS, IP allow and deny lists, body size limits, outbound services with credentials handlers never hold |
 | Traffic | rate limits, timeouts, response caching |
 | Contracts | params, query, header and body validation (JSON Schema), OpenAPI input and output |
+| State | optional embedded or remote [dimeDB](docs/config.md#transactional-state-dimedb) transactional store with hot-swappable Wasm rules, at-most-once `request_id`s, `ctx.call` functions, and MCP tools |
 | Ops | access logs, Prometheus metrics, per-route cost (`unsworn top`), shadow handlers, request IDs, health checks, config hot reload |
 
 ## Two ways to serve a route
@@ -228,7 +229,7 @@ SDK's worker unless the config says otherwise.
 | | |
 |---|---|
 | Start here | [Installing](docs/install.md), [commands](docs/cli.md), [config reference](docs/config.md) |
-| Your code | [Serving a route](docs/serving-routes.md), [HTTP runtimes](docs/http-runtime.md), [generated types](docs/types.md), [functions](docs/functions.md), [outbound services](docs/outbound.md), [MCP](docs/mcp.md) |
+| Your code | [Serving a route](docs/serving-routes.md), [HTTP runtimes](docs/http-runtime.md), [generated types](docs/types.md), [functions](docs/functions.md), [outbound services](docs/outbound.md), [MCP](docs/mcp.md), [dimeDB](docs/config.md#transactional-state-dimedb) |
 | Reviewing and operating | [Plan and diff](docs/plan.md), [`top`](docs/top.md), [`shadow`](docs/shadow.md), [tracing](docs/tracing.md) |
 | Deploying | [Container image](docs/image.md), [AWS Lambda](docs/lambda.md), [Cloudflare Workers](docs/cloudflare.md), [Vercel and Netlify](docs/serverless.md) |
 | Internals | [Architecture](docs/architecture.md), [worker protocol](docs/protocol.md), [conformance](docs/conformance.md), [benchmarks](docs/benchmarks.md), [roadmap](docs/roadmap.md) |

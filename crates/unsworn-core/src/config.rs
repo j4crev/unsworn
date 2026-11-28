@@ -75,6 +75,9 @@ pub struct RawDimeDb {
     pub rules: Option<String>,
     /// Remote dimeDB server URL for `mode = "remote"`.
     pub url: Option<String>,
+    /// Optional HTTP headers (supports `${env:...}`) sent to the remote dimeDB server.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
     /// Retry window for UUIDv7 request IDs (e.g. `"10m"`).
     pub retry_window: Option<ConfigDuration>,
     /// Lookup window for expired request IDs (e.g. `"1h"`).
@@ -84,8 +87,21 @@ pub struct RawDimeDb {
     /// Expose commands, `lookup`, and table reads as MCP tools when `[mcp]` is set.
     #[serde(default = "default_true")]
     pub mcp: bool,
+    /// Optional allowlist of command names to expose as MCP tools (default: all commands).
+    pub mcp_commands: Option<Vec<String>>,
+    /// Optional allowlist of table names to expose as MCP `get` tools (default: all tables).
+    pub mcp_tables: Option<Vec<String>>,
+    /// Expose `<prefix>_lookup` as an MCP tool when `mcp = true`. Default: `true`.
+    #[serde(default = "default_true")]
+    pub mcp_lookup: bool,
     /// Optional Wasmtime fuel budget per `check` call (default: 200_000).
     pub fuel_per_check: Option<u64>,
+    /// Maximum live rows held in memory for `mode = "embedded"` (default: 1_000_000; 0 = unlimited).
+    pub max_rows: Option<u64>,
+    /// Maximum request IDs held in memory for `mode = "embedded"` (default: 1_000_000; 0 = unlimited).
+    pub max_request_ids: Option<u64>,
+    /// Maximum disk usage in MiB for `mode = "embedded"` (default: 4096; 0 = unlimited).
+    pub disk_limit_mb: Option<u64>,
 }
 
 /// `[telemetry]`: where Unsworn sends spans, and of how many requests. It
