@@ -1999,13 +1999,23 @@ impl<'h> Compiler<'h> {
             return None;
         };
         self.files.push(raw.schema.clone());
-        let schema = match crate::dimedb::DimeSchema::from_toml(&schema_toml) {
-            Ok(s) => s,
-            Err(e) => {
-                self.diags.error(format!("{loc}.schema"), e);
-                return None;
-            }
-        };
+        let lock_path = crate::dimedb::TagLock::path_for(&raw.schema);
+        let existing_lock = self.host.read(&lock_path);
+        if existing_lock.is_some() {
+            self.files.push(lock_path.clone());
+        }
+        let (schema, updated_lock, lock_dirty) =
+            match crate::dimedb::DimeSchema::from_toml_with_lock(
+                &schema_toml,
+                existing_lock.as_deref(),
+            ) {
+                Ok(res) => res,
+                Err(e) => {
+                    self.diags.error(format!("{loc}.schema"), e);
+                    return None;
+                }
+            };
+        let lock_toml = updated_lock.to_toml();
         let prefix = raw
             .prefix
             .as_deref()
@@ -2110,6 +2120,9 @@ impl<'h> Compiler<'h> {
             mode: raw.mode,
             schema_path: raw.schema.clone(),
             schema_toml,
+            lock_path,
+            lock_toml,
+            lock_dirty,
             schema,
             dir: raw.dir.clone().unwrap_or_else(|| "data/dimedb".into()),
             rules_path: raw.rules.clone(),
@@ -2166,6 +2179,18 @@ impl<'h> Compiler<'h> {
                 format!("get:{}", table.name),
                 crate::dimedb::get_input_schema(table),
             );
+            insert_fn(
+                format!("{}.list.{}", dime.prefix, table.name),
+                format!("list:{}", table.name),
+                crate::dimedb::list_input_schema(table),
+            );
+            for idx in table.resolved_indexes() {
+                insert_fn(
+                    format!("{}.find.{}.by_{}", dime.prefix, table.name, idx.field),
+                    format!("find:{}:{}", table.name, idx.field),
+                    crate::dimedb::find_input_schema(&idx),
+                );
+            }
         }
     }
 
@@ -2270,6 +2295,28 @@ impl<'h> Compiler<'h> {
                 crate::dimedb::get_input_schema(table),
                 true,
             );
+            add_tool(
+                format!("{}_list_{}", dime.prefix, table.name),
+                format!(
+                    "List rows from dimeDB table `{}` in key order with optional cursor pagination.",
+                    table.name
+                ),
+                format!("list:{}", table.name),
+                crate::dimedb::list_input_schema(table),
+                true,
+            );
+            for idx in table.resolved_indexes() {
+                add_tool(
+                    format!("{}_find_{}_by_{}", dime.prefix, table.name, idx.field),
+                    format!(
+                        "Find rows in dimeDB table `{}` where `{}` matches `value`.",
+                        table.name, idx.field
+                    ),
+                    format!("find:{}:{}", table.name, idx.field),
+                    crate::dimedb::find_input_schema(&idx),
+                    true,
+                );
+            }
         }
     }
 
