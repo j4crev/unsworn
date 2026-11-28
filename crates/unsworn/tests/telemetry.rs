@@ -1324,6 +1324,12 @@ fn a_node_function_exports_nested_spans() {
         eprintln!("skipping: node not found");
         return;
     }
+    let wasm =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/js/wasm/unsworn_bg.wasm");
+    if !wasm.exists() {
+        eprintln!("skipping: sdk/js/wasm not built (run crates/unsworn-wasm/build.sh)");
+        return;
+    }
     let (collector, echo) = (Fake::start(), Fake::start());
     let config = format!(
         r#"
