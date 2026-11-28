@@ -413,7 +413,9 @@ impl Host for ServerHost {
     ) -> Result<Reply<Body>, CallError> {
         if handler.runtime == unsworn_core::dimedb::RUNTIME {
             let Some(backend) = &self.generation.dimedb else {
-                return Err(CallError::Unavailable("dimedb backend is not configured".into()));
+                return Err(CallError::Unavailable(
+                    "dimedb backend is not configured".into(),
+                ));
             };
             let op = handler.name.as_deref().unwrap_or("");
             let input: serde_json::Value = match (&request.json, body) {

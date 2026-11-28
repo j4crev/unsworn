@@ -2022,7 +2022,10 @@ impl<'h> Compiler<'h> {
             );
             return None;
         }
-        let url = raw.url.as_ref().map(|u| self.subst(u, &format!("{loc}.url")));
+        let url = raw
+            .url
+            .as_ref()
+            .map(|u| self.subst(u, &format!("{loc}.url")));
         match raw.mode {
             config::DimeDbMode::Embedded => {
                 if let Some(rules) = &raw.rules {
@@ -2118,58 +2121,55 @@ impl<'h> Compiler<'h> {
         endpoint: (String, Layer),
         drafts: &mut Vec<Draft>,
     ) {
-        let mut add_tool = |name: String,
-                            desc: String,
-                            op: String,
-                            input: Value,
-                            read_only: bool| {
-            if pending.tools.iter().any(|t| t.name == name) {
-                return;
-            }
-            let input_rule = BodyRule::new(input.clone(), true, self.schemas).ok();
-            let annotations = if read_only {
-                Some(serde_json::json!({ "readOnlyHint": true, "idempotentHint": true }))
-            } else {
-                Some(serde_json::json!({ "idempotentHint": true }))
+        let mut add_tool =
+            |name: String, desc: String, op: String, input: Value, read_only: bool| {
+                if pending.tools.iter().any(|t| t.name == name) {
+                    return;
+                }
+                let input_rule = BodyRule::new(input.clone(), true, self.schemas).ok();
+                let annotations = if read_only {
+                    Some(serde_json::json!({ "readOnlyHint": true, "idempotentHint": true }))
+                } else {
+                    Some(serde_json::json!({ "idempotentHint": true }))
+                };
+                drafts.push(Draft {
+                    methods: Some(vec!["POST".into()]),
+                    path: format!("mcp:{name}"),
+                    host: None,
+                    action: Action::Handler(crate::dimedb::handler_ref(&op)),
+                    source: Source::McpTool {
+                        file: self.config_file.clone(),
+                        line: None,
+                        index: pending.tools.len() + 1,
+                        name: name.clone(),
+                    },
+                    own: Layer::default(),
+                    inherit: vec![endpoint.clone()],
+                    validation: RawValidation {
+                        body: Some((input.clone(), true)),
+                        response: None,
+                        ..Default::default()
+                    },
+                    openapi_layer: None,
+                    op: None,
+                    mcp: None,
+                    shadow: None,
+                    invalidates: None,
+                });
+                pending.tools.push(McpTool {
+                    name,
+                    title: None,
+                    description: Some(desc),
+                    input_schema: input,
+                    output_schema: None,
+                    annotations,
+                    param_headers: Vec::new(),
+                    route: 0,
+                    own: Layer::default(),
+                    input_rule,
+                    binding: None,
+                });
             };
-            drafts.push(Draft {
-                methods: Some(vec!["POST".into()]),
-                path: format!("mcp:{name}"),
-                host: None,
-                action: Action::Handler(crate::dimedb::handler_ref(&op)),
-                source: Source::McpTool {
-                    file: self.config_file.clone(),
-                    line: None,
-                    index: pending.tools.len() + 1,
-                    name: name.clone(),
-                },
-                own: Layer::default(),
-                inherit: vec![endpoint.clone()],
-                validation: RawValidation {
-                    body: Some((input.clone(), true)),
-                    response: None,
-                    ..Default::default()
-                },
-                openapi_layer: None,
-                op: None,
-                mcp: None,
-                shadow: None,
-                invalidates: None,
-            });
-            pending.tools.push(McpTool {
-                name,
-                title: None,
-                description: Some(desc),
-                input_schema: input,
-                output_schema: None,
-                annotations,
-                param_headers: Vec::new(),
-                route: 0,
-                own: Layer::default(),
-                input_rule,
-                binding: None,
-            });
-        };
 
         for cmd in &dime.schema.commands {
             let name = format!("{}_{}", dime.prefix, crate::dimedb::to_snake(&cmd.name));
@@ -2195,7 +2195,10 @@ impl<'h> Compiler<'h> {
         for table in &dime.schema.tables {
             add_tool(
                 format!("{}_get_{}", dime.prefix, table.name),
-                format!("Read a row from dimeDB table `{}` by primary key.", table.name),
+                format!(
+                    "Read a row from dimeDB table `{}` by primary key.",
+                    table.name
+                ),
                 format!("get:{}", table.name),
                 crate::dimedb::get_input_schema(table),
                 true,

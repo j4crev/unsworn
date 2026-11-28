@@ -115,8 +115,12 @@ async fn post_mcp(url: &str, method: &str, tool: Option<&str>, mut body: Value) 
     let resp = client.request(req).await.expect("mcp request");
     let status = resp.status().as_u16();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let val: Value = serde_json::from_slice(&bytes)
-        .unwrap_or_else(|e| panic!("invalid JSON ({status}): {e}: {}", String::from_utf8_lossy(&bytes)));
+    let val: Value = serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+        panic!(
+            "invalid JSON ({status}): {e}: {}",
+            String::from_utf8_lossy(&bytes)
+        )
+    });
     (status, val)
 }
 
@@ -197,10 +201,16 @@ auth = "none"
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert!(tool_names.contains(&"dimedb_create_account"), "{tool_names:?}");
+    assert!(
+        tool_names.contains(&"dimedb_create_account"),
+        "{tool_names:?}"
+    );
     assert!(tool_names.contains(&"dimedb_debit"), "{tool_names:?}");
     assert!(tool_names.contains(&"dimedb_lookup"), "{tool_names:?}");
-    assert!(tool_names.contains(&"dimedb_get_accounts"), "{tool_names:?}");
+    assert!(
+        tool_names.contains(&"dimedb_get_accounts"),
+        "{tool_names:?}"
+    );
 
     // Helper to extract parsed tool JSON from MCP `tools/call` result.
     let parse_tool_json = |resp: &Value| -> Value {
@@ -250,7 +260,13 @@ auth = "none"
             }
         }
     });
-    let (_, debit_resp) = post_mcp(&mcp_url, "tools/call", Some("dimedb_debit"), debit_req.clone()).await;
+    let (_, debit_resp) = post_mcp(
+        &mcp_url,
+        "tools/call",
+        Some("dimedb_debit"),
+        debit_req.clone(),
+    )
+    .await;
     assert_eq!(
         parse_tool_json(&debit_resp),
         json!({ "outcome": "done", "reply": { "kind": "Balance", "balance": 120 } })
@@ -443,7 +459,10 @@ auth = "none"
     let parsed = parse_tool_json(&resp);
     assert_eq!(parsed["outcome"], "done");
     assert_eq!(parsed["reply"]["balance"], 70);
-    assert_eq!(parsed["echo_req_id"], "01937000-0000-7000-8000-000000000077");
+    assert_eq!(
+        parsed["echo_req_id"],
+        "01937000-0000-7000-8000-000000000077"
+    );
 
     let (_, lookup_resp) = post_mcp(
         &mcp_url,

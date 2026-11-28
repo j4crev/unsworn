@@ -102,19 +102,14 @@ impl DimeBackend {
                 #[cfg(not(feature = "dimedb"))]
                 {
                     let _ = (root, client, previous);
-                    Err(
-                        "embedded [dimedb] requires the `dimedb` Cargo feature; \
+                    Err("embedded [dimedb] requires the `dimedb` Cargo feature; \
                          rebuild with `--features dimedb` or set `mode = \"remote\"`"
-                            .into(),
-                    )
+                        .into())
                 }
             }
             DimeDbMode::Remote => {
                 let _ = (root, previous);
-                let base_url = cfg
-                    .url
-                    .clone()
-                    .ok_or("remote [dimedb] requires `url`")?;
+                let base_url = cfg.url.clone().ok_or("remote [dimedb] requires `url`")?;
                 Ok(Arc::new(DimeBackend {
                     #[cfg(feature = "dimedb")]
                     dir: cfg.dir.clone(),
