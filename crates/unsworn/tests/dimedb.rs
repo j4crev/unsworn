@@ -483,3 +483,186 @@ auth = "none"
 
     server_task.abort();
 }
+
+#[cfg(feature = "dimedb")]
+#[tokio::test]
+async fn dimedb_auto_lock_list_and_secondary_index_find() {
+    let tmp = TempDir::new().unwrap();
+    let port = free_port();
+
+    // Schema with `indexes = ["balance"]` and explicit tags matching the fixture wasm.
+    let schema_with_index = r#"
+[app]
+name = "Wallet"
+version = 1
+
+[[tables]]
+name = "accounts"
+tag = 3
+key = "u64"
+fields = [
+  { name = "balance", type = "u64" },
+  { name = "credited", type = "u64" },
+  { name = "debited", type = "u64" },
+]
+indexes = ["balance"]
+
+[[commands]]
+name = "CreateAccount"
+tag = 2
+fields = [
+  { name = "account", type = "u64" },
+  { name = "balance", type = "u64" },
+]
+
+[[replies]]
+name = "Ok"
+tag = 1
+"#;
+    fs::write(tmp.path().join("dimedb.toml"), schema_with_index).unwrap();
+    fs::write(tmp.path().join("rules.wasm"), guest_wasm_bytes()).unwrap();
+    fs::write(
+        tmp.path().join("unsworn.toml"),
+        format!(
+            r#"
+[server]
+listen = "127.0.0.1:{port}"
+
+[mcp]
+path = "/mcp"
+name = "wallet-mcp"
+
+[dimedb]
+schema = "dimedb.toml"
+rules = "rules.wasm"
+"#
+        ),
+    )
+    .unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_unsworn");
+    let child = Command::new(bin)
+        .current_dir(tmp.path())
+        .args(["serve", "--no-build"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn unsworn serve");
+    let _guard = ServerGuard(child);
+    wait_health(port).await;
+
+    // 1. Verify dimedb.lock was auto-created on disk.
+    let lock_path = tmp.path().join("dimedb.lock");
+    assert!(lock_path.exists(), "unsworn should auto-create dimedb.lock");
+    let lock_text = fs::read_to_string(&lock_path).unwrap();
+    assert!(lock_text.contains("accounts = 3"));
+
+    let mcp_url = format!("http://127.0.0.1:{port}/mcp");
+    let parse_tool_json = |resp: &Value| -> Value {
+        if let Some(sc) = resp["result"].get("structuredContent") {
+            return sc.clone();
+        }
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        serde_json::from_str(text).unwrap()
+    };
+
+    // 2. Verify list & secondary-index find tools are exposed in tools/list.
+    let (_, list_resp) = post_mcp(
+        &mcp_url,
+        "tools/list",
+        None,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }),
+    )
+    .await;
+    let tool_names: Vec<&str> = list_resp["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(tool_names.contains(&"dimedb_list_accounts"));
+    assert!(tool_names.contains(&"dimedb_find_accounts_by_balance"));
+
+    // 3. Seed 3 accounts.
+    for (i, (acct, bal)) in [(1u64, 500u64), (2, 250), (3, 500)].into_iter().enumerate() {
+        let (_, r) = post_mcp(
+            &mcp_url,
+            "tools/call",
+            Some("dimedb_create_account"),
+            json!({
+                "jsonrpc": "2.0",
+                "id": i + 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "dimedb_create_account",
+                    "arguments": {
+                        "request_id": acct,
+                        "account": acct,
+                        "balance": bal
+                    }
+                }
+            }),
+        )
+        .await;
+        assert_eq!(parse_tool_json(&r)["outcome"], "done");
+    }
+
+    // 4. Paginate with dimedb_list_accounts.
+    let (_, p1) = post_mcp(
+        &mcp_url,
+        "tools/call",
+        Some("dimedb_list_accounts"),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": { "name": "dimedb_list_accounts", "arguments": { "limit": 2 } }
+        }),
+    )
+    .await;
+    let p1_json = parse_tool_json(&p1);
+    assert_eq!(p1_json["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(p1_json["next_cursor"], 2);
+
+    let (_, p2) = post_mcp(
+        &mcp_url,
+        "tools/call",
+        Some("dimedb_list_accounts"),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {
+                "name": "dimedb_list_accounts",
+                "arguments": { "cursor": p1_json["next_cursor"], "limit": 2 }
+            }
+        }),
+    )
+    .await;
+    let p2_json = parse_tool_json(&p2);
+    assert_eq!(p2_json["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(p2_json["rows"][0]["key"], 3);
+    assert!(p2_json["next_cursor"].is_null());
+
+    // 5. Query secondary index with dimedb_find_accounts_by_balance.
+    let (_, find_resp) = post_mcp(
+        &mcp_url,
+        "tools/call",
+        Some("dimedb_find_accounts_by_balance"),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {
+                "name": "dimedb_find_accounts_by_balance",
+                "arguments": { "value": 500 }
+            }
+        }),
+    )
+    .await;
+    let find_json = parse_tool_json(&find_resp);
+    let matches = find_json["rows"].as_array().unwrap();
+    assert_eq!(matches.len(), 2);
+    assert_eq!(matches[0]["key"], 1);
+    assert_eq!(matches[1]["key"], 3);
+}

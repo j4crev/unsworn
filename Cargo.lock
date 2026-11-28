@@ -765,9 +765,9 @@ dependencies = [
 
 [[package]]
 name = "dimedb"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcd604fd10d48b3aed8ba6406e9bd15e00ececb19dfe6186c6cfbea0f92061ea"
+checksum = "2d8b5b1d0ffc6fbc5da5bbab1a80f06d65d9a1665d8e53a6bfa677ebe9f9c1d8"
 dependencies = [
  "crc32c",
  "dimedb-derive",
@@ -775,9 +775,9 @@ dependencies = [
 
 [[package]]
 name = "dimedb-derive"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e41a6f99b63cb01962e59aa702633ce06afbcb599acdc91a73a8a59ae19e773"
+checksum = "cb1db2266654e080fda5cd4cfd79f47bb5e059381bb7f14fdb83a5db4cf91b61"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -786,9 +786,9 @@ dependencies = [
 
 [[package]]
 name = "dimedb-wasm"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f78ebc69996079af3c5edf16e491f405eba318a249ad438a07d34444e7aaabc"
+checksum = "6b17e289690c5d5db62b2c44c65d66dae4c2b1ef7d3642937e8c4ce753290fa4"
 dependencies = [
  "dimedb",
  "serde",
