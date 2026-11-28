@@ -50,5 +50,5 @@ workspace = true
 
 [dev-dependencies]
 jsonwebtoken = { version = "12.0.0", default-features = false, features = ["rust_crypto"] }
-opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic-messages", "trace"] }
+opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic-messages", "trace", "metrics", "logs"] }
 prost = "0.14.6"

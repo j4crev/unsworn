@@ -25,15 +25,16 @@ use ring::rand::{SecureRandom, SystemRandom};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use unsworn_core::outbound;
-use unsworn_core::project::{Outbound, TRACES_PATH, Telemetry};
+use unsworn_core::project::{METRICS_PATH, Outbound, TRACES_PATH, Telemetry};
 pub use unsworn_core::telemetry::{
     Attr, Decision, Ended, Outcome, Recorder, SpanRecord, Started, Steps, call_span, cut,
     failed_status, fetch_span, handler_span, outbound_trace, proxy_span, service_span, strip_trace,
     without_credentials,
 };
-use unsworn_core::telemetry::{Moment, decide, otlp, resource_attributes};
+use unsworn_core::telemetry::{Moment, decide, known_method, otlp, resource_attributes};
 
-use crate::server::support::{HttpClient, full};
+use crate::server::support::{HttpClient, Metrics, bucket_bounds_secs, full};
+use crate::store::Store;
 
 /// A span of the server's that others can go below.
 pub type Parent = unsworn_core::telemetry::Parent<Arc<Tracer>>;
@@ -59,6 +60,8 @@ const MAX_ANSWER: usize = 64 * 1024;
 const IGNORED_ENV: &[&str] = &[
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
     "OTEL_EXPORTER_OTLP_HEADERS",
 ];
 
@@ -116,6 +119,7 @@ struct Queue {
 /// Samples and records one loaded project's requests.
 pub struct Tracer {
     sample: f64,
+    metrics: bool,
     sink: Arc<Sink>,
     queue: Queue,
 }
@@ -125,6 +129,36 @@ impl Tracer {
     /// `[server].trusted_proxies`.
     pub fn start(&self, headers: &HeaderMap, trusted: bool) -> Decision {
         decide(self.sample, headers, trusted, &mut random)
+    }
+
+    /// Whether `[telemetry].metrics` is enabled.
+    pub fn sends_metrics(&self) -> bool {
+        self.metrics
+    }
+
+    /// Snapshots the server's metrics and sends them to the collector over
+    /// OTLP/HTTP (`POST /v1/metrics`).
+    pub async fn export_metrics(
+        &self,
+        client: &HttpClient,
+        metrics: &Metrics,
+        runtimes: &[(String, bool, usize, usize)],
+        store: &Store,
+        started_unix_nano: u64,
+    ) {
+        if !self.metrics {
+            return;
+        }
+        let now = unix_nano(SystemTime::now());
+        let payload = build_metrics(metrics, runtimes, store, started_unix_nano, now);
+        let body = otlp::metrics_request(&self.sink.resource, &payload);
+        if let Err(why) = post(client, &self.sink.outbound, METRICS_PATH, body).await {
+            tracing::warn!(
+                target: "telemetry",
+                "metrics weren't exported: [outbound.{}] {why}",
+                self.sink.outbound.name
+            );
+        }
     }
 }
 
@@ -217,6 +251,7 @@ impl Exporter {
         );
         Arc::new(Tracer {
             sample: telemetry.sample,
+            metrics: telemetry.metrics,
             sink: Arc::new(Sink {
                 outbound: telemetry.outbound.clone(),
                 resource: otlp::resource(&attributes).into(),
@@ -344,7 +379,7 @@ impl Sending {
                 .partition(|(other, _)| Arc::ptr_eq(other, &sink));
             rest = others;
             let body = otlp::request(&sink.resource, spans.iter().map(|(_, span)| span));
-            if let Err(why) = post(&self.client, &sink.outbound, body).await {
+            if let Err(why) = post(&self.client, &sink.outbound, TRACES_PATH, body).await {
                 self.lost.failed += spans.len() as u64;
                 self.lost.why = format!("[outbound.{}] {why}", sink.outbound.name);
             }
@@ -352,11 +387,121 @@ impl Sending {
     }
 }
 
+/// Builds the server's OTLP metrics snapshot.
+fn build_metrics(
+    metrics: &Metrics,
+    runtimes: &[(String, bool, usize, usize)],
+    store: &Store,
+    start_unix_nano: u64,
+    time_unix_nano: u64,
+) -> Vec<otlp::Metric> {
+    let mut out = Vec::new();
+    let series = metrics.series();
+    if !series.is_empty() {
+        let bounds = bucket_bounds_secs();
+        let mut durations = Vec::with_capacity(series.len());
+        let mut handler_times = Vec::new();
+        for ((method, route, status), totals) in series {
+            let mut attrs = Vec::with_capacity(3);
+            attrs.push(("http.request.method", Attr::Static(known_method(method))));
+            if route != "(none)" {
+                attrs.push(("http.route", Attr::Str(route)));
+            }
+            attrs.push(("http.response.status_code", Attr::Int(i64::from(status))));
+            if totals.handler_seconds > 0.0 {
+                handler_times.push(otlp::NumberPoint {
+                    attributes: attrs.clone(),
+                    start_unix_nano,
+                    time_unix_nano,
+                    value: otlp::Number::Double(totals.handler_seconds),
+                });
+            }
+            durations.push(otlp::HistogramPoint {
+                attributes: attrs,
+                start_unix_nano,
+                time_unix_nano,
+                count: totals.count,
+                sum: totals.seconds,
+                bounds: bounds.clone(),
+                buckets: totals.buckets,
+            });
+        }
+        out.push(otlp::Metric {
+            name: "http.server.request.duration",
+            unit: "s",
+            data: otlp::MetricData::Histogram(durations),
+        });
+        if !handler_times.is_empty() {
+            out.push(otlp::Metric {
+                name: "unsworn.handler.time",
+                unit: "s",
+                data: otlp::MetricData::Sum(handler_times),
+            });
+        }
+    }
+    if !runtimes.is_empty() {
+        let mut workers = Vec::with_capacity(runtimes.len());
+        let mut crashes = Vec::with_capacity(runtimes.len());
+        for (name, _, alive, recent_crashes) in runtimes {
+            let attr = vec![("unsworn.runtime", Attr::Str(name.clone()))];
+            workers.push(otlp::NumberPoint {
+                attributes: attr.clone(),
+                start_unix_nano: 0,
+                time_unix_nano,
+                value: otlp::Number::Int(*alive as i64),
+            });
+            crashes.push(otlp::NumberPoint {
+                attributes: attr,
+                start_unix_nano: 0,
+                time_unix_nano,
+                value: otlp::Number::Int(*recent_crashes as i64),
+            });
+        }
+        out.push(otlp::Metric {
+            name: "unsworn.runtime.workers",
+            unit: "",
+            data: otlp::MetricData::Gauge(workers),
+        });
+        out.push(otlp::Metric {
+            name: "unsworn.runtime.crashes",
+            unit: "",
+            data: otlp::MetricData::Gauge(crashes),
+        });
+    }
+    let backend = store.backend_name();
+    out.push(otlp::Metric {
+        name: "unsworn.store.up",
+        unit: "",
+        data: otlp::MetricData::Gauge(vec![otlp::NumberPoint {
+            attributes: vec![("unsworn.store.backend", Attr::Static(backend))],
+            start_unix_nano: 0,
+            time_unix_nano,
+            value: otlp::Number::Int(i64::from(store.is_up())),
+        }]),
+    });
+    out.push(otlp::Metric {
+        name: "unsworn.store.errors",
+        unit: "",
+        data: otlp::MetricData::Sum(vec![otlp::NumberPoint {
+            attributes: vec![("unsworn.store.backend", Attr::Static(backend))],
+            start_unix_nano,
+            time_unix_nano,
+            value: otlp::Number::Int(store.error_count() as i64),
+        }]),
+    });
+    out
+}
+
 /// Sends one request to the collector, built as a handler's `fetch` is,
 /// with the service's headers and `timeout`. Anything but a `2xx`, a
 /// redirect included, is a failure.
-async fn post(client: &HttpClient, service: &Outbound, body: Vec<u8>) -> Result<(), String> {
-    let planned = outbound::plan(service, "POST", TRACES_PATH, &BTreeMap::new(), None)
+async fn post(
+    client: &HttpClient,
+    service: &Outbound,
+    path: &str,
+    body: Vec<u8>,
+) -> Result<(), String> {
+    let planned = outbound::plan(service, "POST", path, &BTreeMap::new(), None)
         .map_err(|(_, why)| why)?;
     let mut request = http::Request::post(planned.url);
     for (name, value) in &planned.headers {

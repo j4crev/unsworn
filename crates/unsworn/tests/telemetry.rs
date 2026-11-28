@@ -12,9 +12,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use common::{Project, Server};
+use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::KeyValue;
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
+use opentelemetry_proto::tonic::metrics::v1::{
+    AggregationTemporality, Metric, metric::Data as MetricData, number_data_point::Value as NumVal,
+};
 use opentelemetry_proto::tonic::trace::v1::Span;
 use opentelemetry_proto::tonic::trace::v1::span::SpanKind;
 use opentelemetry_proto::tonic::trace::v1::status::StatusCode;
@@ -80,9 +84,25 @@ impl Fake {
     fn spans(&self) -> Vec<Span> {
         self.seen()
             .iter()
+            .filter(|r| r.path == "/v1/traces")
             .flat_map(|r| decode(r).resource_spans)
             .flat_map(|r| r.scope_spans)
             .flat_map(|s| s.spans)
+            .collect()
+    }
+
+    /// Every metric exported here, in the order they were sent.
+    fn metrics(&self) -> Vec<Metric> {
+        self.seen()
+            .iter()
+            .filter(|r| r.path == "/v1/metrics")
+            .flat_map(|r| {
+                ExportMetricsServiceRequest::decode(r.body.as_slice())
+                    .expect("an OTLP metrics request")
+                    .resource_metrics
+            })
+            .flat_map(|r| r.scope_metrics)
+            .flat_map(|s| s.metrics)
             .collect()
     }
 }
@@ -968,4 +988,169 @@ handler = "h.py#inner"
         said["ignored"],
         serde_json::json!([traceparent(call), "vendor=1"])
     );
+}
+
+#[test]
+fn metrics_are_exported_over_otlp() {
+    let collector = Fake::start();
+    let py = common::has("python3");
+    let runtime = if py {
+        r#"
+[runtimes.py]
+extensions = [".py"]
+command = "python3 -u -m unsworn.worker"
+protocol = "framed"
+
+[[route]]
+path = "/work"
+handler = "h.py#work"
+"#
+    } else {
+        ""
+    };
+    let config = format!(
+        r#"
+[outbound.otel]
+url = "http://{}"
+headers = {{ Authorization = "Bearer m" }}
+methods = ["POST"]
+paths = ["/v1/traces", "/v1/metrics"]
+
+[telemetry]
+outbound = "otel"
+service_name = "api"
+metrics = true
+
+[[route]]
+path = "/hello"
+respond = {{ status = 200, json = {{ ok = true }} }}
+{runtime}
+"#,
+        collector.addr
+    );
+    let mut files: Vec<(&str, &str)> = vec![("unsworn.toml", &config)];
+    if py {
+        files.push((
+            "h.py",
+            "from unsworn import json\ndef work(req, ctx):\n    return json({'ok': True})\n",
+        ));
+    }
+    let project = Project::new(&files);
+    let mut server = project.serve();
+    get(&server, "/hello", &[]);
+    assert_eq!(server.get("/missing").status, 404);
+    if py {
+        get(&server, "/work", &[]);
+    }
+    server.terminate();
+
+    let requests: Vec<Received> = collector
+        .seen()
+        .into_iter()
+        .filter(|r| r.path == "/v1/metrics")
+        .collect();
+    assert!(!requests.is_empty(), "{}", server.logs());
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].headers["authorization"], "Bearer m");
+    assert_eq!(
+        requests[0].headers["content-type"],
+        "application/x-protobuf"
+    );
+
+    let exported = ExportMetricsServiceRequest::decode(requests[0].body.as_slice())
+        .expect("an OTLP metrics request");
+    let resource = values(
+        &exported.resource_metrics[0]
+            .resource
+            .as_ref()
+            .unwrap()
+            .attributes,
+    );
+    assert_eq!(resource["service.name"], string("api"));
+
+    let metrics = collector.metrics();
+    let by_name = |name: &str| {
+        metrics
+            .iter()
+            .find(|m| m.name == name)
+            .unwrap_or_else(|| panic!("no metric {name}: {:?}", metrics.iter().map(|m| &m.name).collect::<Vec<_>>()))
+    };
+
+    // http.server.request.duration histogram
+    let dur = by_name("http.server.request.duration");
+    assert_eq!(dur.unit, "s");
+    let Some(MetricData::Histogram(hist)) = &dur.data else {
+        panic!("expected histogram: {dur:?}");
+    };
+    assert_eq!(
+        hist.aggregation_temporality,
+        AggregationTemporality::Cumulative as i32
+    );
+    let hello_dp = hist
+        .data_points
+        .iter()
+        .find(|dp| values(&dp.attributes).get("http.route") == Some(&string("/hello")))
+        .expect("/hello data point");
+    assert_eq!(hello_dp.count, 1);
+    assert_eq!(hello_dp.bucket_counts.len(), hello_dp.explicit_bounds.len() + 1);
+    assert_eq!(hello_dp.bucket_counts.iter().sum::<u64>(), 1);
+    let hello_attrs = values(&hello_dp.attributes);
+    assert_eq!(hello_attrs["http.request.method"], string("GET"));
+    assert_eq!(hello_attrs["http.response.status_code"], Value::IntValue(200));
+
+    // Unmatched route omits http.route
+    let missing_dp = hist
+        .data_points
+        .iter()
+        .find(|dp| values(&dp.attributes).get("http.response.status_code") == Some(&Value::IntValue(404)))
+        .expect("404 data point");
+    assert!(!values(&missing_dp.attributes).contains_key("http.route"));
+
+    // Store metrics
+    let store_up = by_name("unsworn.store.up");
+    let Some(MetricData::Gauge(gauge)) = &store_up.data else {
+        panic!("expected gauge: {store_up:?}");
+    };
+    assert_eq!(gauge.data_points.len(), 1);
+    assert_eq!(
+        values(&gauge.data_points[0].attributes)["unsworn.store.backend"],
+        string("memory")
+    );
+    assert_eq!(gauge.data_points[0].value, Some(NumVal::AsInt(1)));
+
+    let store_err = by_name("unsworn.store.errors");
+    let Some(MetricData::Sum(sum)) = &store_err.data else {
+        panic!("expected sum: {store_err:?}");
+    };
+    assert!(sum.is_monotonic);
+    assert_eq!(
+        sum.aggregation_temporality,
+        AggregationTemporality::Cumulative as i32
+    );
+    assert_eq!(sum.data_points[0].value, Some(NumVal::AsInt(0)));
+
+    if py {
+        let handler_time = by_name("unsworn.handler.time");
+        assert_eq!(handler_time.unit, "s");
+        let Some(MetricData::Sum(sum)) = &handler_time.data else {
+            panic!("expected sum: {handler_time:?}");
+        };
+        assert!(sum.is_monotonic);
+        // Only /work waited for a handler; /hello and /missing are omitted.
+        assert_eq!(sum.data_points.len(), 1);
+        assert_eq!(
+            values(&sum.data_points[0].attributes)["http.route"],
+            string("/work")
+        );
+
+        let workers = by_name("unsworn.runtime.workers");
+        let Some(MetricData::Gauge(gauge)) = &workers.data else {
+            panic!("expected gauge: {workers:?}");
+        };
+        assert_eq!(
+            values(&gauge.data_points[0].attributes)["unsworn.runtime"],
+            string("py")
+        );
+        let _ = by_name("unsworn.runtime.crashes");
+    }
 }

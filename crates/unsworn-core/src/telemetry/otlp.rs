@@ -2,7 +2,7 @@
 //! numbers are those of opentelemetry-proto's `trace.proto`, `common.proto`
 //! and `resource.proto`.
 
-use super::{Attr, SpanRecord};
+use super::{Attr, Attributes, SpanRecord};
 use crate::VERSION;
 
 // How a field's value is laid out.
@@ -12,6 +12,9 @@ const LEN: u32 = 2;
 
 /// `Status.StatusCode.STATUS_CODE_ERROR`.
 const ERROR: u64 = 2;
+
+/// `AggregationTemporality.AGGREGATION_TEMPORALITY_CUMULATIVE`.
+const CUMULATIVE: u64 = 2;
 
 /// An attribute's value.
 #[derive(Clone, Copy)]
@@ -137,6 +140,130 @@ fn attributes(out: &mut Vec<u8>, field: u32, attributes: &[(&'static str, Attr)]
 fn failed(out: &mut Vec<u8>, why: &str) {
     bytes(out, 2, why.as_bytes());
     uint(out, 3, ERROR);
+}
+
+/// One metric to send over OTLP.
+pub struct Metric {
+    pub name: &'static str,
+    pub unit: &'static str,
+    pub data: MetricData,
+}
+
+/// A metric's kind and data points.
+pub enum MetricData {
+    Gauge(Vec<NumberPoint>),
+    /// A cumulative, monotonic sum.
+    Sum(Vec<NumberPoint>),
+    /// A cumulative histogram.
+    Histogram(Vec<HistogramPoint>),
+}
+
+/// One point of a gauge or sum.
+pub struct NumberPoint {
+    pub attributes: Attributes,
+    pub start_unix_nano: u64,
+    pub time_unix_nano: u64,
+    pub value: Number,
+}
+
+/// A point's number.
+#[derive(Clone, Copy)]
+pub enum Number {
+    Int(i64),
+    Double(f64),
+}
+
+/// One point of a histogram.
+pub struct HistogramPoint {
+    pub attributes: Attributes,
+    pub start_unix_nano: u64,
+    pub time_unix_nano: u64,
+    pub count: u64,
+    pub sum: f64,
+    pub bounds: Vec<f64>,
+    pub buckets: Vec<u64>,
+}
+
+/// An `ExportMetricsServiceRequest` with these metrics, all from `resource`.
+pub fn metrics_request(resource: &[u8], metrics: &[Metric]) -> Vec<u8> {
+    let mut out = Vec::new();
+    // `resource_metrics`
+    message(&mut out, 1, |resource_metrics| {
+        bytes(resource_metrics, 1, resource);
+        // `scope_metrics`
+        message(resource_metrics, 2, |scope_metrics| {
+            message(scope_metrics, 1, |scope| {
+                bytes(scope, 1, b"unsworn");
+                bytes(scope, 2, VERSION.as_bytes());
+            });
+            for m in metrics {
+                message(scope_metrics, 2, |out| metric(out, m));
+            }
+        });
+    });
+    out
+}
+
+fn metric(out: &mut Vec<u8>, metric: &Metric) {
+    bytes(out, 1, metric.name.as_bytes());
+    if !metric.unit.is_empty() {
+        bytes(out, 3, metric.unit.as_bytes());
+    }
+    match &metric.data {
+        MetricData::Gauge(points) => message(out, 5, |gauge| {
+            for point in points {
+                message(gauge, 1, |out| number_point(out, point));
+            }
+        }),
+        MetricData::Sum(points) => message(out, 7, |sum| {
+            for point in points {
+                message(sum, 1, |out| number_point(out, point));
+            }
+            uint(sum, 2, CUMULATIVE);
+            uint(sum, 3, 1);
+        }),
+        MetricData::Histogram(points) => message(out, 9, |histogram| {
+            for point in points {
+                message(histogram, 1, |out| histogram_point(out, point));
+            }
+            uint(histogram, 2, CUMULATIVE);
+        }),
+    }
+}
+
+fn number_point(out: &mut Vec<u8>, point: &NumberPoint) {
+    attributes(out, 7, &point.attributes);
+    if point.start_unix_nano != 0 {
+        fixed64(out, 2, point.start_unix_nano);
+    }
+    fixed64(out, 3, point.time_unix_nano);
+    match point.value {
+        Number::Double(n) => fixed64(out, 4, n.to_bits()),
+        Number::Int(n) => fixed64(out, 6, n as u64),
+    }
+}
+
+fn histogram_point(out: &mut Vec<u8>, point: &HistogramPoint) {
+    attributes(out, 9, &point.attributes);
+    if point.start_unix_nano != 0 {
+        fixed64(out, 2, point.start_unix_nano);
+    }
+    fixed64(out, 3, point.time_unix_nano);
+    fixed64(out, 4, point.count);
+    fixed64(out, 5, point.sum.to_bits());
+    packed_fixed64(out, 6, point.buckets.iter().copied());
+    packed_fixed64(out, 7, point.bounds.iter().map(|b| b.to_bits()));
+}
+
+fn packed_fixed64(out: &mut Vec<u8>, field: u32, values: impl ExactSizeIterator<Item = u64>) {
+    if values.len() == 0 {
+        return;
+    }
+    tag(out, field, LEN);
+    varint(out, (values.len() * 8) as u64);
+    for value in values {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
 }
 
 #[cfg(test)]

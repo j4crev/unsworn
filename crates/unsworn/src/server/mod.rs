@@ -67,6 +67,9 @@ pub struct Shared {
     sockets: SocketDir,
     /// When the server started, for `/_unsworn/stats`.
     pub started: std::time::Instant,
+    /// When the server started, in nanoseconds since the Unix epoch, for
+    /// cumulative OTLP metrics.
+    pub started_unix_nano: u64,
 }
 
 impl Shared {
@@ -214,6 +217,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         generations: AtomicU64::new(1),
         sockets,
         started: std::time::Instant::now(),
+        started_unix_nano: crate::telemetry::unix_nano(std::time::SystemTime::now()),
     });
 
     // Periodic cleanup of expired cache entries and idle rate-limit buckets.
@@ -224,6 +228,20 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
             loop {
                 tick.tick().await;
                 shared.store.load().sweep();
+            }
+        });
+    }
+
+    // Periodic OTLP metrics export, every 60 s when `[telemetry].metrics` is on.
+    {
+        let shared = shared.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tick.tick().await; // skip immediate tick at startup
+            loop {
+                tick.tick().await;
+                export_metrics(&shared).await;
             }
         });
     }
@@ -364,11 +382,31 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
     // Last, so the spans of calls the shutdown cut off are sent too, and so
     // the workers, which a terminal's Ctrl-C signals as well, aren't taken
     // to have crashed while spans are on their way.
-    shared
-        .exporter
-        .flush(TELEMETRY_FLUSH_TIMEOUT.min(grace))
-        .await;
+    let flush_budget = TELEMETRY_FLUSH_TIMEOUT.min(grace);
+    let _ = tokio::time::timeout(flush_budget, export_metrics(&shared)).await;
+    shared.exporter.flush(flush_budget).await;
     Ok(())
+}
+
+async fn export_metrics(shared: &Shared) {
+    let generation = shared.generation.load();
+    let Some(tracer) = generation.telemetry.as_ref() else {
+        return;
+    };
+    if !tracer.sends_metrics() {
+        return;
+    }
+    let runtimes = generation.pools.health();
+    let store = shared.store.load();
+    tracer
+        .export_metrics(
+            &shared.client,
+            &shared.metrics,
+            &runtimes,
+            &store,
+            shared.started_unix_nano,
+        )
+        .await;
 }
 
 /// The longest shutdown waits for spans to be sent. A shorter
