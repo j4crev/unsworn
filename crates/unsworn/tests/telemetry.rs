@@ -1087,10 +1087,12 @@ respond = {{ status = 200, json = {{ ok = true }} }}
 
     let metrics = collector.metrics();
     let by_name = |name: &str| {
-        metrics
-            .iter()
-            .find(|m| m.name == name)
-            .unwrap_or_else(|| panic!("no metric {name}: {:?}", metrics.iter().map(|m| &m.name).collect::<Vec<_>>()))
+        metrics.iter().find(|m| m.name == name).unwrap_or_else(|| {
+            panic!(
+                "no metric {name}: {:?}",
+                metrics.iter().map(|m| &m.name).collect::<Vec<_>>()
+            )
+        })
     };
 
     // http.server.request.duration histogram
@@ -1109,17 +1111,25 @@ respond = {{ status = 200, json = {{ ok = true }} }}
         .find(|dp| values(&dp.attributes).get("http.route") == Some(&string("/hello")))
         .expect("/hello data point");
     assert_eq!(hello_dp.count, 1);
-    assert_eq!(hello_dp.bucket_counts.len(), hello_dp.explicit_bounds.len() + 1);
+    assert_eq!(
+        hello_dp.bucket_counts.len(),
+        hello_dp.explicit_bounds.len() + 1
+    );
     assert_eq!(hello_dp.bucket_counts.iter().sum::<u64>(), 1);
     let hello_attrs = values(&hello_dp.attributes);
     assert_eq!(hello_attrs["http.request.method"], string("GET"));
-    assert_eq!(hello_attrs["http.response.status_code"], Value::IntValue(200));
+    assert_eq!(
+        hello_attrs["http.response.status_code"],
+        Value::IntValue(200)
+    );
 
     // Unmatched route omits http.route
     let missing_dp = hist
         .data_points
         .iter()
-        .find(|dp| values(&dp.attributes).get("http.response.status_code") == Some(&Value::IntValue(404)))
+        .find(|dp| {
+            values(&dp.attributes).get("http.response.status_code") == Some(&Value::IntValue(404))
+        })
         .expect("404 data point");
     assert!(!values(&missing_dp.attributes).contains_key("http.route"));
 

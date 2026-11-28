@@ -550,10 +550,7 @@ async fn fetch_service(
             Parent::from_trace(r, caller.call.trace.as_ref())
         }
     });
-    let service_url = project
-        .outbound
-        .get(asked.service)
-        .map(|s| s.url.as_str());
+    let service_url = project.outbound.get(asked.service).map(|s| s.url.as_str());
     let span = parent.map(|p| {
         p.child(service_span(
             asked.method,
@@ -569,10 +566,13 @@ async fn fetch_service(
     } else {
         asked.headers
     };
-    let trace = span
-        .as_ref()
-        .map(|s| s.context())
-        .or_else(|| if named { None } else { caller.call.trace.clone() });
+    let trace = span.as_ref().map(|s| s.context()).or_else(|| {
+        if named {
+            None
+        } else {
+            caller.call.trace.clone()
+        }
+    });
 
     let outcome = async {
         let service = outbound::service(&project.outbound, asked.service)?;

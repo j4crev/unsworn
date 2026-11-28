@@ -605,10 +605,11 @@ metrics      = true                              # optional; default: false
 logs         = true                              # optional; default: false
 ```
 
-OpenTelemetry traces: for each request it samples, the server records a
-span, and one for each thing it asks of something else for that request,
-and sends them over OTLP/HTTP. How that fits into a trace is in
-[`tracing.md`](tracing.md).
+OpenTelemetry traces, metrics and logs: for each request it samples, Unsworn
+records a span, and one for each thing it asks of something else for that
+request, and sends them over OTLP/HTTP. With `metrics = true` or
+`logs = true`, the server also sends its metrics and logs there. How spans
+fit into a trace is in [`tracing.md`](tracing.md).
 
 #### Where spans go
 
@@ -619,8 +620,9 @@ within its `timeout`. With `metrics` or `logs` on, those go there too, with
 has to allow each of these requests that's used. An `http://` URL to another
 machine gets a warning. Redirects
 aren't followed. `OTEL_EXPORTER_OTLP_ENDPOINT`,
-`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`
-are ignored, with a warning, so the environment can't send spans somewhere
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`
+are ignored, with a warning, so the environment can't send telemetry somewhere
 else. A handler can `ctx.fetch` the service as it can any other.
 
 #### Which requests
@@ -737,18 +739,35 @@ upstream has no status, for one.
 
 A recorded request's access log line also has its `trace_id`.
 
+#### Metrics and logs
+
+With `metrics = true`, the server sends cumulative snapshots of its metrics
+(as `/_unsworn/metrics` exposes them: `http.server.request.duration`,
+`unsworn.handler.time`, `unsworn.runtime.workers`, `unsworn.runtime.crashes`,
+`unsworn.store.up` and `unsworn.store.errors`) every 60 s and once more on
+shutdown.
+
+With `logs = true`, the server sends every log event that `UNSWORN_LOG` lets
+through, worker output included, except targets `access` (whose request has a
+span) and `telemetry`. A worker's log line for a sampled request carries the
+`trace_id` and `span_id` of the handler's or function's span, both on stderr
+and in the exported OTLP log record.
+
 #### Sending
 
-Spans are sent in batches of 512, or 5 s after a batch's first span, one
-request to the collector at a time. No request waits for the collector. Up to 2,048 spans wait their turn; when
+On the server, spans and logs are each sent in batches of 512, or 5 s after a
+batch's first record, one request to the collector at a time. No request waits
+for the collector. Up to 2,048 records wait their turn in each queue; when
 that many are waiting, new ones are dropped. A batch the service doesn't
-answer with a `2xx` is dropped too: there are no retries. Lost spans are
+answer with a `2xx` is dropped too: there are no retries. Lost records are
 counted in a warning, at most one a minute. On shutdown, what's waiting is
 sent, taking up to 5 s, or `[server].shutdown_timeout` if that's shorter.
 
-Only the server sends spans, in a container and on AWS Lambda included.
-Lambda freezes it between invocations, so spans can arrive late or be
-lost there. Cloudflare, Vercel and Netlify targets ignore the section.
+Spans work on every target. On Cloudflare, Vercel and Netlify, each sampled
+request sends its spans in one `POST /v1/traces` without making the response
+wait, with redirects not followed; `metrics` and `logs` are ignored there. On
+AWS Lambda, the server runs in a container and Lambda freezes it between
+invocations, so telemetry can arrive late or be lost there.
 
 ### `{env.NAME}`
 

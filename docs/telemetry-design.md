@@ -313,6 +313,8 @@ build differed by, so what Phase 3 adds doesn't show.
 
 ### Phase 5: metrics, logs, and the edge and serverless targets
 
+**Done.** The WebAssembly core grew to 1,504 KiB gzipped (under the 1,600 KiB limit).
+
 #### Metrics over OTLP
 
 | | |

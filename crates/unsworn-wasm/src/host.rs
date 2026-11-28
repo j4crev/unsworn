@@ -160,11 +160,7 @@ pub struct Caller {
 }
 
 impl Caller {
-    fn of(
-        request: &unsworn_proto::Request,
-        deadline: Deadline,
-        trace_key: Option<u64>,
-    ) -> Caller {
+    fn of(request: &unsworn_proto::Request, deadline: Deadline, trace_key: Option<u64>) -> Caller {
         Caller {
             request_id: request.id.clone(),
             call: calls::Caller {
@@ -359,8 +355,10 @@ impl Host for WasmHost {
                         m.entry("id")
                             .or_insert_with(|| Value::String(request.id.clone()));
                     }
-                    let response: unsworn_proto::Response = serde_json::from_value(value)
-                        .map_err(|e| CallError::WorkerFailed(format!("bad handler response: {e}")))?;
+                    let response: unsworn_proto::Response =
+                        serde_json::from_value(value).map_err(|e| {
+                            CallError::WorkerFailed(format!("bad handler response: {e}"))
+                        })?;
                     Ok(Reply::Response {
                         response,
                         body: body_from_js(get(&out, "body")),

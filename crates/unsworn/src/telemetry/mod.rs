@@ -525,8 +525,8 @@ pub(super) async fn post(
     path: &str,
     body: Vec<u8>,
 ) -> Result<(), String> {
-    let planned = outbound::plan(service, "POST", path, &BTreeMap::new(), None)
-        .map_err(|(_, why)| why)?;
+    let planned =
+        outbound::plan(service, "POST", path, &BTreeMap::new(), None).map_err(|(_, why)| why)?;
     let mut request = http::Request::post(planned.url);
     for (name, value) in &planned.headers {
         request = request.header(name, value);

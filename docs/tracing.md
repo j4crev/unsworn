@@ -135,7 +135,9 @@ functions and services join it the same way.
 
 ## Where it works
 
-Passing the headers on works on every target, a handler's own among them:
-servers and containers, Cloudflare Workers and serverless functions.
-Unsworn's own spans come from the server only, in a container and on AWS
-Lambda included.
+Passing the headers on and recording Unsworn's own spans both work on every
+target: servers and containers, AWS Lambda, Cloudflare Workers, Vercel and
+Netlify. On Cloudflare, Vercel and Netlify, each sampled request sends its
+spans in one `POST /v1/traces` without making the response wait, and no
+peer is trusted to decide sampling (`trusted_proxies` is ignored there).
+OTLP `metrics` and `logs` come from the server only.

@@ -467,8 +467,8 @@ logs = true
                 .into_iter()
                 .map(|d| (d.is_error(), d.location))
                 .collect();
-            let expected = ["[telemetry].metrics", "[telemetry].logs"]
-                .map(|at| (false, at.to_string()));
+            let expected =
+                ["[telemetry].metrics", "[telemetry].logs"].map(|at| (false, at.to_string()));
             assert_eq!(warnings, expected, "{target}");
         }
         assert_eq!(check(&p, "server"), vec![]);
