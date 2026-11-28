@@ -2442,3 +2442,117 @@ shadow = "src/users.go#Get"
     // Workers are asked whether the shadow handlers exist, like any other.
     assert!(p.handlers_by_runtime()["go"].contains(&"src/users.go#Get".to_string()));
 }
+
+/// A config with an outbound service at `url`, with `rules` for it, and
+/// `[telemetry]` naming `named`.
+fn telemetry(url: &str, rules: &str, named: &str, keys: &str) -> String {
+    format!(
+        "[outbound.otel]\nurl = \"{url}\"\n{rules}\n\n[telemetry]\noutbound = \"{named}\"\n{keys}\n"
+    )
+}
+
+#[test]
+fn telemetry_goes_to_an_outbound_service() {
+    let cfg = telemetry(
+        "https://otlp.example.com",
+        "methods = [\"POST\"]\npaths = [\"/v1/traces\"]",
+        "otel",
+        "service_name = \"api\"\nsample = 0.1",
+    );
+    let p = project(&[("unsworn.toml", &cfg)]);
+    let t = p.telemetry.unwrap();
+    assert_eq!(t.outbound.name, "otel");
+    assert_eq!(t.service_name.as_deref(), Some("api"));
+    assert_eq!(t.sample, 0.1);
+
+    // Only the service has to be named, and a whole number is a share too.
+    let cfg = telemetry("https://otlp.example.com", "", "otel", "");
+    let t = project(&[("unsworn.toml", &cfg)]).telemetry.unwrap();
+    assert_eq!((t.service_name, t.sample), (None, 0.0));
+    let cfg = telemetry("https://otlp.example.com", "", "otel", "sample = 1");
+    let t = project(&[("unsworn.toml", &cfg)]).telemetry.unwrap();
+    assert_eq!(t.sample, 1.0);
+
+    assert!(project(&[("unsworn.toml", "")]).telemetry.is_none());
+}
+
+#[test]
+fn telemetry_is_checked_against_its_service() {
+    let https = "https://otlp.example.com";
+    let only = |cfg: String| {
+        let e = errors(&[("unsworn.toml", &cfg)]);
+        assert_eq!(e.len(), 1, "{e:#?}");
+        e[0].clone()
+    };
+    let e = only(telemetry(https, "", "nope", ""));
+    assert!(
+        e.contains("[telemetry].outbound: no [outbound.nope] in the config (it declares: otel)"),
+        "{e}"
+    );
+    let e = only(telemetry(https, "paths = [\"/v1/metrics\"]", "otel", ""));
+    assert!(e.contains("doesn't allow the path /v1/traces"), "{e}");
+    let e = only(telemetry(https, "methods = [\"GET\"]", "otel", ""));
+    assert!(e.contains("doesn't allow POST (it allows GET)"), "{e}");
+    for sample in ["1.5", "-0.1", "nan", "inf"] {
+        let e = only(telemetry(https, "", "otel", &format!("sample = {sample}")));
+        assert!(e.contains("[telemetry].sample"), "{e}");
+    }
+    // It has no URL of its own.
+    let e = only(telemetry(
+        https,
+        "",
+        "otel",
+        "endpoint = \"https://elsewhere.example\"",
+    ));
+    assert!(e.contains("endpoint"), "{e}");
+}
+
+#[test]
+fn metrics_and_logs_are_allowed_by_their_service() {
+    let https = "https://otlp.example.com";
+    let everything = "paths = [\"/v1/traces\", \"/v1/metrics\", \"/v1/logs\"]";
+    let cfg = telemetry(https, everything, "otel", "metrics = true\nlogs = true");
+    let t = project(&[("unsworn.toml", &cfg)]).telemetry.unwrap();
+    assert_eq!((t.metrics, t.logs), (true, true));
+    // Off unless asked for, and then the service needn't allow them.
+    let traces = "paths = [\"/v1/traces\"]";
+    for keys in ["", "metrics = false\nlogs = false"] {
+        let cfg = telemetry(https, traces, "otel", keys);
+        let t = project(&[("unsworn.toml", &cfg)]).telemetry.unwrap();
+        assert_eq!((t.metrics, t.logs), (false, false));
+    }
+    for signal in ["metrics", "logs"] {
+        let cfg = telemetry(https, traces, "otel", &format!("{signal} = true"));
+        let e = errors(&[("unsworn.toml", &cfg)]);
+        assert_eq!(e.len(), 1, "{e:#?}");
+        let expected =
+            format!("[telemetry].{signal}: [outbound.otel] doesn't allow the path /v1/{signal}");
+        assert!(e[0].contains(&expected), "{}", e[0]);
+    }
+}
+
+#[test]
+fn telemetry_over_plain_http_warns_unless_it_stays_here() {
+    let warned = |url: &str| {
+        let cfg = telemetry(url, "", "otel", "");
+        let host = MemHost::with(&[("unsworn.toml", &cfg)]);
+        let compiled = compile(&host, "unsworn.toml");
+        assert!(compiled.project.is_some(), "{:?}", compiled.diagnostics);
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.location == "[telemetry].outbound" && d.message.contains("isn't encrypted"))
+    };
+    assert!(warned("http://collector:4318"));
+    assert!(!warned("https://collector:4318"));
+    assert!(!warned("http://127.0.0.1:4318"));
+    assert!(!warned("http://localhost:4318"));
+    assert!(!warned("http://[::1]:4318"));
+
+    // A symbolic compile has no URL to judge.
+    let cfg = telemetry("{env.OTLP_URL}", "", "otel", "");
+    let host = MemHost::with(&[("unsworn.toml", &cfg)]);
+    let compiled = compile_symbolic(&host, "unsworn.toml");
+    assert!(compiled.project.is_some());
+    assert_eq!(compiled.diagnostics, []);
+}

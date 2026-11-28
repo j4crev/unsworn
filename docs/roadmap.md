@@ -208,17 +208,33 @@ on the way out. In the order planned:
      writes the server's image with AWS's Lambda Web Adapter in it, which
      replaces the Node function that target used to build. See
      [`lambda.md`](lambda.md).
+7. **OpenTelemetry traces.** Spans of Unsworn's own, next to the
+   `traceparent` it carries through `ctx.call` and `ctx.fetch`
+   ([`tracing.md`](tracing.md)). The design and each phase are in
+   [`telemetry-design.md`](telemetry-design.md).
+   - ~~**Phase 0: config and checks.**~~ Done: `[telemetry]` names an
+     `[outbound]` service to send spans to, checked when the config is
+     compiled and listed in `unsworn plan`.
+   - ~~**Phase 1: a span for every sampled request, exported.**~~ Done: the
+     server sends them over OTLP/HTTP, with an exporter of its own. See
+     [`config.md`](config.md#telemetry).
+   - ~~**Phase 2: spans for the server's I/O.**~~ Done: handler calls and
+     the wait for a worker, upstreams, verifiers, functions and services,
+     each the parent of what it reaches.
+   - ~~**Phase 3: the pipeline's steps.**~~ Done: the request's span says
+     which rule turned it away, the scheme that let it in and what the
+     cache did, with an event for each when it was decided.
+   - ~~**Phase 4: a handler's own span as the parent of `ctx.call`.**~~
+     Done: in every SDK, on every target, and for an HTTP runtime's calls.
+     See [`tracing.md`](tracing.md#a-handlers-own-span).
+   - **Phase 5, later:** metrics and logs over OTLP, and the edge and
+     serverless targets.
 
 ## Not scheduled yet
 
 - **Automatic TLS certificates (ACME).** Until then, run behind a platform
   load balancer, Caddy or Cloudflare.
 - **HTTP/3.**
-- **OpenTelemetry** traces and metrics, alongside the Prometheus endpoint.
-  A request's `traceparent` is already carried through `ctx.call` and
-  `ctx.fetch` ([`tracing.md`](tracing.md)). Still to do: spans for
-  Unsworn's own work, an exporter, and a way for a handler to give
-  `ctx.call` its own span as the parent.
 - **More MCP features:** resources and prompts, elicitation, progress and
   change notifications, tasks. See [`mcp.md`](mcp.md#later).
 

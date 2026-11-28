@@ -51,11 +51,13 @@ type fetchMessage struct {
 }
 
 type callMessage struct {
-	Type     string          `json:"type"`
-	ID       string          `json:"id"`
-	Request  string          `json:"request"`
-	Function string          `json:"function"`
-	JSON     json.RawMessage `json:"json"`
+	Type        string          `json:"type"`
+	ID          string          `json:"id"`
+	Request     string          `json:"request"`
+	Function    string          `json:"function"`
+	JSON        json.RawMessage `json:"json"`
+	Traceparent string          `json:"traceparent,omitempty"`
+	Tracestate  string          `json:"tracestate,omitempty"`
 }
 
 type readyMessage struct {

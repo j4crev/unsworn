@@ -1,6 +1,9 @@
 //! The core's [`Host`] over a JavaScript [`Bridge`].
 
+use std::cell::{Cell, RefCell};
 use std::future::Future;
+use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -12,11 +15,14 @@ use unsworn_core::pipeline::proxy::{ForwardInfo, response_headers, rewrite};
 use unsworn_core::pipeline::shadow::{Answer, ShadowCall, compare};
 use unsworn_core::pipeline::{
     self as core, BodyError, CallError, Deadline, FetchError, Host, Problem, ProxyRequest, Reply,
-    StaticRequest, problem_response,
+    StaticRequest, Step, problem_response,
 };
 use unsworn_core::policy::HandlerRef;
 use unsworn_core::store::{CachedResponse, RateLimiter, ResponseCache, StoreError};
-use unsworn_core::trace::TraceContext;
+use unsworn_core::telemetry::{
+    Attr, Steps, cut, fetch_span, handler_span, proxy_span, without_credentials,
+};
+use unsworn_core::trace::{TRACEPARENT, TraceContext};
 use unsworn_core::{MaybeSend, calls};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
@@ -25,6 +31,7 @@ use crate::bridge::{
     Bridge, JsBody, body_from_js, body_to_js, bytes_to_js, error_text, get, headers_from_js,
     headers_to_js, request_to_js, resolve, response_from_js, set,
 };
+use crate::telemetry::{Parent, now_unix_nano};
 
 thread_local! {
     /// How often each route's shadow has answered differently, or not at
@@ -129,6 +136,16 @@ pub struct WasmHost {
     /// The project declares functions or outbound services, so a handler
     /// may call one, and each call to a handler carries a [`Caller`].
     pub calls: bool,
+    /// Time spent waiting for handlers on this request.
+    pub in_handlers: Rc<Cell<Duration>>,
+    /// The runtime that ran the route's handler, if one did.
+    pub runtime: Rc<RefCell<Option<String>>>,
+    /// The request's span, when sampled.
+    pub span: Option<Parent>,
+    /// Pipeline step events and attributes, when sampled.
+    pub steps: Option<Arc<Steps>>,
+    /// Key into `Unsworn::recorders` for this request's span collector.
+    pub trace_key: Option<u64>,
 }
 
 /// The core's record of a call to a handler, which the handler's
@@ -139,10 +156,11 @@ pub struct Caller {
     pub request_id: String,
     pub call: calls::Caller,
     pub deadline: Deadline,
+    pub trace_key: Option<u64>,
 }
 
 impl Caller {
-    fn of(request: &unsworn_proto::Request, deadline: Deadline) -> Caller {
+    fn of(request: &unsworn_proto::Request, deadline: Deadline, trace_key: Option<u64>) -> Caller {
         Caller {
             request_id: request.id.clone(),
             call: calls::Caller {
@@ -153,6 +171,7 @@ impl Caller {
                 }),
             },
             deadline,
+            trace_key,
         }
     }
 
@@ -165,6 +184,7 @@ impl Caller {
             "traceparent": trace.map(|t| &t.traceparent),
             "tracestate": trace.and_then(|t| t.tracestate.as_ref()),
             "deadline_ms": self.deadline.0.as_secs_f64() * 1000.0,
+            "trace_key": self.trace_key,
         })
         .to_string()
     }
@@ -189,6 +209,7 @@ impl Caller {
                 },
                 trace,
             },
+            trace_key: value["trace_key"].as_u64(),
         })
     }
 }
@@ -289,17 +310,26 @@ impl Host for WasmHost {
 
     async fn call(
         &self,
-        _handler: &HandlerRef,
+        handler: &HandlerRef,
         mut request: unsworn_proto::Request,
         body: core::Body<JsBody>,
         deadline: Deadline,
     ) -> Result<Reply<JsBody>, CallError> {
         request.id = self.request_id.clone();
-        let timeout = deadline.0.saturating_sub(self.monotonic());
+        let handles = request.phase == unsworn_proto::Phase::Handle;
+        let span = self.span.as_ref().map(|parent| {
+            let span = parent.child(handler_span(&handler.raw, &handler.runtime, handles));
+            request
+                .headers
+                .insert(TRACEPARENT.to_string(), span.traceparent());
+            span
+        });
+        let started = self.monotonic();
+        let timeout = deadline.0.saturating_sub(started);
         let message = serde_json::to_string(&request)
             .map_err(|e| CallError::WorkerFailed(format!("can't encode the request: {e}")))?;
         let caller = match self.calls {
-            true => JsValue::from_str(&Caller::of(&request, deadline).encode()),
+            true => JsValue::from_str(&Caller::of(&request, deadline, self.trace_key).encode()),
             false => JsValue::UNDEFINED,
         };
         let promise = self.bridge.call(
@@ -310,45 +340,75 @@ impl Host for WasmHost {
         );
         let out = resolve(promise)
             .await
-            .map_err(|e| CallError::WorkerFailed(error_text(&e)))?;
-        let text = |key: &str| get(&out, key).as_string().unwrap_or_default();
-        match get(&out, "type").as_string().as_deref() {
-            Some("response") => {
-                let mut value = json_of(&get(&out, "response")).unwrap_or(Value::Null);
-                if let Value::Object(m) = &mut value {
-                    m.entry("id")
-                        .or_insert_with(|| Value::String(request.id.clone()));
+            .map_err(|e| CallError::WorkerFailed(error_text(&e)));
+        let elapsed = self.monotonic().saturating_sub(started);
+        self.in_handlers.set(self.in_handlers.get() + elapsed);
+        if handles && self.runtime.borrow().is_none() {
+            *self.runtime.borrow_mut() = Some(handler.runtime.clone());
+        }
+        let result = out.and_then(|out| {
+            let text = |key: &str| get(&out, key).as_string().unwrap_or_default();
+            match get(&out, "type").as_string().as_deref() {
+                Some("response") => {
+                    let mut value = json_of(&get(&out, "response")).unwrap_or(Value::Null);
+                    if let Value::Object(m) = &mut value {
+                        m.entry("id")
+                            .or_insert_with(|| Value::String(request.id.clone()));
+                    }
+                    let response: unsworn_proto::Response =
+                        serde_json::from_value(value).map_err(|e| {
+                            CallError::WorkerFailed(format!("bad handler response: {e}"))
+                        })?;
+                    Ok(Reply::Response {
+                        response,
+                        body: body_from_js(get(&out, "body")),
+                    })
                 }
-                let response: unsworn_proto::Response = serde_json::from_value(value)
-                    .map_err(|e| CallError::WorkerFailed(format!("bad handler response: {e}")))?;
-                Ok(Reply::Response {
-                    response,
-                    body: body_from_js(get(&out, "body")),
-                })
+                Some("continue") => {
+                    let context = match json_of(&get(&out, "context")) {
+                        Some(Value::Object(m)) => m,
+                        _ => Map::new(),
+                    };
+                    Ok(Reply::Continue(context))
+                }
+                Some("error") => Err(CallError::Handler(text("message"))),
+                Some("missing") => Err(CallError::MissingHandler(text("message"))),
+                Some("timeout") => Err(CallError::Timeout),
+                Some("body") => Err(CallError::Body(match text("error").as_str() {
+                    "too_large" => BodyError::TooLarge,
+                    "idle" => BodyError::Idle,
+                    _ => BodyError::Read,
+                })),
+                other => Err(CallError::WorkerFailed(format!(
+                    "unexpected call result {other:?}"
+                ))),
             }
-            Some("continue") => {
-                let context = match json_of(&get(&out, "context")) {
-                    Some(Value::Object(m)) => m,
-                    _ => Map::new(),
-                };
-                Ok(Reply::Continue(context))
+        });
+        if let Some(span) = span {
+            match &result {
+                Ok(Reply::Response { response, .. }) => span.answered(response.status),
+                Ok(Reply::Continue(_)) => span.finish(None),
+                Err(e) => span.finish(Some(e.to_string())),
             }
-            Some("error") => Err(CallError::Handler(text("message"))),
-            Some("missing") => Err(CallError::MissingHandler(text("message"))),
-            Some("timeout") => Err(CallError::Timeout),
-            Some("body") => Err(CallError::Body(match text("error").as_str() {
-                "too_large" => BodyError::TooLarge,
-                "idle" => BodyError::Idle,
-                _ => BodyError::Read,
-            })),
-            other => Err(CallError::WorkerFailed(format!(
-                "unexpected call result {other:?}"
-            ))),
+        }
+        result
+    }
+
+    fn step(&self, step: Step<'_>) {
+        if let Some(steps) = &self.steps {
+            steps.note(step, now_unix_nano());
         }
     }
 
     async fn proxy(&self, request: ProxyRequest<JsBody>) -> core::Response<JsBody> {
         let (mut parts, body) = request.request.into_parts();
+        let mut span = self.span.as_ref().map(|parent| {
+            let span = parent.child(proxy_span(parts.method.as_str(), None));
+            if let Ok(v) = HeaderValue::try_from(span.traceparent()) {
+                parts.headers.insert(TRACEPARENT, v);
+            }
+            span
+        });
         let info = ForwardInfo {
             client_ip: request.client_ip,
             tls: self.tls,
@@ -360,18 +420,34 @@ impl Host for WasmHost {
         };
         let upstream = match rewrite(&request.proxy, &mut parts, &info) {
             Ok(index) => request.proxy.upstreams[index].as_str(),
-            Err(p) => return problem_response(p),
+            Err(p) => {
+                if let Some(span) = span {
+                    span.finish(Some(p.detail.clone()));
+                }
+                return problem_response(p);
+            }
         };
+        if let Some(span) = &mut span {
+            span.set("unsworn.upstream", Attr::Str(without_credentials(upstream)));
+            span.set("url.path", Attr::Str(cut(parts.uri.path()).to_string()));
+        }
         let js = request_to_js(&parts, body_to_js(body));
         match resolve(self.bridge.proxy(&js)).await {
             Ok(v) => {
                 let mut resp = response_from_js(&v);
                 let version = resp.version();
                 response_headers(resp.headers_mut(), version);
+                if let Some(span) = span {
+                    span.answered(resp.status().as_u16());
+                }
                 resp
             }
             Err(e) => {
-                tracing::warn!(upstream = %upstream, "proxy error: {}", error_text(&e));
+                let why = error_text(&e);
+                if let Some(span) = span {
+                    span.finish(Some(why.clone()));
+                }
+                tracing::warn!(upstream = %upstream, "proxy error: {why}");
                 problem(
                     StatusCode::BAD_GATEWAY,
                     format!("the upstream at {upstream} couldn't be reached"),
@@ -432,7 +508,11 @@ impl Host for WasmHost {
     }
 
     fn shadow(&self, call: ShadowCall) {
-        let host = self.clone();
+        let mut host = self.clone();
+        // A shadow handler's call gets no span.
+        host.span = None;
+        host.steps = None;
+        host.trace_key = None;
         // The client already has its answer on the way: this runs beside
         // it, and the platform keeps the isolate until it's done.
         let work = future_to_promise(async move {
@@ -475,11 +555,25 @@ impl Host for WasmHost {
 
     async fn fetch(
         &self,
-        request: http::Request<Bytes>,
+        mut request: http::Request<Bytes>,
         timeout: Duration,
         limit: usize,
     ) -> Result<http::Response<Bytes>, FetchError> {
-        self.send(request, timeout, limit, false).await
+        let span = self.span.as_ref().map(|parent| {
+            let span = parent.child(fetch_span(request.method().as_str(), request.uri()));
+            if let Ok(v) = HeaderValue::try_from(span.traceparent()) {
+                request.headers_mut().insert(TRACEPARENT, v);
+            }
+            span
+        });
+        let outcome = self.send(request, timeout, limit, false).await;
+        if let Some(span) = span {
+            match &outcome {
+                Ok(resp) => span.answered(resp.status().as_u16()),
+                Err(e) => span.finish(Some(e.to_string())),
+            }
+        }
+        outcome
     }
 
     async fn timeout<F>(&self, timeout: Duration, future: F) -> Option<F::Output>

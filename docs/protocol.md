@@ -217,12 +217,20 @@ through Unsworn. The worker sends `call`:
   what is left of its time.
 - `function`: the function's name.
 - `json`: the input. Default `null`.
+- `traceparent` and `tracestate`: optional. A W3C `traceparent` for the
+  function to be called under, such as that of the handler's own span, and
+  the `tracestate` that goes with it. A `traceparent` a receiver would
+  accept is used instead of the calling request's, with the `tracestate`
+  sent beside it. Any other is ignored, as is a `tracestate` alone. An
+  older Unsworn ignores both fields.
 
 Unsworn runs the function as a normal `request` to a worker of its
 runtime (`route` and `path` are `fn:<name>`, `method` is `POST`, `json` is
 the input, `context` is the calling request's plus `caller`, and `headers`
-has the calling request's `traceparent` and `tracestate`, if it came with
-a valid one), then answers with `result`:
+has the `traceparent` and `tracestate` the call names, or else the calling
+request's, if it came with a valid one). With
+[`[telemetry]`](config.md#telemetry), a sampled `traceparent` names
+Unsworn's span for the call instead. Then Unsworn answers with `result`:
 
 ```json
 {"type":"result","id":"c-7","status":200,"json":[0.12,0.98]}

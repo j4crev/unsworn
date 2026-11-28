@@ -63,6 +63,7 @@ into a second programming language.
 [[route]]      # explicit routes, and policies for routes from other sources
 [[function]]   # optional: handlers that other handlers call by name
 [outbound.*]   # optional: services Unsworn calls for handlers, adding their credentials
+[telemetry]    # optional: OpenTelemetry traces, sent to an outbound service
 ```
 
 ### `[server]`
@@ -586,6 +587,187 @@ paths   = ["/v1/charges", "/v1/charges/{id}"]    # optional
 A service handlers reach with `ctx.fetch("stripe", path)`. Unsworn makes
 the request and adds `headers`, so no handler holds the credential. See
 [`outbound.md`](outbound.md).
+
+### `[telemetry]`
+
+```toml
+[outbound.otel]
+url     = "https://otlp.example.com"
+headers = { Authorization = "Bearer {env.OTLP_TOKEN}" }
+methods = ["POST"]                               # optional
+paths   = ["/v1/traces", "/v1/metrics", "/v1/logs"]  # optional
+
+[telemetry]
+outbound     = "otel"                            # required
+service_name = "api"                             # optional
+sample       = 0.1                               # optional; default: 0
+metrics      = true                              # optional; default: false
+logs         = true                              # optional; default: false
+```
+
+OpenTelemetry traces, metrics and logs: for each request it samples, Unsworn
+records a span, and one for each thing it asks of something else for that
+request, and sends them over OTLP/HTTP. With `metrics = true` or
+`logs = true`, the server also sends its metrics and logs there. How spans
+fit into a trace is in [`tracing.md`](tracing.md).
+
+#### Where spans go
+
+There's no URL here: `outbound` names an `[outbound.<name>]` service, and
+spans are sent with `POST /v1/traces` to its `url`, with its `headers` and
+within its `timeout`. With `metrics` or `logs` on, those go there too, with
+`POST /v1/metrics` and `POST /v1/logs`. The service has to be declared and
+has to allow each of these requests that's used. An `http://` URL to another
+machine gets a warning. Redirects
+aren't followed. `OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`
+are ignored, with a warning, so the environment can't send telemetry somewhere
+else. A handler can `ctx.fetch` the service as it can any other.
+
+#### Which requests
+
+Who sent the request decides whose say counts:
+
+| The request | Whether it's recorded |
+|---|---|
+| From a proxy in [`trusted_proxies`](#server), with a `traceparent` | Its sampled flag decides, whatever `sample` is |
+| From anyone else, with a `traceparent` | `sample` decides. The flag is ignored |
+| Without a `traceparent` | `sample` decides |
+
+`sample` is a share, from 0 to 1. At 0, only requests that a trusted proxy
+marks sampled are recorded. Without `trusted_proxies`, no client can choose
+to have its request recorded, or not to.
+
+A request with a `traceparent` that's recorded stays in that trace: the
+span is a child of the one named. One without starts a new trace.
+
+For a sampled request, each handler, upstream, function and service gets a
+`traceparent` naming the span Unsworn recorded for asking it. A request
+that isn't sampled keeps the `traceparent` and `tracestate` it came with,
+and gets none if it had none. The one change: when a client that isn't
+trusted marked it sampled, the flag is cleared, so that nothing behind
+Unsworn records a request Unsworn declined to. A handler can name a [span
+of its own](tracing.md#a-handlers-own-span) for a call or a fetch, whose
+sampled flag then decides for that one.
+
+**A trusted proxy has to be one that decides.** If a proxy in
+`trusted_proxies` passes a client's `traceparent` on as it came, the client
+is deciding again. Have the proxy set the header itself, or remove it.
+
+`/_unsworn/health` and `/_unsworn/stats` aren't recorded.
+
+#### The spans
+
+One `SERVER` span per sampled request, from when Unsworn read the request
+to when it had the response's headers. It's named for the method and the
+route, such as `GET /users/{id}`, or the method alone when no route
+matched. A response of `500` or above sets its status to error. A request
+whose client goes away before there's a response is recorded too, as
+failed, with no route or status.
+
+| Attribute | Value |
+|---|---|
+| `http.request.method` | The method, or `_OTHER` for one that isn't standard |
+| `url.path` | The path without its query string, up to 2,048 bytes |
+| `url.scheme` | `http` or `https`, as the connection to Unsworn was |
+| `http.route` | The route's pattern, when one matched |
+| `http.response.status_code` | The status |
+| `client.address` | The client's address, as `trusted_proxies` makes it |
+| `network.protocol.version` | `1.0`, `1.1` or `2` |
+| `unsworn.request_id` | The `x-request-id`, as in the access log |
+| `unsworn.runtime` | The runtime that ran the route's handler, if one did |
+| `unsworn.in_handlers_ms` | How long the request waited for handlers |
+| `unsworn.rejected_by` | The rule that answered instead of the route's action, if one did: `origin`, `ip`, `rate_limit`, `auth`, `require`, `validation`, `max_body`, `body`, `before`, `timeout` or `response_validation` |
+| `unsworn.auth.scheme` | The scheme that let the caller in, if one did |
+| `unsworn.cache` | `hit`, `miss`, or `stored` for a miss whose response was kept |
+| `unsworn.response_validation` | `failed` when the handler's response didn't match its schema |
+
+Its events say when each of those was decided: `unsworn.authenticated`,
+`unsworn.checked` once every check before `before` handlers passed (access
+rules, rate limits, auth, `require`, validation and reading the body),
+`unsworn.cache`, `unsworn.response_invalid` and `unsworn.rejected`, whose
+`unsworn.rule` names the rule. The time between them is how long the steps
+took. An MCP tool's rules are reported the same way, though the client gets
+a tool error with status `200`. `validation` covers path parameters, the
+query, headers, the body and a tool's arguments; `body` is a body that
+couldn't be read.
+
+The resource's `service.name` is `service_name`, else `OTEL_SERVICE_NAME`,
+else the one in `OTEL_RESOURCE_ATTRIBUTES`, else `unsworn`. The other
+attributes in `OTEL_RESOURCE_ATTRIBUTES` (`key=value`, separated by commas,
+percent-encoded) are added to the resource.
+
+Below it are `CLIENT` spans, one for each thing Unsworn asks of something
+else:
+
+| Span | Recorded for | Attributes |
+|---|---|---|
+| `handler <ref>` | A route's or MCP tool's handler | `unsworn.handler`, `unsworn.runtime`, `unsworn.wait_ms`, `http.response.status_code` |
+| `before <ref>` | A `before` handler | The same, with a status only when it answers instead of letting the request through |
+| The method, such as `GET` | A `proxy` route's upstream, an HTTP runtime's server included | `http.request.method`, `unsworn.upstream`, `url.path`, `http.response.status_code` |
+| The method | A JWKS or API-key verifier request | `http.request.method`, `server.address`, `url.path`, `http.response.status_code` |
+| `call <function>` | `ctx.call`, or an HTTP runtime's call to a function | `unsworn.function`, `unsworn.caller`, `unsworn.handler`, `unsworn.runtime`, `unsworn.wait_ms`, `unsworn.status` |
+| The method | `ctx.fetch`, or an HTTP runtime's call to a service | `http.request.method`, `unsworn.service`, `server.address`, `url.path`, `http.response.status_code` |
+
+- `handler`, `before`, `proxy` and verifier spans are below the request's.
+  A `call` or `ctx.fetch` span is below the span of whatever asked: a
+  `handler`, a `before`, another `call`, or the `proxy` span for an HTTP
+  runtime. When the call or fetch names a span of its own with a sampled
+  `traceparent`, it's below that one instead.
+- `unsworn.wait_ms` is how long the call waited for a worker, starting one
+  included.
+- `unsworn.upstream` is the upstream as the config has it, without any user,
+  password or query, or `runtime:<name>`.
+- A `url.path` never has the query string. For `ctx.fetch` it's the path the
+  handler asked for, which goes after the service's URL; for the others, the
+  path that was sent.
+- `unsworn.status` is the status a function answered a successful call with.
+- A span covers what Unsworn waited for: a handler's up to its response's
+  head, and an upstream's too, a WebSocket's `101` included. A streamed
+  body isn't in it.
+- A span fails when there was no answer (a crashed worker, a timeout, a
+  failed connection), when a `ctx.call` didn't succeed, or when the answer
+  was `500` or above, and its status message says why. One that's given up
+  on, such as an upstream still silent when the route's time runs out, says
+  it was cancelled.
+- A [shadow](shadow.md) handler's call gets no span. What the shadow itself
+  calls or fetches through Unsworn is recorded, below the request's span.
+
+An attribute that isn't known isn't there: a request that never reached its
+upstream has no status, for one.
+
+A recorded request's access log line also has its `trace_id`.
+
+#### Metrics and logs
+
+With `metrics = true`, the server sends cumulative snapshots of its metrics
+(as `/_unsworn/metrics` exposes them: `http.server.request.duration`,
+`unsworn.handler.time`, `unsworn.runtime.workers`, `unsworn.runtime.crashes`,
+`unsworn.store.up` and `unsworn.store.errors`) every 60 s and once more on
+shutdown.
+
+With `logs = true`, the server sends every log event that `UNSWORN_LOG` lets
+through, worker output included, except targets `access` (whose request has a
+span) and `telemetry`. A worker's log line for a sampled request carries the
+`trace_id` and `span_id` of the handler's or function's span, both on stderr
+and in the exported OTLP log record.
+
+#### Sending
+
+On the server, spans and logs are each sent in batches of 512, or 5 s after a
+batch's first record, one request to the collector at a time. No request waits
+for the collector. Up to 2,048 records wait their turn in each queue; when
+that many are waiting, new ones are dropped. A batch the service doesn't
+answer with a `2xx` is dropped too: there are no retries. Lost records are
+counted in a warning, at most one a minute. On shutdown, what's waiting is
+sent, taking up to 5 s, or `[server].shutdown_timeout` if that's shorter.
+
+Spans work on every target. On Cloudflare, Vercel and Netlify, each sampled
+request sends its spans in one `POST /v1/traces` without making the response
+wait, with redirects not followed; `metrics` and `logs` are ignored there. On
+AWS Lambda, the server runs in a container and Lambda freezes it between
+invocations, so telemetry can arrive late or be lost there.
 
 ### `{env.NAME}`
 

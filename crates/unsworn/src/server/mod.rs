@@ -23,6 +23,7 @@ use tokio::net::TcpListener;
 use unsworn_core::Project;
 
 use crate::load;
+use crate::telemetry::{Exporter, Tracer};
 use crate::workers::{PoolOptions, Pools, SocketDir};
 use support::{Body, HttpClient, Metrics};
 use unsworn_core::pipeline::{ClientIp, KeyCache, Router};
@@ -35,6 +36,8 @@ pub struct Generation {
     pub router: Router,
     pub pools: Arc<Pools>,
     pub client_ip: ClientIp,
+    /// Records requests as spans, when the project has `[telemetry]`.
+    pub telemetry: Option<Arc<Tracer>>,
 }
 
 /// State that lives for the whole process.
@@ -50,6 +53,8 @@ pub struct Shared {
     pub metrics: Metrics,
     /// How routes' shadow handlers have compared with their own.
     pub shadows: support::Shadows,
+    /// Sends spans, for every generation with `[telemetry]`.
+    pub exporter: Exporter,
     /// JWT keys, kept across reloads.
     pub keys: Arc<KeyCache>,
     pub dev: bool,
@@ -62,6 +67,9 @@ pub struct Shared {
     sockets: SocketDir,
     /// When the server started, for `/_unsworn/stats`.
     pub started: std::time::Instant,
+    /// When the server started, in nanoseconds since the Unix epoch, for
+    /// cumulative OTLP metrics.
+    pub started_unix_nano: u64,
 }
 
 impl Shared {
@@ -94,10 +102,12 @@ fn make_generation(
     build: bool,
     socket_dir: &Path,
     generation: u64,
+    exporter: &Exporter,
 ) -> Result<Generation, String> {
     let client_ip = ClientIp::new(&project.server.trusted_proxies)?;
     let dir = socket_dir.join(format!("g{generation}"));
     std::fs::create_dir_all(&dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
+    let telemetry = project.telemetry.as_ref().map(|t| exporter.tracer(t));
     let pools = Pools::new(
         &project,
         PoolOptions {
@@ -107,6 +117,7 @@ fn make_generation(
             socket_dir: dir,
             log_tap: None,
             withheld_env: Vec::new(),
+            telemetry: telemetry.clone(),
         },
     );
     let project = Arc::new(project);
@@ -115,6 +126,7 @@ fn make_generation(
         project,
         pools,
         client_ip,
+        telemetry,
     })
 }
 
@@ -163,6 +175,8 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
     }
     let sockets = SocketDir::create().map_err(|e| format!("can't create socket directory: {e}"))?;
     let keys = Arc::new(KeyCache::default());
+    let client = support::build_client();
+    let exporter = Exporter::new(client.clone());
     let generation = make_generation(
         project,
         &keys,
@@ -171,6 +185,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         opts.build,
         sockets.path(),
         0,
+        &exporter,
     )?;
     if let Err(errors) = warm_up(&generation, opts.dev).await {
         for e in &errors {
@@ -179,6 +194,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         generation.pools.shutdown(Duration::from_secs(1)).await;
         return Err("an eager runtime failed to start".into());
     }
+    exporter.set_logs(generation.telemetry.as_deref());
     let server = generation.project.server.clone();
     let store = Store::new(&generation.project.store)?;
     if store.backend_name() != "memory" {
@@ -187,11 +203,12 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
 
     let shared = Arc::new(Shared {
         generation: ArcSwap::from_pointee(generation),
-        client: support::build_client(),
+        client,
         upstreams: upstream::Upstreams::new(),
         store: ArcSwap::from_pointee(store),
         metrics: Metrics::default(),
         shadows: support::Shadows::default(),
+        exporter,
         keys,
         dev: opts.dev,
         build: opts.build,
@@ -201,6 +218,7 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         generations: AtomicU64::new(1),
         sockets,
         started: std::time::Instant::now(),
+        started_unix_nano: crate::telemetry::unix_nano(std::time::SystemTime::now()),
     });
 
     // Periodic cleanup of expired cache entries and idle rate-limit buckets.
@@ -211,6 +229,20 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
             loop {
                 tick.tick().await;
                 shared.store.load().sweep();
+            }
+        });
+    }
+
+    // Periodic OTLP metrics export, every 60 s when `[telemetry].metrics` is on.
+    {
+        let shared = shared.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tick.tick().await; // skip immediate tick at startup
+            loop {
+                tick.tick().await;
+                export_metrics(&shared).await;
             }
         });
     }
@@ -232,6 +264,13 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
     let listener = TcpListener::bind(&server.listen)
         .await
         .map_err(|e| format!("can't listen on {}: {e}", server.listen))?;
+    // Start watching before announcing that the server is listening, so
+    // anything waiting for the banner can't write a file before inotify is
+    // registered.
+    if opts.dev {
+        spawn_watcher(shared.clone(), opts.config.clone());
+    }
+    spawn_reload_on_hup(shared.clone(), opts.config.clone());
     let scheme = if tls.is_some() { "https" } else { "http" };
     let local = listener
         .local_addr()
@@ -250,11 +289,6 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
             );
         }
     }
-
-    if opts.dev {
-        spawn_watcher(shared.clone(), opts.config.clone());
-    }
-    spawn_reload_on_hup(shared.clone(), opts.config.clone());
 
     let graceful = GracefulShutdown::new();
     let mut builder = auto::Builder::new(TokioExecutor::new());
@@ -348,9 +382,39 @@ pub async fn run(opts: ServeOptions) -> Result<(), String> {
         .pools
         .shutdown(Duration::from_secs(2))
         .await;
+    // Last, so the spans of calls the shutdown cut off are sent too, and so
+    // the workers, which a terminal's Ctrl-C signals as well, aren't taken
+    // to have crashed while spans are on their way.
+    let flush_budget = TELEMETRY_FLUSH_TIMEOUT.min(grace);
+    let _ = tokio::time::timeout(flush_budget, export_metrics(&shared)).await;
+    shared.exporter.flush(flush_budget).await;
     Ok(())
 }
 
+async fn export_metrics(shared: &Shared) {
+    let generation = shared.generation.load();
+    let Some(tracer) = generation.telemetry.as_ref() else {
+        return;
+    };
+    if !tracer.sends_metrics() {
+        return;
+    }
+    let runtimes = generation.pools.health();
+    let store = shared.store.load();
+    tracer
+        .export_metrics(
+            &shared.client,
+            &shared.metrics,
+            &runtimes,
+            &store,
+            shared.started_unix_nano,
+        )
+        .await;
+}
+
+/// The longest shutdown waits for spans to be sent. A shorter
+/// `[server].shutdown_timeout` lowers it.
+const TELEMETRY_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a new connection has to finish its TLS handshake.
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a new connection has to send its first request's headers, at
@@ -479,6 +543,7 @@ async fn reload(shared: &Arc<Shared>, config: &str) {
         shared.build,
         shared.sockets.path(),
         n,
+        &shared.exporter,
     ) {
         Ok(g) => g,
         Err(e) => {
@@ -510,6 +575,7 @@ async fn reload(shared: &Arc<Shared>, config: &str) {
         tracing::info!(store = store.backend_name(), "the store changed");
         shared.store.store(Arc::new(store));
     }
+    shared.exporter.set_logs(generation.telemetry.as_deref());
     let old = shared.generation.swap(Arc::new(generation));
     tracing::info!("reloaded");
     if shared.dev {

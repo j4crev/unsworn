@@ -547,6 +547,73 @@ auth = { scheme = "jwt", scopes = ["billing:write"] }
 }
 
 #[test]
+fn telemetry_is_an_entry_and_sending_more_is_looser() {
+    let services = "[outbound.otel]\nurl = \"https://otlp.example.com\"\n\n[outbound.other]\nurl = \"https://other.example.com\"\n";
+    let with = |keys: &str| format!("{services}\n[telemetry]\n{keys}\n");
+    let on = with("outbound = \"otel\"\nsample = 0.1");
+    let plan = plan_of(&on, &[]);
+    let t = entry(&plan, "telemetry");
+    assert_eq!(text(t, "outbound"), "otel");
+    assert_eq!(text(t, "sample"), "0.1");
+    assert!(
+        plan.render()
+            .contains("\ntelemetry\n  outbound           otel\n  sample             0.1\n  sends              traces\n"),
+        "{}",
+        plan.render()
+    );
+
+    // Turning it on sends data somewhere it didn't go before.
+    let d = changes(services, &on);
+    assert_eq!(d.looser(), 1);
+    let out = d.render();
+    assert!(
+        out.contains("+ telemetry\n  ! outbound           otel  (looser: spans are sent there)\n    sample             0.1\n    sends              traces\n"),
+        "{out}"
+    );
+    let d = changes(&on, services);
+    assert_eq!(d.looser(), 0);
+    assert!(d.render().contains("- telemetry\n"), "{}", d.render());
+
+    let dir = |new: &str| {
+        let d = changes(&on, &with(new));
+        let (_, c) = only_change(&d);
+        (c.key.clone(), c.direction)
+    };
+    assert_eq!(
+        dir("outbound = \"otel\"\nsample = 0.5"),
+        ("sample".into(), Direction::Looser)
+    );
+    assert_eq!(
+        dir("outbound = \"otel\""),
+        ("sample".into(), Direction::Tighter)
+    );
+    assert_eq!(
+        dir("outbound = \"other\"\nsample = 0.1"),
+        ("outbound".into(), Direction::Looser)
+    );
+    assert_eq!(
+        dir("outbound = \"otel\"\nsample = 0.1\nservice_name = \"api\""),
+        ("service_name".into(), Direction::Changed)
+    );
+    // Another kind of data sent is looser, and one no longer sent tighter.
+    for added in ["metrics = true", "logs = true"] {
+        let more = format!("outbound = \"otel\"\nsample = 0.1\n{added}");
+        assert_eq!(dir(&more), ("sends".into(), Direction::Looser));
+        let d = changes(&with(&more), &on);
+        let (_, c) = only_change(&d);
+        assert_eq!(c.direction, Direction::Tighter);
+    }
+    let plan = plan_of(
+        &with("outbound = \"otel\"\nmetrics = true\nlogs = true"),
+        &[],
+    );
+    assert_eq!(
+        text(entry(&plan, "telemetry"), "sends"),
+        "traces, metrics, logs"
+    );
+}
+
+#[test]
 fn patterns_intersect() {
     let i = |a: &str, b: &str| intersect(&parse_pattern(a), &parse_pattern(b)).map(|s| pattern(&s));
     assert_eq!(i("/{*rest}", "/api/{*r}"), Some("/api/{*r}".into()));

@@ -193,7 +193,7 @@ func (w *worker) send(message any, body []byte) error {
 
 // callFunction asks Unsworn to run a function for a request, and waits for
 // the answer or for the request to end.
-func (w *worker) callFunction(req *Request, name string, input any) (json.RawMessage, error) {
+func (w *worker) callFunction(req *Request, name string, input any, o *CallOptions) (json.RawMessage, error) {
 	if !w.canCall {
 		return nil, &CallError{Status: 501, Message: "this Unsworn doesn't run functions for handlers: update it"}
 	}
@@ -207,7 +207,11 @@ func (w *worker) callFunction(req *Request, name string, input any) (json.RawMes
 	id := "c-" + strconv.Itoa(w.nextCall)
 	w.calls[id] = answer
 	w.mu.Unlock()
-	if err := w.send(callMessage{Type: "call", ID: id, Request: req.ID, Function: name, JSON: data}, nil); err != nil {
+	message := callMessage{Type: "call", ID: id, Request: req.ID, Function: name, JSON: data}
+	if o != nil {
+		message.Traceparent, message.Tracestate = o.Traceparent, o.Tracestate
+	}
+	if err := w.send(message, nil); err != nil {
 		return nil, err
 	}
 	select {

@@ -380,23 +380,31 @@ class Worker:
     def send(self, message: dict, body: bytes | None = None) -> None:
         self.write(self.codec.encode(message, body))
 
-    def call(self, rid: str, name: str, value: Any) -> Any:
+    def call(
+        self, rid: str, name: str, value: Any, traceparent: str | None = None, tracestate: str | None = None
+    ) -> Any:
         """``ctx.call``: asks Unsworn to run a function for the request
         ``rid``. On the loop's thread, which is where an ``async def``
         handler runs, it returns something to await. On a handler thread
         it waits for the answer."""
+        asked = self._call(rid, name, value, traceparent, tracestate)
         if threading.get_ident() == self.loop_thread:
-            return self._call(rid, name, value)
-        return asyncio.run_coroutine_threadsafe(self._call(rid, name, value), self.loop).result()
+            return asked
+        return asyncio.run_coroutine_threadsafe(asked, self.loop).result()
 
-    async def _call(self, rid: str, name: str, value: Any) -> Any:
+    async def _call(
+        self, rid: str, name: str, value: Any, traceparent: str | None, tracestate: str | None
+    ) -> Any:
         if not CALLS:
             raise CallError(501, "this Unsworn doesn't run functions for handlers: update it")
         self.next_call += 1
         call_id = f"c-{self.next_call}"
         answer: asyncio.Future = self.loop.create_future()
         self.calls[call_id] = (rid, answer)
-        self.send({"type": "call", "id": call_id, "request": rid, "function": name, "json": value})
+        message = {"type": "call", "id": call_id, "request": rid, "function": name, "json": value}
+        trace = {"traceparent": traceparent, "tracestate": tracestate}
+        message.update((key, value) for key, value in trace.items() if value is not None)
+        self.send(message)
         try:
             return await answer
         finally:
@@ -540,7 +548,7 @@ class Worker:
             req.__dict__["_raw_json"] = raw
         self.requests[rid] = req
         ctx = Context(msg.get("context") or {})
-        ctx._call = lambda name, value=None: self.call(rid, name, value)
+        ctx._call = lambda *args: self.call(rid, *args)
         ctx._fetch = lambda *args: self.fetch(rid, *args)
         # Each task has its own context, so this only tags this request's logs.
         _current_id.set(rid)

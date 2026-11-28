@@ -195,6 +195,10 @@ Unsworn checks the input against the function's schema, and the function
 gets this request's context and what is left of its time. The answer is
 decoded into the type you ask for.
 
+The function joins the request's [trace](../../docs/tracing.md). To have it
+called under a span of your own, use `req.call_with` and give that span's
+`traceparent` in `CallOptions::trace`.
+
 ## Reaching other services
 
 `req.fetch` sends a request to an [outbound service](../../docs/outbound.md),

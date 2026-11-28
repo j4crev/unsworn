@@ -29,6 +29,19 @@ pub fn check(project: &Project, target: &str) -> Vec<Diagnostic> {
         "lambda" => return lambda(project),
         _ => functions(project, target),
     };
+    // Spans are sent from every target; metrics and logs are server-only.
+    if let Some(telemetry) = &project.telemetry {
+        let server_only = [
+            (telemetry.metrics, "[telemetry].metrics"),
+            (telemetry.logs, "[telemetry].logs"),
+        ];
+        for (_, at) in server_only.into_iter().filter(|(on, _)| *on) {
+            out.push(Diagnostic::warning(
+                at,
+                format!("ignored on {target}: only the server sends them"),
+            ));
+        }
+    }
     // Functions, outbound services and shadows run on every target. What
     // differs is said here.
     if let Some(route) = project.routes.iter().find(|r| r.shadow.is_some()) {
@@ -434,6 +447,37 @@ rate_limit = { requests = 1, per = "1s" }
 
         let python = project("[[route]]\npath = \"/b\"\nhandler = \"src/b.py\"\n");
         assert!(check(&python, "vercel").iter().any(|d| d.is_error()));
+    }
+
+    #[test]
+    fn only_the_server_sends_metrics_and_logs() {
+        let p = project(
+            r#"
+[outbound.otel]
+url = "https://otlp.example.com"
+
+[telemetry]
+outbound = "otel"
+metrics = true
+logs = true
+"#,
+        );
+        for target in ["cloudflare", "vercel", "netlify"] {
+            let warnings: Vec<_> = check(&p, target)
+                .into_iter()
+                .map(|d| (d.is_error(), d.location))
+                .collect();
+            let expected =
+                ["[telemetry].metrics", "[telemetry].logs"].map(|at| (false, at.to_string()));
+            assert_eq!(warnings, expected, "{target}");
+        }
+        assert_eq!(check(&p, "server"), vec![]);
+        // Lambda runs the server.
+        assert!(
+            check(&p, "lambda")
+                .iter()
+                .all(|d| !d.location.starts_with("[telemetry]"))
+        );
     }
 
     #[test]

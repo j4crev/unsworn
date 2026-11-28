@@ -15,13 +15,11 @@ use http::{HeaderMap, StatusCode};
 use serde_json::{Map, Value, json};
 use unsworn_proto::{Phase, Request as ProtoRequest};
 
-use super::{
-    Ctx, Prepared, Resp, empty_response, json_response, problem, rate_limited, run_befores,
-};
+use super::{Ctx, Prepared, Resp, empty_response, json_response, problem, run_befores};
 use crate::config::{OrOff, ResponseValidation};
 use crate::mcp::rpc::{self, Headers, Message, RpcError};
 use crate::mcp::{McpEndpoint, McpTool};
-use crate::pipeline::host::{Body, CallError, Host, ProxyRequest, Reply};
+use crate::pipeline::host::{Body, CallError, Host, ProxyRequest, Reply, Rule, Step};
 use crate::pipeline::{header_map, query_pairs, retry_secs, unmet};
 use crate::policy::{AuthReq, Effective};
 use crate::project::{Project, Proxy};
@@ -72,7 +70,7 @@ pub(super) async fn serve<H: Host>(
     let trusted = rpc::trusted_headers(&parts.headers, call.as_ref().map(|(t, _)| *t));
 
     if let Some(limit) = &eff.rate_limit
-        && let Err(resp) = rate_limited(ctx.rate_limit(limit, &trusted, claims.as_ref()).await)
+        && let Err(resp) = ctx.counted(ctx.rate_limit(limit, &trusted, claims.as_ref()).await)
     {
         return resp;
     }
@@ -108,11 +106,14 @@ async fn proxied<H: Host>(
         let forward = forward(ctx, upstream, parts, body, context, deadline);
         return match ctx.host.timeout(eff.timeout, forward).await {
             Some(resp) => resp,
-            None => problem(
-                StatusCode::GATEWAY_TIMEOUT,
-                format!(
-                    "the request took longer than {}s",
-                    eff.timeout.as_secs_f64()
+            None => ctx.rejected(
+                Rule::Timeout,
+                problem(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    format!(
+                        "the request took longer than {}s",
+                        eff.timeout.as_secs_f64()
+                    ),
                 ),
             ),
         };
@@ -138,7 +139,7 @@ async fn proxied<H: Host>(
         .await
     {
         Some(resp) => resp,
-        None => call.error(timed_out(timeout)),
+        None => ctx.rejected(Rule::Timeout, call.error(timed_out(timeout))),
     }
 }
 
@@ -296,13 +297,19 @@ impl ToolCall<'_> {
                             && let RateLimit::Limited { retry_after } =
                                 ctx.rate_limit(limit, &self.trusted, None).await
                         {
-                            return Err(super::problem_response(
-                                crate::pipeline::too_many_requests(retry_after),
+                            return Err(ctx.rejected(
+                                Rule::RateLimit,
+                                super::problem_response(crate::pipeline::too_many_requests(
+                                    retry_after,
+                                )),
                             ));
                         }
-                        return Err(resp);
+                        return Err(ctx.rejected(Rule::Auth, resp));
                     }
                 };
+            if let Some(scheme) = super::auth_scheme(&more) {
+                ctx.host.step(Step::Authenticated(scheme));
+            }
             if let Some(auth) = more.get("auth") {
                 context.insert("auth".into(), auth.clone());
             }
@@ -316,14 +323,20 @@ impl ToolCall<'_> {
             match ctx.rate_limit(limit, &self.trusted, claims.as_ref()).await {
                 RateLimit::Allowed => {}
                 RateLimit::Limited { retry_after } => {
-                    return Err(self.error(format!(
-                        "Rate limit exceeded for {}. Try again in {} seconds.",
-                        tool.name,
-                        retry_secs(retry_after)
-                    )));
+                    return Err(self.rejected(
+                        ctx,
+                        Rule::RateLimit,
+                        format!(
+                            "Rate limit exceeded for {}. Try again in {} seconds.",
+                            tool.name,
+                            retry_secs(retry_after)
+                        ),
+                    ));
                 }
                 RateLimit::Unavailable => {
-                    return Err(self.error(
+                    return Err(self.rejected(
+                        ctx,
+                        Rule::RateLimit,
                         "Rate limiting is unavailable, so the tool wasn't called. Try again later.",
                     ));
                 }
@@ -332,7 +345,7 @@ impl ToolCall<'_> {
         if let Some(rule) = &tool.input_rule
             && let Err(errors) = rule.check(&self.args, "arguments")
         {
-            return Err(self.error(rpc::invalid_arguments(&errors)));
+            return Err(self.rejected(ctx, Rule::Validation, rpc::invalid_arguments(&errors)));
         }
         let mut mcp = json!({ "tool": tool.name, "protocol_version": self.msg.protocol_version });
         if let Some(client) = &self.msg.client {
@@ -375,11 +388,15 @@ impl ToolCall<'_> {
                 claims.as_ref(),
             )
         {
-            return Err(self.error(format!(
-                "Not allowed: `{}` and `{}` have to be the same for this call.",
-                rule.left.describe(),
-                rule.right.describe()
-            )));
+            return Err(self.rejected(
+                ctx,
+                Rule::Require,
+                format!(
+                    "Not allowed: `{}` and `{}` have to be the same for this call.",
+                    rule.left.describe(),
+                    rule.right.describe()
+                ),
+            ));
         }
         if !eff.before.is_empty() {
             let deadline = ctx.deadline(eff.timeout);
@@ -432,7 +449,9 @@ impl ToolCall<'_> {
                 tracing::error!(handler = %handler.raw, "a tool handler sent `continue`, which only before handlers may send");
                 return self.error("The tool failed.");
             }
-            Err(CallError::Timeout) => return self.error(timed_out(timeout)),
+            Err(CallError::Timeout) => {
+                return ctx.rejected(Rule::Timeout, self.error(timed_out(timeout)));
+            }
             Err(e) => {
                 tracing::error!(handler = %handler.raw, tool = %self.tool.name, "{e}");
                 return self.error(if ctx.host.dev() {
@@ -461,8 +480,13 @@ impl ToolCall<'_> {
             };
             if let Some(p) = problem {
                 tracing::warn!(tool = %self.tool.name, "tool result doesn't match its output schema: {p}");
+                ctx.host.step(Step::ResponseInvalid);
                 if mode == ResponseValidation::Enforce {
-                    return self.error("The tool's result doesn't match its output schema.");
+                    return self.rejected(
+                        ctx,
+                        Rule::ResponseValidation,
+                        "The tool's result doesn't match its output schema.",
+                    );
                 }
             }
         }
@@ -478,6 +502,11 @@ impl ToolCall<'_> {
             StatusCode::OK,
             &rpc::result(&id, result, Some(&self.mcp.server)),
         )
+    }
+
+    /// [`ToolCall::error`], for a call `rule` turned away.
+    fn rejected<H: Host>(&self, ctx: &Ctx<'_, H>, rule: Rule, text: impl Into<String>) -> Resp<H> {
+        ctx.rejected(rule, self.error(text))
     }
 
     /// A tool result with `isError: true`, answered by Unsworn.

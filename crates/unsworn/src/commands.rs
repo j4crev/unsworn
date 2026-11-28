@@ -47,6 +47,7 @@ pub async fn check(
                 socket_dir: sockets.path().to_path_buf(),
                 log_tap: None,
                 withheld_env: Vec::new(),
+                telemetry: None,
             },
         );
         for (runtime, missing, err) in pools.start_all().await {

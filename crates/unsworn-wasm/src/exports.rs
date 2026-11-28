@@ -1,11 +1,11 @@
 //! What the module exports to JavaScript.
 
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
-
-use std::collections::BTreeMap;
 
 use bytes::Bytes;
 use http::{HeaderValue, Method, StatusCode, Uri, header};
@@ -16,6 +16,11 @@ use unsworn_core::pipeline::{
     Body, Deadline, FetchError, Host, KeyCache, Problem, Reply, Router, problem_response,
 };
 use unsworn_core::store::{Bucket, take_token as core_take_token};
+use unsworn_core::telemetry::{
+    Attr, Decision, Ended, Outcome, Recorder, SpanRecord, Steps, call_span, decide, failed_status,
+    otlp, outbound_trace, resource_attributes, service_span, strip_trace,
+};
+use unsworn_core::trace::{TRACEPARENT, TRACESTATE};
 use unsworn_core::validate::Build;
 use unsworn_core::{Level, Project, compile_with, outbound};
 use wasm_bindgen::prelude::*;
@@ -25,12 +30,19 @@ use crate::bridge::{Bridge, JsBody, bytes_to_js, get, headers_from_js, response_
 use crate::files::Files;
 use crate::host::{Caller, WasmHost, WasmStore};
 use crate::log;
+use crate::telemetry::{self, Parent, WasmRecorder};
 
 /// A loaded project, ready to handle requests. Build one per isolate.
 #[wasm_bindgen]
 pub struct Unsworn {
     router: Rc<Router>,
     dev: bool,
+    /// Pre-encoded OTLP `Resource` bytes, when `[telemetry]` is configured.
+    resource: Option<Bytes>,
+    /// Per-request span collectors, keyed by `trace_key`, so `ctx.call` and
+    /// `ctx.fetch` record into the same request's export.
+    recorders: Rc<RefCell<HashMap<u64, Arc<WasmRecorder>>>>,
+    next_trace_key: Cell<u64>,
 }
 
 fn string_entries(value: &JsValue) -> Vec<(String, Option<String>)> {
@@ -95,12 +107,41 @@ impl Unsworn {
                 )));
             }
         };
+        let resource = project.telemetry.as_ref().map(|t| {
+            let ignored: Vec<&str> = [
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_HEADERS",
+            ]
+            .into_iter()
+            .filter(|name| files.env.contains_key(*name))
+            .collect();
+            if !ignored.is_empty() {
+                tracing::warn!(
+                    "ignoring {}: spans go to [outbound.{}]",
+                    ignored.join(", "),
+                    t.outbound.name
+                );
+            }
+            let attributes = resource_attributes(
+                t.service_name.as_deref(),
+                files.env.get("OTEL_SERVICE_NAME").map(String::as_str),
+                files
+                    .env
+                    .get("OTEL_RESOURCE_ATTRIBUTES")
+                    .map(String::as_str),
+            );
+            Bytes::from(otlp::resource(&attributes))
+        });
         Ok(Unsworn {
             router: Rc::new(Router::new(
                 Arc::new(project),
                 Arc::new(KeyCache::default()),
             )),
             dev,
+            resource,
+            recorders: Rc::new(RefCell::new(HashMap::new())),
+            next_trace_key: Cell::new(1),
         })
     }
 
@@ -143,9 +184,13 @@ impl Unsworn {
     pub fn handle(&self, request: JsValue, bridge: Bridge) -> Promise {
         let router = self.router.clone();
         let dev = self.dev;
+        let resource = self.resource.clone();
+        let recorders = self.recorders.clone();
+        let trace_key = self.next_trace_key.get();
+        self.next_trace_key.set(trace_key.wrapping_add(1).max(1));
         future_to_promise(async move {
             let request_id = get(&request, "requestId").as_string().unwrap_or_default();
-            let (req, client_ip, tls) = match request_from_js(&request) {
+            let (mut req, client_ip, tls) = match request_from_js(&request) {
                 Ok(r) => r,
                 Err(detail) => {
                     let resp = problem_response(Problem::new(StatusCode::BAD_REQUEST, detail));
@@ -154,10 +199,91 @@ impl Unsworn {
                     return Ok(out.into());
                 }
             };
-            let host = host(router.project(), bridge, dev, request_id.clone(), tls);
+            let method = req.method().as_str().to_string();
+            let path = req.uri().path().to_string();
+            let version = req.version();
+            let traced = router.project().telemetry.as_ref().and_then(|t| {
+                // Edge and serverless targets ignore `[server].trusted_proxies`,
+                // so no peer is trusted to decide sampling.
+                match decide(t.sample, req.headers(), false, &mut telemetry::random) {
+                    Decision::Sampled(started) => {
+                        if let Ok(v) = HeaderValue::try_from(started.traceparent()) {
+                            req.headers_mut().insert(TRACEPARENT, v);
+                        }
+                        if started.new_root {
+                            req.headers_mut().remove(TRACESTATE);
+                        }
+                        let recorder = Arc::new(WasmRecorder::default());
+                        recorders.borrow_mut().insert(trace_key, recorder.clone());
+                        let steps = Arc::new(Steps::default());
+                        let start = recorder.now();
+                        Some((started, recorder, steps, start, t.outbound.clone()))
+                    }
+                    Decision::NotSampled { cleared } => {
+                        if let Some(tp) = cleared
+                            && let Ok(v) = HeaderValue::try_from(tp)
+                        {
+                            req.headers_mut().insert(TRACEPARENT, v);
+                        }
+                        None
+                    }
+                }
+            });
+            struct Guard {
+                recorders: Rc<RefCell<HashMap<u64, Arc<WasmRecorder>>>>,
+                key: Option<u64>,
+            }
+            impl Drop for Guard {
+                fn drop(&mut self) {
+                    if let Some(key) = self.key {
+                        self.recorders.borrow_mut().remove(&key);
+                    }
+                }
+            }
+            let _guard = Guard {
+                recorders: recorders.clone(),
+                key: traced.as_ref().map(|_| trace_key),
+            };
+            let mut host = host(router.project(), bridge, dev, request_id.clone(), tls);
+            if let Some((started, recorder, steps, _, _)) = &traced {
+                host.span = Some(Parent::of(recorder, started));
+                host.steps = Some(steps.clone());
+                host.trace_key = Some(trace_key);
+            }
             let mut handled = router.handle(&host, req, client_ip).await;
             if let Ok(v) = HeaderValue::from_str(&request_id) {
                 handled.response.headers_mut().insert("x-request-id", v);
+            }
+            if let Some((started, recorder, steps, start, outbound)) = traced {
+                let elapsed = recorder.now().monotonic.saturating_sub(start.monotonic);
+                let runtime = host.runtime.borrow().clone();
+                let ended = Ended {
+                    start_unix_nano: start.unix_nano,
+                    elapsed,
+                    method: &method,
+                    path: &path,
+                    tls,
+                    client: client_ip,
+                    version,
+                    request_id: &request_id,
+                    answer: Some(Outcome {
+                        route: &handled.route,
+                        status: handled.response.status().as_u16(),
+                        runtime: runtime.as_deref(),
+                        in_handlers: host.in_handlers.get(),
+                    }),
+                };
+                let span = SpanRecord::new(&started, ended).with_steps(&steps);
+                recorder.record(span);
+                let spans = recorder.take();
+                if let Some(resource) = resource {
+                    let mut export_host = host.clone();
+                    export_host.span = None;
+                    export_host.steps = None;
+                    export_host.trace_key = None;
+                    host.background(telemetry::export(export_host, outbound, resource, spans))
+                        .await;
+                }
             }
             let out = response_to_js(handled.response);
             set(&out, "route", &JsValue::from_str(&handled.route));
@@ -170,17 +296,35 @@ impl Unsworn {
 impl Unsworn {
     /// Runs a function for a handler: its `ctx.call`. `caller` is what the
     /// bridge's `call` was given for the handler, and `input` is JSON
-    /// text. Resolves a `FunctionResult`, and never rejects.
+    /// text. `traceparent` and `tracestate` are the handler's own, when it
+    /// names a span for the function to be called under. Resolves a
+    /// `FunctionResult`, and never rejects.
     #[wasm_bindgen(js_name = callFunction, unchecked_return_type = "Promise<FunctionResult>")]
-    pub fn call_function(&self, caller: &str, name: &str, input: &str, bridge: Bridge) -> Promise {
+    pub fn call_function(
+        &self,
+        caller: &str,
+        name: &str,
+        input: &str,
+        bridge: Bridge,
+        traceparent: Option<String>,
+        tracestate: Option<String>,
+    ) -> Promise {
         let project = self.router.project().clone();
         let dev = self.dev;
-        let caller = Caller::decode(caller);
+        let recorders = self.recorders.clone();
+        let own = calls::given_trace(traceparent.as_deref(), tracestate.as_deref());
+        let caller = Caller::decode(caller).map(|mut caller| {
+            caller.call = caller.call.with_trace(own);
+            caller
+        });
         let (name, input) = (name.to_string(), serde_json::from_str::<Value>(input));
         future_to_promise(async move {
             let outcome = match (caller, input) {
                 (Some(caller), Ok(input)) => {
-                    run_function(&project, caller, &name, &input, bridge, dev).await
+                    let recorder = caller
+                        .trace_key
+                        .and_then(|k| recorders.borrow().get(&k).cloned());
+                    run_function(&project, caller, &name, &input, bridge, dev, recorder).await
                 }
                 (None, _) => Err(no_caller()),
                 (_, Err(e)) => Err(Failure::new(400, format!("the input isn't JSON: {e}"))),
@@ -220,6 +364,7 @@ impl Unsworn {
     ) -> Promise {
         let project = self.router.project().clone();
         let dev = self.dev;
+        let recorders = self.recorders.clone();
         let caller = Caller::decode(caller);
         let (service, method, path) = (service.to_string(), method.to_string(), path.to_string());
         let sent: BTreeMap<String, String> = string_entries(headers)
@@ -239,7 +384,12 @@ impl Unsworn {
                 body,
             };
             let outcome = match caller {
-                Some(caller) => fetch_service(&project, caller, asked, bridge, dev).await,
+                Some(caller) => {
+                    let recorder = caller
+                        .trace_key
+                        .and_then(|k| recorders.borrow().get(&k).cloned());
+                    fetch_service(&project, caller, asked, bridge, dev, recorder).await
+                }
                 None => {
                     let failure = no_caller();
                     Err((failure.status, failure.error))
@@ -286,6 +436,11 @@ fn host(project: &Project, bridge: Bridge, dev: bool, request_id: String, tls: b
         request_id,
         tls,
         calls: !project.functions.is_empty() || !project.outbound.is_empty(),
+        in_handlers: Rc::new(Cell::new(Duration::ZERO)),
+        runtime: Rc::new(RefCell::new(None)),
+        span: None,
+        steps: None,
+        trace_key: None,
     }
 }
 
@@ -302,39 +457,68 @@ fn no_caller() -> Failure {
 /// the function's handler called in this isolate.
 async fn run_function(
     project: &Project,
-    caller: Caller,
+    mut caller: Caller,
     name: &str,
     input: &Value,
     bridge: Bridge,
     dev: bool,
+    recorder: Option<Arc<WasmRecorder>>,
 ) -> Result<(u16, Value), Failure> {
-    let (function, request) = calls::prepare(&project.functions, name, input, caller.call)?;
-    let host = host(project, bridge, dev, caller.request_id, false);
-    // The function has its own time limit, and no more time than the
-    // request it's called for.
-    let deadline = caller
-        .deadline
-        .min(Deadline(host.monotonic() + function.timeout));
-    let reply = host
-        .call(&function.handler, request, Body::Empty, deadline)
-        .await;
-    let (response, body) = match reply {
-        Ok(Reply::Response { response, body }) => (response, body),
-        Ok(Reply::Continue(_)) => return Err(calls::continued()),
-        Err(e) => return Err(calls::failed(e)),
-    };
-    let answer = match body {
-        Body::Empty => calls::Answer::Empty,
-        Body::Bytes(bytes) => calls::Answer::Bytes(bytes),
-        // Bytes and nothing arrive as such: what's left is a stream.
-        Body::Host(_) => calls::Answer::Stream,
-    };
-    calls::finish(
-        &function,
-        project.server.response_validation,
-        response,
-        answer,
-    )
+    let mut span = recorder
+        .as_ref()
+        .and_then(|r| Parent::from_trace(r, caller.call.trace.as_ref()))
+        .map(|parent| parent.child(call_span(name, &caller.call.handler)));
+    if let Some(span) = &span {
+        caller.call.trace = Some(span.context());
+    }
+    let outcome = async {
+        let (function, request) = calls::prepare(&project.functions, name, input, caller.call)?;
+        if let Some(span) = span.as_mut() {
+            span.set("unsworn.handler", Attr::Str(function.handler.raw.clone()));
+            span.set(
+                "unsworn.runtime",
+                Attr::Str(function.handler.runtime.clone()),
+            );
+        }
+        let mut host = host(project, bridge, dev, caller.request_id, false);
+        host.trace_key = caller.trace_key;
+        // The function has its own time limit, and no more time than the
+        // request it's called for.
+        let deadline = caller
+            .deadline
+            .min(Deadline(host.monotonic() + function.timeout));
+        let reply = host
+            .call(&function.handler, request, Body::Empty, deadline)
+            .await;
+        let (response, body) = match reply {
+            Ok(Reply::Response { response, body }) => (response, body),
+            Ok(Reply::Continue(_)) => return Err(calls::continued()),
+            Err(e) => return Err(calls::failed(e)),
+        };
+        let answer = match body {
+            Body::Empty => calls::Answer::Empty,
+            Body::Bytes(bytes) => calls::Answer::Bytes(bytes),
+            // Bytes and nothing arrive as such: what's left is a stream.
+            Body::Host(_) => calls::Answer::Stream,
+        };
+        calls::finish(
+            &function,
+            project.server.response_validation,
+            response,
+            answer,
+        )
+    }
+    .await;
+    if let Some(mut span) = span {
+        match &outcome {
+            Ok((status, _)) => {
+                span.set("unsworn.status", Attr::Int(i64::from(*status)));
+                span.finish(failed_status(*status));
+            }
+            Err(failure) => span.finish(Some(failure.error.clone())),
+        }
+    }
+    outcome
 }
 
 /// What a handler's `ctx.fetch` asked for.
@@ -355,59 +539,103 @@ async fn fetch_service(
     asked: Asked<'_>,
     bridge: Bridge,
     dev: bool,
+    recorder: Option<Arc<WasmRecorder>>,
 ) -> Result<http::Response<Bytes>, (u16, String)> {
-    let service = outbound::service(&project.outbound, asked.service)?;
-    let planned = outbound::plan(
-        service,
-        asked.method,
-        asked.path,
-        asked.headers,
-        caller.call.trace.as_ref(),
-    )?;
-    let mut request = http::Request::builder()
-        .method(planned.method.as_str())
-        .uri(planned.url);
-    for (name, value) in &planned.headers {
-        request = request.header(name, value);
-    }
-    let request = request
-        .body(asked.body)
-        .map_err(|e| (400, format!("the request can't be made: {e}")))?;
-
-    let host = host(project, bridge, dev, caller.request_id, false);
-    let started = host.monotonic();
-    // The service's time limit, and no more than the handler's own request
-    // has left.
-    let timeout = service
-        .timeout
-        .min(caller.deadline.0.saturating_sub(started));
-    let limit = usize::try_from(service.max_response).unwrap_or(usize::MAX);
-    let outcome = host.send(request, timeout, limit, true).await;
-    // What a handler reached, and when: the query is left out, since
-    // that's where a token may be.
-    let path = asked.path.split('?').next().unwrap_or_default();
-    let (name, method, id) = (&service.name, &planned.method, &host.request_id);
-    let failed = |status: u16, error: String| {
-        tracing::warn!("outbound service={name} method={method} path={path} id={id}: {error}");
-        (status, error)
+    let own = outbound_trace(asked.headers);
+    let named = own.is_some();
+    let parent = recorder.as_ref().and_then(|r| {
+        if let Some(trace) = own.as_ref() {
+            Parent::from_trace(r, Some(trace))
+        } else {
+            Parent::from_trace(r, caller.call.trace.as_ref())
+        }
+    });
+    let service_url = project.outbound.get(asked.service).map(|s| s.url.as_str());
+    let span = parent.map(|p| {
+        p.child(service_span(
+            asked.method,
+            asked.service,
+            service_url,
+            asked.path,
+        ))
+    });
+    let stripped;
+    let headers = if span.is_some() && named {
+        stripped = strip_trace(asked.headers);
+        &stripped
+    } else {
+        asked.headers
     };
-    match outcome {
-        Ok(response) => {
-            let ms = host.monotonic().saturating_sub(started).as_secs_f64() * 1000.0;
-            let status = response.status().as_u16();
-            tracing::info!(
-                "outbound service={name} method={method} path={path} status={status} ms={ms:.0} id={id}"
-            );
-            Ok(response)
+    let trace = span.as_ref().map(|s| s.context()).or_else(|| {
+        if named {
+            None
+        } else {
+            caller.call.trace.clone()
         }
-        Err(FetchError::Timeout) => Err(failed(504, "the service took too long to answer".into())),
-        Err(FetchError::Connect(e)) => Err(failed(502, format!("couldn't reach the service: {e}"))),
-        // The bridge reads up to the limit, and says so when there's more.
-        Err(FetchError::Read(e)) if e.contains("is larger than") => {
-            Err(failed(502, outbound::too_large(service)))
+    });
+
+    let outcome = async {
+        let service = outbound::service(&project.outbound, asked.service)?;
+        let planned = outbound::plan(service, asked.method, asked.path, headers, trace.as_ref())?;
+        let mut request = http::Request::builder()
+            .method(planned.method.as_str())
+            .uri(planned.url);
+        for (name, value) in &planned.headers {
+            request = request.header(name, value);
         }
-        Err(FetchError::Read(e)) => Err(failed(502, format!("the response couldn't be read: {e}"))),
+        let request = request
+            .body(asked.body)
+            .map_err(|e| (400, format!("the request can't be made: {e}")))?;
+
+        let host = host(project, bridge, dev, caller.request_id, false);
+        let started = host.monotonic();
+        // The service's time limit, and no more than the handler's own request
+        // has left.
+        let timeout = service
+            .timeout
+            .min(caller.deadline.0.saturating_sub(started));
+        let limit = usize::try_from(service.max_response).unwrap_or(usize::MAX);
+        let outcome = host.send(request, timeout, limit, true).await;
+        // What a handler reached, and when: the query is left out, since
+        // that's where a token may be.
+        let path = asked.path.split('?').next().unwrap_or_default();
+        let (name, method, id) = (&service.name, &planned.method, &host.request_id);
+        let failed = |status: u16, error: String| {
+            tracing::warn!("outbound service={name} method={method} path={path} id={id}: {error}");
+            (status, error)
+        };
+        match outcome {
+            Ok(response) => {
+                let ms = host.monotonic().saturating_sub(started).as_secs_f64() * 1000.0;
+                let status = response.status().as_u16();
+                tracing::info!(
+                    "outbound service={name} method={method} path={path} status={status} ms={ms:.0} id={id}"
+                );
+                Ok(response)
+            }
+            Err(FetchError::Timeout) => {
+                Err(failed(504, "the service took too long to answer".into()))
+            }
+            Err(FetchError::Connect(e)) => {
+                Err(failed(502, format!("couldn't reach the service: {e}")))
+            }
+            // The bridge reads up to the limit, and says so when there's more.
+            Err(FetchError::Read(e)) if e.contains("is larger than") => {
+                Err(failed(502, outbound::too_large(service)))
+            }
+            Err(FetchError::Read(e)) => {
+                Err(failed(502, format!("the response couldn't be read: {e}")))
+            }
+        }
     }
+    .await;
+    if let Some(span) = span {
+        match &outcome {
+            Ok(resp) => span.answered(resp.status().as_u16()),
+            Err((_, why)) => span.finish(Some(why.clone())),
+        }
+    }
+    outcome
 }
 
 /// The request, the client's IP and whether it came over HTTPS.

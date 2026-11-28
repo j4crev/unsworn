@@ -25,6 +25,7 @@ mod plan;
 mod scale;
 mod server;
 mod store;
+mod telemetry;
 mod top;
 mod workers;
 
@@ -194,21 +195,25 @@ enum Command {
 }
 
 fn init_logging(format: &str, dev: bool) {
+    use std::io::IsTerminal;
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     let default = if dev { "info,access=info" } else { "info" };
     let filter = EnvFilter::try_from_env("UNSWORN_LOG").unwrap_or_else(|_| EnvFilter::new(default));
-    use std::io::IsTerminal;
     let terminal = std::io::stderr().is_terminal();
-    let builder = tracing_subscriber::fmt()
-        .with_env_filter(filter)
+    let fmt = tracing_subscriber::fmt::layer()
         .with_ansi(terminal)
         .with_writer(std::io::stderr);
+    let registry = tracing_subscriber::registry()
+        .with(filter)
+        .with(telemetry::log_layer());
     if format == "json" {
-        builder.json().flatten_event(true).init();
+        registry.with(fmt.json().flatten_event(true)).init();
     } else if dev {
-        builder.compact().without_time().init();
+        registry.with(fmt.compact().without_time()).init();
     } else {
-        builder.init();
+        registry.with(fmt).init();
     }
     // A terminal gets each line as it happens, and in color. `json` output
     // has no colors anywhere.

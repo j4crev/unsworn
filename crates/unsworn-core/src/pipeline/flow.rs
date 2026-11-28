@@ -13,10 +13,13 @@ use unsworn_proto::{Phase, Request as ProtoRequest};
 mod mcp;
 
 use super::auth::{AuthOutcome, KeyCache, authenticate_request};
-use super::host::{Body, CallError, Deadline, Host, ProxyRequest, Reply, Response, StaticRequest};
+use super::host::{
+    Body, CacheStep, CallError, Deadline, Host, ProxyRequest, Reply, Response, Rule, StaticRequest,
+    Step,
+};
 use super::{
-    JsonBody, Problem, access, cache_key, check_body, check_content_length, decode_param,
-    finish_headers, header_map, normalize_path, preflight_headers, query_pairs, rate_limit_bucket,
+    JsonBody, Problem, cache_key, check_body, check_content_length, decode_param, finish_headers,
+    header_map, normalize_path, preflight_headers, query_pairs, rate_limit_bucket,
     redirect_location, response_head, unmet, validate_inputs,
 };
 use crate::config::{ResponseValidation, TrailingSlash};
@@ -276,9 +279,12 @@ async fn route_request<H: Host>(
             let work = serve_route(ctx, req, route, &eff, params);
             let mut resp = match ctx.host.timeout(timeout, work).await {
                 Some(r) => r,
-                None => problem(
-                    StatusCode::GATEWAY_TIMEOUT,
-                    format!("the request took longer than {}s", timeout.as_secs_f64()),
+                None => ctx.rejected(
+                    Rule::Timeout,
+                    problem(
+                        StatusCode::GATEWAY_TIMEOUT,
+                        format!("the request took longer than {}s", timeout.as_secs_f64()),
+                    ),
                 ),
             };
             finish_headers(&eff, ctx.origin.as_deref(), resp.headers_mut());
@@ -306,6 +312,34 @@ pub(super) struct Prepared<H: Host> {
 impl<H: Host> Ctx<'_, H> {
     fn deadline(&self, timeout: Duration) -> Deadline {
         Deadline(self.host.monotonic() + timeout)
+    }
+
+    /// Tells the host that `rule` answered the request with `resp`.
+    pub(super) fn rejected(&self, rule: Rule, resp: Resp<H>) -> Resp<H> {
+        self.host.step(Step::Rejected(rule));
+        resp
+    }
+
+    /// [`Ctx::rejected`], for a problem.
+    fn refused(&self, rule: Rule) -> impl FnOnce(Problem) -> Resp<H> + '_ {
+        move |p| self.rejected(rule, problem_response(p))
+    }
+
+    /// The answer to a request over its rate limit, if it is.
+    pub(super) fn counted(&self, outcome: RateLimit) -> Result<(), Resp<H>> {
+        rate_limited(outcome).map_err(|resp| self.rejected(Rule::RateLimit, resp))
+    }
+
+    /// Reads a request body whole, saying which rule refused it if it
+    /// couldn't be.
+    async fn body(&self, body: H::RequestBody, max: u64) -> Result<Bytes, Resp<H>> {
+        self.host.read_body(body, max).await.map_err(|p| {
+            let rule = match p.status {
+                StatusCode::PAYLOAD_TOO_LARGE => Rule::MaxBody,
+                _ => Rule::Body,
+            };
+            self.rejected(rule, problem_response(p))
+        })
     }
 
     /// `body` is the request's, for a scheme that checks a signature made
@@ -427,12 +461,15 @@ async fn serve_route<H: Host>(
     }
     // The cache is read after `before` handlers, so one that turns a caller
     // away does so even when a response is cached.
-    if let Some(key) = &prepared.cache_key
-        && let Some(hit) = cache_get(&ctx.host.store(), key, ctx.host.now_ms()).await
-        && !ctx.invalidated(prepared.parts.uri.path(), &hit).await
-    {
-        let method = &prepared.template.method;
-        return cached_response(ctx, &hit, method, &prepared.parts.headers);
+    if let Some(key) = &prepared.cache_key {
+        if let Some(hit) = cache_get(&ctx.host.store(), key, ctx.host.now_ms()).await
+            && !ctx.invalidated(prepared.parts.uri.path(), &hit).await
+        {
+            ctx.host.step(Step::Cache(CacheStep::Hit));
+            let method = &prepared.template.method;
+            return cached_response(ctx, &hit, method, &prepared.parts.headers);
+        }
+        ctx.host.step(Step::Cache(CacheStep::Miss));
     }
     // A `HEAD` request may be answered from the cache, but its response
     // has no body to answer a later `GET` with, so it's never stored.
@@ -477,7 +514,8 @@ async fn prepare<H: Host>(
     let mut incoming = Some(incoming);
     let method = parts.method.as_str().to_string();
     let query_pairs = query_pairs(parts.uri.query());
-    access(eff, ctx.origin.as_deref(), ctx.client_ip).map_err(problem_response)?;
+    super::checks::access_rules(eff, ctx.origin.as_deref(), ctx.client_ip)
+        .map_err(|(rule, p)| ctx.rejected(rule, problem_response(p)))?;
 
     // An MCP endpoint counts requests once their headers are checked
     // against the body, so header keys can be trusted.
@@ -488,7 +526,7 @@ async fn prepare<H: Host>(
     // never asked more often than the limit allows.
     let before_auth = |l: &&RateLimitRule| !matches!(l.key, KeySource::Claim(_));
     if let Some(limit) = limit.filter(before_auth) {
-        rate_limited(ctx.rate_limit(limit, &parts.headers, None).await)?;
+        ctx.counted(ctx.rate_limit(limit, &parts.headers, None).await)?;
     }
 
     // A webhook's signature is made over its body, so that is read first:
@@ -497,13 +535,8 @@ async fn prepare<H: Host>(
     if ctx.project.signs_body(&eff.auth)
         && let Some(body) = incoming.take()
     {
-        check_content_length(&parts.headers, eff.max_body).map_err(problem_response)?;
-        body_bytes = Some(
-            ctx.host
-                .read_body(body, eff.max_body)
-                .await
-                .map_err(problem_response)?,
-        );
+        check_content_length(&parts.headers, eff.max_body).map_err(ctx.refused(Rule::MaxBody))?;
+        body_bytes = Some(ctx.body(body, eff.max_body).await?);
     }
     let authenticated = ctx
         .authenticate(&parts.headers, eff, &query_pairs, body_bytes.as_deref())
@@ -524,13 +557,16 @@ async fn prepare<H: Host>(
                     .filter(|l| is_mcp || !before_auth(l))
             {
                 let headers = crate::mcp::rpc::trusted_headers(&parts.headers, None);
-                rate_limited(ctx.rate_limit(limit, &headers, None).await)?;
+                ctx.counted(ctx.rate_limit(limit, &headers, None).await)?;
             }
-            return Err(resp);
+            return Err(ctx.rejected(Rule::Auth, resp));
         }
     };
+    if let Some(scheme) = auth_scheme(&context) {
+        ctx.host.step(Step::Authenticated(scheme));
+    }
     if let Some(limit) = limit.filter(|l| !before_auth(l)) {
-        rate_limited(ctx.rate_limit(limit, &parts.headers, claims.as_ref()).await)?;
+        ctx.counted(ctx.rate_limit(limit, &parts.headers, claims.as_ref()).await)?;
     }
 
     // Before the request's own values are looked at any further: a caller
@@ -542,16 +578,13 @@ async fn prepare<H: Host>(
         &parts.headers,
         claims.as_ref(),
     ) {
-        return Err(problem_response(not_allowed(rule)));
+        return Err(ctx.rejected(Rule::Require, problem_response(not_allowed(rule))));
     }
 
     let (params, query) = validate_inputs(route, &raw_params, &query_pairs, &parts.headers)
-        .map_err(problem_response)?;
+        .map_err(ctx.refused(Rule::Validation))?;
 
-    let scheme = context
-        .get("auth")
-        .and_then(|a| a.get("scheme"))
-        .and_then(Value::as_str);
+    let scheme = auth_scheme(&context);
     let cache_key = eff.cache.as_ref().and_then(|rule| {
         cache_key(
             rule,
@@ -573,14 +606,9 @@ async fn prepare<H: Host>(
     let mut streaming_body = None;
     // Unless it was read to check a signature.
     if let Some(incoming) = incoming {
-        check_content_length(&parts.headers, eff.max_body).map_err(problem_response)?;
+        check_content_length(&parts.headers, eff.max_body).map_err(ctx.refused(Rule::MaxBody))?;
         if needs_body {
-            body_bytes = Some(
-                ctx.host
-                    .read_body(incoming, eff.max_body)
-                    .await
-                    .map_err(problem_response)?,
-            );
+            body_bytes = Some(ctx.body(incoming, eff.max_body).await?);
         } else {
             streaming_body = Some(ctx.host.limit_body(incoming, eff.max_body));
         }
@@ -602,7 +630,7 @@ async fn prepare<H: Host>(
             body_bytes.as_deref(),
             may_leave_unread,
         )
-        .map_err(problem_response)?
+        .map_err(ctx.refused(Rule::Validation))?
     };
     let is_json = json_body != JsonBody::No;
     let raw_body = if is_json {
@@ -640,6 +668,7 @@ async fn prepare<H: Host>(
             }),
         ..Default::default()
     };
+    ctx.host.step(Step::Checked);
     Ok(Prepared {
         parts,
         template,
@@ -652,6 +681,14 @@ async fn prepare<H: Host>(
         context,
         claims,
     })
+}
+
+/// The scheme that let the caller in, as auth put it in the context.
+pub(super) fn auth_scheme(context: &Map<String, Value>) -> Option<&str> {
+    context
+        .get("auth")
+        .and_then(|a| a.get("scheme"))
+        .and_then(Value::as_str)
 }
 
 /// The `403` for a request that doesn't meet a `require` rule. It names
@@ -754,7 +791,9 @@ async fn run_befores<H: Host>(
                     }
                 }
             }
-            Ok(Reply::Response { response, body }) => return Err(to_http(response, body)),
+            Ok(Reply::Response { response, body }) => {
+                return Err(ctx.rejected(Rule::Before, to_http(response, body)));
+            }
             Err(e) => return Err(call_error(ctx.host.dev(), before, e)),
         }
     }
@@ -911,11 +950,15 @@ async fn run_action<H: Host>(
                         && let Err(errors) = rule.check(&json.to_value(), "response")
                     {
                         tracing::warn!(route = %route.path, ?errors, "response doesn't match its schema");
+                        ctx.host.step(Step::ResponseInvalid);
                         if mode == ResponseValidation::Enforce {
-                            return problem_with(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "the handler's response doesn't match its schema",
-                                ctx.host.dev().then_some(errors.as_slice()),
+                            return ctx.rejected(
+                                Rule::ResponseValidation,
+                                problem_with(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "the handler's response doesn't match its schema",
+                                    ctx.host.dev().then_some(errors.as_slice()),
+                                ),
                             );
                         }
                     }
@@ -1006,6 +1049,7 @@ async fn store_in_cache<H: Host>(
             let _ = store.put(&key, entry).await;
         })
         .await;
+    ctx.host.step(Step::Cache(CacheStep::Stored));
     let mut resp = http::Response::from_parts(parts, Body::Bytes(bytes));
     if ctx.host.dev() {
         resp.headers_mut()

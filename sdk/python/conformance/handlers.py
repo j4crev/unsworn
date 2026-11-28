@@ -17,6 +17,7 @@ def echo(req, ctx):
             "context": ctx,
             "json": req.json,
             "header": req.headers.get("x-test"),
+            "traceparent": req.headers.get("traceparent"),
         }
     )
 
@@ -77,8 +78,9 @@ def content(req, ctx):
 
 
 def relay(req, ctx):
+    trace = {key: req.query.get(key) for key in ("traceparent", "tracestate")}
     try:
-        return json({"answer": ctx.call(req.query["fn"], req.json)})
+        return json({"answer": ctx.call(req.query["fn"], req.json, **trace)})
     except CallError as e:
         return json({"failed": e.status})
 

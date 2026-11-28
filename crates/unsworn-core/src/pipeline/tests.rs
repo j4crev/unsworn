@@ -20,7 +20,7 @@ use serde_json::{Map, Value, json};
 use unsworn_proto::{Phase, Request as ProtoRequest};
 
 use super::host::{
-    Body, CallError, Deadline, FetchError, Host, ProxyRequest, Reply, Response, StaticRequest,
+    Body, CallError, Deadline, FetchError, Host, ProxyRequest, Reply, Response, StaticRequest, Step,
 };
 use super::{KeyCache, Problem, Router};
 use crate::policy::HandlerRef;
@@ -109,6 +109,8 @@ struct TestHost {
     fetched: Mutex<Vec<String>>,
     /// Outgoing requests never get an answer: a stalled identity provider.
     stall_fetches: AtomicBool,
+    /// What the pipeline said it decided, as `Debug` text.
+    steps: Mutex<Vec<String>>,
 }
 
 impl TestHost {
@@ -128,6 +130,7 @@ impl TestHost {
             fetches: HashMap::new(),
             fetched: Mutex::default(),
             stall_fetches: AtomicBool::new(false),
+            steps: Mutex::default(),
         }
     }
 
@@ -164,6 +167,11 @@ impl TestHost {
 
     fn fetch_count(&self) -> usize {
         self.fetched.lock().unwrap().len()
+    }
+
+    /// The steps reported since the last time this was asked.
+    fn steps(&self) -> Vec<String> {
+        std::mem::take(&mut *self.steps.lock().unwrap())
     }
 }
 
@@ -278,6 +286,10 @@ impl Host for TestHost {
 
     async fn background(&self, future: impl Future<Output = ()> + crate::MaybeSend + 'static) {
         future.await;
+    }
+
+    fn step(&self, step: Step<'_>) {
+        self.steps.lock().unwrap().push(format!("{step:?}"));
     }
 }
 
@@ -801,6 +813,131 @@ handler = "src/h.ts#teapot"
     assert_eq!(r.status.as_u16(), 418);
     assert_eq!(r.header("content-type"), Some("text/plain; charset=utf-8"));
     assert_eq!(r.body, "short and stout");
+}
+
+#[test]
+fn the_host_is_told_what_was_decided() {
+    let host = TestHost::new()
+        .handler("src/h.ts#echo", echo)
+        .handler("src/h.ts#wrong", |_, _| ok_json(json!({ "id": "x" })))
+        .handler("src/h.ts#deny", |_, _| {
+            Ok(Reply::Response {
+                response: unsworn_proto::Response::new("", 403),
+                body: Body::Empty,
+            })
+        });
+    let t = Test::new(
+        &format!(
+            r#"{TS}
+[server]
+response_validation = "enforce"
+
+[defaults]
+auth = "none"
+
+[auth.key]
+type = "api_key"
+keys = ["k1"]
+
+[[route]]
+path = "/origin"
+origin = {{ allow = ["https://ok.example"] }}
+respond = {{ status = 204 }}
+
+[[route]]
+path = "/ip"
+ip = {{ allow = ["10.0.0.0/8"] }}
+respond = {{ status = 204 }}
+
+[[route]]
+path = "/limited"
+rate_limit = {{ requests = 1, per = "1h", key = "ip" }}
+respond = {{ status = 204 }}
+
+[[route]]
+path = "/private"
+auth = "key"
+respond = {{ status = 204 }}
+
+[[route]]
+path = "/region"
+auth = "key"
+require = {{ "header.x-type" = "auth.type" }}
+respond = {{ status = 204 }}
+
+[[route]]
+path = "/items/{{id}}"
+params = {{ id = {{ type = "integer" }} }}
+respond = {{ status = 204 }}
+
+[[route]]
+path = "/upload"
+method = "POST"
+max_body = "4B"
+handler = "src/h.ts#echo"
+
+[[route]]
+path = "/gated"
+before = ["src/h.ts#deny"]
+respond = {{ status = 204 }}
+
+[[route]]
+path = "/wrong"
+handler = "src/h.ts#wrong"
+response = {{ type = "object", properties = {{ id = {{ type = "integer" }} }} }}
+
+[[route]]
+path = "/cached"
+method = "GET"
+cache = {{ ttl = "1m" }}
+handler = "src/h.ts#echo"
+"#
+        ),
+        &["src/h.ts"],
+        host,
+    );
+    let steps = |method: &str, uri: &str, headers: &[(&str, &str)], body: &[u8]| {
+        t.send(method, uri, headers, body);
+        t.host.steps()
+    };
+    let get = |uri: &str| steps("GET", uri, &[], b"");
+    let key = [("x-api-key", "k1")];
+
+    assert_eq!(
+        steps("GET", "/origin", &[("origin", "https://evil.example")], b""),
+        ["Rejected(Origin)"]
+    );
+    assert_eq!(get("/ip"), ["Rejected(Ip)"]);
+    assert_eq!(get("/limited"), ["Checked"]);
+    assert_eq!(get("/limited"), ["Rejected(RateLimit)"]);
+    assert_eq!(get("/private"), ["Rejected(Auth)"]);
+    assert_eq!(
+        steps("GET", "/private", &key, b""),
+        [r#"Authenticated("key")"#, "Checked"]
+    );
+    assert_eq!(
+        steps(
+            "GET",
+            "/region",
+            &[("x-api-key", "k1"), ("x-type", "jwt")],
+            b""
+        ),
+        [r#"Authenticated("key")"#, "Rejected(Require)"]
+    );
+    assert_eq!(get("/items/x"), ["Rejected(Validation)"]);
+    assert_eq!(
+        steps("POST", "/upload", &[], b"too long"),
+        ["Rejected(MaxBody)"]
+    );
+    assert_eq!(get("/gated"), ["Checked", "Rejected(Before)"]);
+    assert_eq!(
+        get("/wrong"),
+        ["Checked", "ResponseInvalid", "Rejected(ResponseValidation)"]
+    );
+    assert_eq!(get("/cached"), ["Checked", "Cache(Miss)", "Cache(Stored)"]);
+    assert_eq!(get("/cached"), ["Checked", "Cache(Hit)"]);
+    // A route that isn't there decided nothing.
+    assert_eq!(get("/nowhere"), Vec::<String>::new());
 }
 
 #[test]
@@ -2107,6 +2244,7 @@ fn mcp_tools_as_handlers() {
     assert_eq!(result["isError"], json!(null), "{result}");
     assert_eq!(result["structuredContent"]["city"], "Oslo");
     assert_eq!(result["structuredContent"]["mcp"]["tool"], "weather");
+    t.host.steps();
 
     // Policy failures are tool errors the model can read.
     let text = |r: &Value| {
@@ -2116,6 +2254,8 @@ fn mcp_tools_as_handlers() {
             .to_string()
     };
     let limited = call("weather", json!({ "city": "Oslo" }));
+    // A tool error is still a rejection, by the tool's own limit.
+    assert_eq!(t.host.steps().last().unwrap(), "Rejected(RateLimit)");
     assert_eq!(limited["isError"], true);
     assert!(
         text(&limited).contains("Rate limit exceeded for weather"),
@@ -2123,7 +2263,9 @@ fn mcp_tools_as_handlers() {
     );
     let bad = call("weather", json!({}));
     assert_eq!(bad["isError"], true);
+    t.host.steps();
     let denied = call("guarded", json!({}));
+    assert_eq!(t.host.steps().last().unwrap(), "Rejected(Before)");
     assert_eq!(
         text(&denied),
         "The call was rejected (403 Forbidden): not on weekends"

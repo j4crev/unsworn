@@ -391,7 +391,9 @@ class Handler(BaseHTTPRequestHandler):
         what = parts[0]
         if what == "call":
             input = query.get("input", [None])[0]
-            out = unsworn(via, "POST", "/call/" + parts[1], token, body=input)
+            # The app's own span, as its instrumentation would send it.
+            span = {k: query[k][0] for k in ("traceparent", "tracestate") if k in query}
+            out = unsworn(via, "POST", "/call/" + parts[1], token, body=input, headers=span)
         elif what == "fetch":
             out = unsworn(via, "POST", "/fetch/svc/" + "/".join(parts[1:]) + "?x=1", token,
                           body=b'{"a": 1}', headers={"content-type": "application/json", "x-mine": "yes"})
@@ -624,6 +626,19 @@ fn a_server_calls_functions_and_services_through_unsworn() {
     // No body is no input.
     let out = get("/api/call/whoami");
     assert_eq!(out["body"]["input"], Value::Null, "{out}");
+
+    // The call's own trace headers name the span the function is called
+    // under. These requests came with none of their own.
+    let own = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    let out = get(&format!(
+        "/api/call/whoami?traceparent={own}&tracestate=mine%3D1"
+    ));
+    assert_eq!(
+        out["body"]["headers"],
+        json!({ "traceparent": own, "tracestate": "mine=1" })
+    );
+    let out = get("/api/call/whoami?traceparent=nonsense");
+    assert_eq!(out["body"]["headers"], json!({}), "{out}");
 
     // A function's own failure is its answer, as it sent it.
     let out = get("/api/call/refuse?input=%7B%7D");

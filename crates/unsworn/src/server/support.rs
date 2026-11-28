@@ -13,6 +13,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use serde_json::Value;
 use unsworn_core::pipeline::Problem;
+use unsworn_core::telemetry::KNOWN_METHODS;
 
 use crate::store::Store;
 
@@ -164,11 +165,6 @@ pub fn build_client() -> HttpClient {
         .build(https)
 }
 
-/// The methods metrics name. Any other is counted as `OTHER`.
-const KNOWN_METHODS: &[&str] = &[
-    "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE",
-];
-
 /// A small number for the calling thread, the same every time: its place
 /// in state that's kept per thread so threads don't wait on each other.
 pub fn thread_slot() -> usize {
@@ -207,6 +203,23 @@ fn bucket(elapsed: Duration) -> usize {
 /// The longest duration a bucket holds, in milliseconds.
 pub fn bucket_bound_ms(index: usize) -> f64 {
     0.05 * 2f64.powf(index as f64 / 4.0)
+}
+
+/// The explicit upper bounds of the histogram buckets, in seconds, for OTLP.
+/// `BUCKETS - 1` bounds divide durations into `BUCKETS` buckets, the last
+/// being the overflow bucket.
+pub fn bucket_bounds_secs() -> Vec<f64> {
+    (0..BUCKETS - 1)
+        .map(|i| bucket_bound_ms(i) / 1000.0)
+        .collect()
+}
+
+/// Totals for one `(method, route, status)` series across all shards.
+pub struct SeriesTotals {
+    pub count: u64,
+    pub seconds: f64,
+    pub handler_seconds: f64,
+    pub buckets: Vec<u64>,
 }
 
 /// One route's requests with one method and status.
@@ -342,6 +355,34 @@ impl Metrics {
             }
         }
         found.into_values().collect()
+    }
+
+    /// Every series' count, total seconds, handler seconds and histogram
+    /// buckets, by method, route and status.
+    pub fn series(&self) -> std::collections::BTreeMap<(&'static str, String, u16), SeriesTotals> {
+        let mut totals: std::collections::BTreeMap<(&'static str, String, u16), SeriesTotals> =
+            std::collections::BTreeMap::new();
+        for shard in &self.shards {
+            for (route, series) in shard.lock().unwrap().iter() {
+                for s in series {
+                    let total = totals
+                        .entry((s.method, route.to_string(), s.status))
+                        .or_insert_with(|| SeriesTotals {
+                            count: 0,
+                            seconds: 0.0,
+                            handler_seconds: 0.0,
+                            buckets: vec![0; BUCKETS],
+                        });
+                    total.count += s.count;
+                    total.seconds += s.seconds;
+                    total.handler_seconds += s.handler_seconds;
+                    for (acc, n) in total.buckets.iter_mut().zip(s.buckets.iter()) {
+                        *acc += n;
+                    }
+                }
+            }
+        }
+        totals
     }
 
     /// Every series' count, total seconds and seconds in handlers, by

@@ -52,7 +52,8 @@ Unsworn, which runs the function in its own runtime's workers.
   id as the caller's and the access log line.
 - **Keeps it in the request's trace.** When the request came with a
   `traceparent` header, the function gets it, and the `tracestate` with
-  it, as `req.headers`. See [`tracing.md`](tracing.md).
+  it, as `req.headers`. A handler with a span of its own can have the
+  function called under that instead. See [`tracing.md`](tracing.md).
 - **Checks the output** against `output`, as `response_validation` says:
   `log` (the default) logs a mismatch, `enforce` fails the call with
   `502`, `off` skips it.
@@ -69,6 +70,13 @@ A function has no path. Nothing outside Unsworn reaches it, so it needs no
 | Go | `err := req.Call("embed", input, &out)` | a `*unsworn.CallError` (`Status`, `Message`, `JSON`) |
 | Rust | `req.call::<Vec<f32>>("embed", json!({ "text": text })).await?` | `Err(CallError { status, message, json })` |
 | An [HTTP runtime](http-runtime.md#calling-functions-and-outbound-services) whose `calls` names it | `POST $UNSWORN_CALLS_URL/call/embed`, with the request's `Unsworn-Call` header | a status of `400` or above; Unsworn's own failures also have an `Unsworn-Error` header |
+
+To have the function called under a span of the handler's own, name its
+`traceparent`: `{ traceparent }` as a third argument in TypeScript,
+`traceparent=` in Python, `req.CallWith` with `unsworn.CallOptions` in Go,
+`req.call_with` with `CallOptions` in Rust, and a `traceparent` header on an
+HTTP runtime's call. See
+[a handler's own span](tracing.md#a-handlers-own-span).
 
 A call gives back the JSON the function answered with. It fails when the
 function answers `400` or above, or when it can't be run:
@@ -90,9 +98,9 @@ a `500` and the reason is logged.
 ## A function's handler
 
 It's an ordinary handler. The input arrives as the JSON body (`req.json`),
-`req.route` is `fn:<name>`, `req.headers` holds only the calling request's
-[trace](tracing.md), if it had one, and what it answers with as JSON is
-the call's result. A text reply arrives as a JSON string. Bytes and streams aren't
+`req.route` is `fn:<name>`, `req.headers` holds only the
+[trace](tracing.md) it was called under, if there is one, and what it
+answers with as JSON is the call's result. A text reply arrives as a JSON string. Bytes and streams aren't
 supported: a call fails with `502`.
 
 The same handler can also serve a route or be an MCP tool, if it's listed

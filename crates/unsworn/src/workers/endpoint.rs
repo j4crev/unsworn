@@ -34,9 +34,10 @@ use hyper_util::rt::TokioIo;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::watch;
+use unsworn_core::calls;
 use unsworn_core::pipeline::Problem;
 use unsworn_core::pipeline::proxy::{CALL_TOKEN, CONTEXT, strip_hop_by_hop};
-use unsworn_core::trace::TraceContext;
+use unsworn_core::trace::{TRACEPARENT, TRACESTATE, TraceContext};
 
 use super::{Caller, Pool};
 use crate::server::support::{Body, BoxError, full};
@@ -382,7 +383,7 @@ async fn call(
     pools: &super::Pools,
     name: String,
     req: Request<Incoming>,
-    caller: Caller,
+    mut caller: Caller,
 ) -> Response<Body> {
     if req.method() != Method::POST {
         let mut resp = failure(405, "a function is called with POST", Value::Null);
@@ -390,6 +391,11 @@ async fn call(
             .insert(header::ALLOW, HeaderValue::from_static("POST"));
         return resp;
     }
+    // The app's own span, if the call's headers name one, as OpenTelemetry
+    // instrumentation has them do.
+    let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
+    let own = calls::given_trace(header(TRACEPARENT), header(TRACESTATE));
+    caller.trace = own.or(caller.trace);
     let body = match http_body_util::Limited::new(req.into_body(), MAX_INPUT)
         .collect()
         .await

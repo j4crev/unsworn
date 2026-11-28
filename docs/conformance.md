@@ -32,7 +32,7 @@ Each handler is called by name (`<file>#<name>`). Every request arrives with
 
 | Name | Phase | Must |
 |---|---|---|
-| `echo` | handle | Respond `200` with a JSON body: `{ "method", "params", "query", "context", "json", "header" }`, where `header` is the value of the request's `x-test` header and the rest are copied from the request. A worker whose `ready` has `raw_json` answers `400` if the body isn't JSON (an SDK does this when the handler reads the body). |
+| `echo` | handle | Respond `200` with a JSON body: `{ "method", "params", "query", "context", "json", "header", "traceparent" }`, where `header` is the value of the request's `x-test` header, `traceparent` that of its `traceparent` header (`null` without one), and the rest are copied from the request. A worker whose `ready` has `raw_json` answers `400` if the body isn't JSON (an SDK does this when the handler reads the body). |
 | `text` | handle | Respond `201` with the text body `hello` and the header `x-conformance: yes`. |
 | `binary` | handle | Respond `200` with the request's raw body bytes as the raw response body. Only called when the worker's `ready` has `raw_body` (or `raw_json` or `stream_body`, which say the same), or on Tier 2. |
 | `status` | handle | Respond with the status in `query.code` (a number) and no body. |
@@ -54,7 +54,7 @@ use what they test, and aren't in the `verify` request. `relay` needs
 
 | Name | Phase | Must |
 |---|---|---|
-| `relay` | handle | Call the function named by `query.fn` with the request's JSON body as input (in an SDK: its `call`). Respond `200` with `{ "answer": <what the function answered> }`, or with `{ "failed": <the status> }` when the call fails. |
+| `relay` | handle | Call the function named by `query.fn` with the request's JSON body as input (in an SDK: its `call`), giving the call `query.traceparent` and `query.tracestate` as its own when they're there. Respond `200` with `{ "answer": <what the function answered> }`, or with `{ "failed": <the status> }` when the call fails. |
 
 | `outbound` | handle | Only when `ready` has `fetch: true`. Send a `POST` with the request's raw body and the header `x-from: handler` to the path in `query.path` of the service `conformance` (in an SDK: its `fetch`). Respond `200` with the service's body as the raw response body and the header `x-status` set to its status, or with `{ "failed": <the status> }` when the fetch fails. |
 
@@ -62,7 +62,8 @@ The suite calls `relay` with a name that isn't a function, and expects
 `{ "failed": 404 }`. If the worker takes more than one request at a time,
 it also calls it with `conformance.echo`, a function the suite defines as
 the worker's own `echo` handler, and expects the input back in
-`answer.json` and the call in `answer.context.caller`.
+`answer.json` and the call in `answer.context.caller`. It then does so with
+a `query.traceparent`, and expects that one back in `answer.traceparent`.
 
 For `outbound`, the suite runs a service that answers `201` with what it
 was sent, and declares it with two headers of its own: `x-secret`, and an

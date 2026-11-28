@@ -101,6 +101,10 @@ What's in it:
 - **`outbound <name>`** for each [outbound service](outbound.md): its
   URL, the names of the headers Unsworn adds, and the methods and paths
   handlers may use.
+- **`telemetry`** for [`[telemetry]`](config.md#telemetry): the outbound
+  service spans go to, the service name if the config gives one, the share
+  sampled, and what it's sent (`traces`, and `metrics` and `logs` when
+  they're on).
 
 A route's `timeout` and `max_body` are written only when they differ from
 the server's.
@@ -141,7 +145,8 @@ one. A change that leaves the rules alone, such as moving a policy from
 ten routes into a named set, comes out as `The rules are the same.`
 
 Each changed route, tool or setting is listed with the lines that
-changed. A `!` marks a change that lets more requests through:
+changed. A `!` marks a change that lets more through, whether that's
+requests coming in or data about them going out:
 
 | Change | Looser when |
 |---|---|
@@ -154,6 +159,7 @@ changed. A `!` marks a change that lets more requests through:
 | `max_body` | raised |
 | `params`, `query`, `headers`, `body`, a tool's or function's `input` | the check is removed |
 | an outbound service's `methods`, `paths` | removed, or more allowed |
+| `[telemetry]` | added; for `outbound`, another service; for `sample`, raised; for `sends`, more added |
 
 The opposite is marked `(tighter)`. Anything else is listed without a
 mark: a different schema, a different scheme, a handler that moved to

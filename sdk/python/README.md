@@ -69,6 +69,10 @@ In an `async def` handler, `await ctx.call(...)`. Unsworn checks the input
 against the function's schema, and the function gets this request's
 context and what is left of its time.
 
+The function joins the request's [trace](../../docs/tracing.md). To have it
+called under a span of your own, pass that span's `traceparent`:
+`ctx.call("embed", value, traceparent=traceparent)`.
+
 `ctx` is still a dict: `ctx["auth"]`, `ctx.get("tenant")`.
 
 ## Reaching other services

@@ -16,7 +16,7 @@ use unsworn_proto::{Json, Request, Response};
 use crate::config::ResponseValidation;
 use crate::pipeline::CallError;
 use crate::project::Function;
-use crate::trace::TraceContext;
+use crate::trace::{self, TraceContext};
 
 /// How deep calls may nest: a function calling a function, and so on. A
 /// handler that calls itself would otherwise only stop at its timeout.
@@ -32,6 +32,28 @@ pub struct Caller {
     pub context: Map<String, Value>,
     /// The trace the request belongs to, which the function joins.
     pub trace: Option<TraceContext>,
+}
+
+impl Caller {
+    /// With the trace the handler named for this call, if it named one,
+    /// in place of the request's.
+    pub fn with_trace(mut self, given: Option<TraceContext>) -> Self {
+        if given.is_some() {
+            self.trace = given;
+        }
+        self
+    }
+}
+
+/// The trace a handler names for a call: its own span's, usually. `None`
+/// unless the `traceparent` is one a receiver would accept, and a
+/// `tracestate` counts only beside one.
+pub fn given_trace(traceparent: Option<&str>, tracestate: Option<&str>) -> Option<TraceContext> {
+    TraceContext::from_headers(|name| match name {
+        trace::TRACEPARENT => traceparent,
+        trace::TRACESTATE => tracestate,
+        _ => None,
+    })
 }
 
 /// A call that didn't succeed: the status the caller sees, and why.
@@ -233,4 +255,40 @@ pub fn finish(
         }
     }
     Ok((response.status, json))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OWN: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    const REQUESTS: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-1111111111111111-01";
+
+    #[test]
+    fn a_handlers_trace_replaces_the_requests() {
+        let requests = given_trace(Some(REQUESTS), Some("vendor=request"));
+        let after = |traceparent, tracestate| {
+            let caller = Caller {
+                trace: requests.clone(),
+                ..Caller::default()
+            };
+            caller
+                .with_trace(given_trace(traceparent, tracestate))
+                .trace
+        };
+        let own = after(Some(OWN), Some("vendor=mine")).unwrap();
+        assert_eq!(own.traceparent, OWN);
+        assert_eq!(own.tracestate.as_deref(), Some("vendor=mine"));
+        // The request's `tracestate` doesn't go with another `traceparent`.
+        assert_eq!(after(Some(OWN), None).unwrap().tracestate, None);
+        // Nothing a receiver would accept: the request's trace stays.
+        for (traceparent, tracestate) in [
+            (None, None),
+            (Some("nonsense"), Some("vendor=mine")),
+            (None, Some("vendor=mine")),
+        ] {
+            assert_eq!(after(traceparent, tracestate), requests);
+        }
+        assert_eq!(given_trace(Some("nonsense"), None), None);
+    }
 }

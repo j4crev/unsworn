@@ -2128,6 +2128,49 @@
       },
       "type": "object"
     },
+    "RawTelemetry": {
+      "additionalProperties": false,
+      "description": "`[telemetry]`: where Unsworn sends spans, and of how many requests. It\nhas no URL of its own: spans only go to a declared outbound service.",
+      "properties": {
+        "logs": {
+          "description": "Whether the server's logs are sent too, worker output included, with\n`POST /v1/logs`, which the service must then allow. Default: false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "metrics": {
+          "description": "Whether the server's metrics are sent too, with `POST /v1/metrics`,\nwhich the service must then allow. Default: false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "outbound": {
+          "description": "The name of the `[outbound.<name>]` that spans are sent to over\nOTLP/HTTP. It must allow `POST /v1/traces`.",
+          "type": "string"
+        },
+        "sample": {
+          "description": "The share of requests that are recorded, from 0 to 1. One from a\nproxy in `[server].trusted_proxies` that has a `traceparent` follows\nits sampled flag instead. Default: 0.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "service_name": {
+          "description": "The service name on the spans. Default: `OTEL_SERVICE_NAME`, then\n\"unsworn\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "outbound"
+      ],
+      "type": "object"
+    },
     "RawTls": {
       "additionalProperties": false,
       "properties": {
@@ -2412,6 +2455,17 @@
           "type": "null"
         }
       ]
+    },
+    "telemetry": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RawTelemetry"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "OpenTelemetry traces, sent to one of the `outbound` services."
     }
   },
   "title": "Unsworn configuration",

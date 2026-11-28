@@ -115,6 +115,8 @@ const routes = {
     const what = req.params.what;
     try {
       if (what === "call") return { json: await ctx.call(req.query.fn, req.json) };
+      // The body is the call's options.
+      if (what === "own") return { json: await ctx.call("whoami", null, req.json) };
       if (what === "both") {
         const [a, b] = await Promise.all([ctx.call("count", { text: "a b" }), ctx.call("count", { text: "a b c" })]);
         return { json: { a, b } };
@@ -206,6 +208,18 @@ test("a function gets the caller's context and trace, and says who called", asyn
   const ctx = await ask("/do/ctx");
   assert.deepEqual(ctx.keys, ["tenant"]);
   assert.equal(ctx.text, '{"tenant":"acme"}');
+});
+
+test("a handler names its own span for a function to be called under", async () => {
+  const OWN = "00-4bf92f3577b34da6a3ce929d0e0e4736-b7ad6b7169203331-01";
+  const request = { traceparent: TRACE, tracestate: "vendor=1" };
+  const under = async (options) => (await ask("/do/own", options, request)).headers;
+  assert.deepEqual(await under({ traceparent: OWN, tracestate: "mine=1" }), { traceparent: OWN, tracestate: "mine=1" });
+  // The request's `tracestate` doesn't go with another `traceparent`.
+  assert.deepEqual(await under({ traceparent: OWN }), { traceparent: OWN });
+  // One a receiver wouldn't accept is ignored, as is a `tracestate` alone.
+  assert.deepEqual(await under({ traceparent: "nonsense", tracestate: "mine=1" }), request);
+  assert.deepEqual(await under({ tracestate: "mine=1" }), request);
 });
 
 test("calls that fail say why, as on the server", async () => {

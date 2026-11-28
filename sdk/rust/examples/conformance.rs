@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use unsworn_sdk::{Error, Reply, Request, Result, handlers, json};
+use unsworn_sdk::{CallOptions, Error, Reply, Request, Result, handlers, json};
 
 fn main() {
     unsworn_sdk::run(handlers![
@@ -19,6 +19,7 @@ async fn echo(req: Request) -> Result {
         "context": req.ctx,
         "json": req.json()?,
         "header": req.header("x-test"),
+        "traceparent": req.header("traceparent"),
     })))
 }
 
@@ -87,7 +88,14 @@ async fn content(_: Request) -> Result {
 async fn relay(req: Request) -> Result {
     let function: String = req.query_value("fn")?;
     let input = req.json()?.cloned().unwrap_or_default();
-    match req.call::<unsworn_sdk::JsonValue>(&function, input).await {
+    let options = CallOptions {
+        traceparent: req.query_value("traceparent").ok(),
+        tracestate: req.query_value("tracestate").ok(),
+    };
+    match req
+        .call_with::<unsworn_sdk::JsonValue>(&function, input, options)
+        .await
+    {
         Ok(answer) => Ok(Reply::json(json!({ "answer": answer }))),
         Err(e) => Ok(Reply::json(json!({ "failed": e.status }))),
     }

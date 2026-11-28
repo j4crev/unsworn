@@ -161,3 +161,4 @@ jobs:
           npm ci --no-audit --no-fund
           npm run typecheck
           npm test
+      - run: cargo test -p unsworn --test telemetry a_node_function_exports_nested_spans

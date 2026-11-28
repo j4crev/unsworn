@@ -13,7 +13,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { connect } from "node:net";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { CallError, type Fetched, FetchError, type FetchInit } from "./index.ts";
+import { CallError, type CallOptions, type Fetched, FetchError, type FetchInit } from "./index.ts";
 import {
   BadJson,
   type Callable,
@@ -148,14 +148,16 @@ const calls = new Map<string, PendingCall>();
 let nextCall = 0;
 
 /** `ctx.call`: asks Unsworn to run a function for the request `request`. */
-function call(request: string, name: string, input: unknown): Promise<unknown> {
+function call(request: string, name: string, input: unknown, options?: CallOptions): Promise<unknown> {
   if (!canCall) {
     return Promise.reject(new CallError(501, "this Unsworn doesn't run functions for handlers: update it"));
   }
   const answer = new Promise((resolve, reject) => {
     const id = `c-${++nextCall}`;
     calls.set(id, { request, resolve, reject });
-    send({ type: "call", id, request, function: name, json: input ?? null });
+    // An option that isn't given is left out of the message.
+    const { traceparent, tracestate } = options ?? {};
+    send({ type: "call", id, request, function: name, json: input ?? null, traceparent, tracestate });
   });
   // A handler may start a call and not wait for it. Its failure then has
   // nowhere to go, which shouldn't count as an unhandled rejection: that
@@ -228,7 +230,7 @@ function context(msg: RequestMessage): Record<string, unknown> {
   const ctx = msg.context ?? {};
   // Not enumerable, so the context still reads (and prints) as plain data.
   Object.defineProperty(ctx, "call", {
-    value: (name: string, input?: unknown) => call(msg.id, name, input),
+    value: (name: string, input?: unknown, options?: CallOptions) => call(msg.id, name, input, options),
   });
   Object.defineProperty(ctx, "fetch", {
     value: (service: string, path: string, init?: FetchInit) => fetchService(msg.id, service, path, init),
