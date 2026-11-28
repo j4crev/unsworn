@@ -7,8 +7,6 @@
 
 use std::fs;
 use std::net::TcpListener;
-#[cfg(feature = "dimedb")]
-use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -75,24 +73,10 @@ fn free_port() -> u16 {
 }
 
 #[cfg(feature = "dimedb")]
-fn guest_wasm_bytes() -> Vec<u8> {
-    let guest_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../dimedb/wasm/guest-rules");
-    let target_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("unsworn-dimedb-guest");
-    let status = Command::new("cargo")
-        .current_dir(&guest_dir)
-        .args([
-            "build",
-            "--release",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--target-dir",
-        ])
-        .arg(&target_dir)
-        .status()
-        .expect("build guest wasm");
-    assert!(status.success(), "building dimedb guest wasm failed");
-    fs::read(target_dir.join("wasm32-unknown-unknown/release/dimedb_wasm_guest.wasm"))
-        .expect("read guest wasm")
+fn guest_wasm_bytes() -> &'static [u8] {
+    // Pre-built from `dimedb/wasm/guest-rules` (v0.1.0) so `cargo test` needs
+    // neither a sibling `dimedb` checkout nor the `wasm32-unknown-unknown` target.
+    include_bytes!("fixtures/dimedb_wallet_rules.wasm")
 }
 
 struct ServerGuard(Child);
